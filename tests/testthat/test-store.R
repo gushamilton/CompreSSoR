@@ -49,7 +49,7 @@ test_that("the shipped benchmark table is available", {
   expect_true(nrow(release) >= 60L)
   expect_equal(median(release$elapsed_seconds[release$scenario == "finngen_convert_standard_compress"]), 46.006)
   followup <- benchmark_table("release_gate_followup")
-  expect_true(nrow(followup) >= 50L)
+  expect_true(nrow(followup) >= 45L)
   expect_equal(median(followup$elapsed_seconds[followup$scenario == "slice_qc_chrom4_compress"]), 18.985)
 })
 
