@@ -4,6 +4,10 @@ test_that("standard stores round-trip and validate", {
   path <- file.path(tempdir(), "standard.cpr")
   store <- compress_sumstats(input, path, reference = reference, overwrite = TRUE)
   expect_s3_class(store, "compressor_store")
+  expect_equal(store$manifest$profile, "standard")
+  expect_equal(store$manifest$backend, "parquet")
+  expect_equal(store$manifest$codec$name, "q9_z_se10_eaf12")
+  expect_false(dir.exists(file.path(path, "cache.q8")))
   expect_true(validate_compressor(store)$valid)
   expect_equal(store$manifest$benchmark$benchmark_id, "first_pareto_10m_full_read")
   expect_equal(store$manifest$benchmark_comparisons$vcf_tabix$benchmark_id,

@@ -251,6 +251,10 @@ To inspect the harmonised data before writing a store, call `harmonise_sumstats(
 
 The package does not make q8 framed binary and q9 Parquet equal user-facing choices. q9 is the standard durable store; q8 is an acceleration layer.
 
+In code, `profile = "standard"` is therefore the default durable contract:
+it writes Parquet with the `q9_z_se10_eaf12` codec and does not create a q8
+cache unless `cache = TRUE` is requested.
+
 ## Fast cache
 
 Build the optional cache with [`build_cache()`](#fast-cache). The on-disk
