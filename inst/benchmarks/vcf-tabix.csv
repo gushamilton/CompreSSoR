@@ -1,0 +1,2 @@
+benchmark_id,format,source_build,rows,source_bytes,vcf_gz_bytes,tbi_bytes,total_bytes,compression_ratio_vs_source_gzip,full_read_median_seconds,regional_region,regional_rows,regional_median_seconds,full_read_run_seconds,regional_run_seconds,full_read_command,regional_command
+vcf_tabix_11m,VCF.bgz + Tabix,GRCh37,11106737,160111138,161513759,1519452,163033211,0.9820768236,13.28,1:100000000-110000000,40822,0.09,12.08;13.28;14.05;13.65;12.92,0.05;0.05;0.09;0.09;0.09,bcftools view -H | awk checksum,tabix region | awk checksum

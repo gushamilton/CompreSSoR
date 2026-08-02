@@ -1,0 +1,2 @@
+benchmark_id,source,source_build,input_bytes,input_rows,reference,reference_rows,output_rows,dropped_duplicates,dropped_unmatched,dropped_incompatible,dropped_ambiguous,output_bytes,output_ratio_vs_input_gzip,elapsed_seconds,regional_region,regional_rows,validated
+finngen_r2_antidepressants_end_to_end,https://storage.googleapis.com/finngen-public-data-r2/summary_stats/finngen_r2_ANTIDEPRESSANTS.gz,GRCh38,391708712,16111549,bp_variant_dictionary.shared.tsv.gz,6271258,3294606,33372,12302220,20074,461277,132687271,0.338575,68.679,chr1:10000-1000000,384,TRUE

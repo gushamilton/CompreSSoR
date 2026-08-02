@@ -1,0 +1,10 @@
+scenario,replicate,input_rows,output_rows,elapsed_seconds
+qc_serial,1,550000,550000,0.410
+qc_chrom_parallel,1,550000,550000,0.945
+core_chrom_parallel,1,550000,275000,1.132
+qc_serial,2,550000,550000,0.374
+qc_chrom_parallel,2,550000,550000,0.967
+core_chrom_parallel,2,550000,275000,1.130
+qc_serial,3,550000,550000,0.352
+qc_chrom_parallel,3,550000,550000,0.956
+core_chrom_parallel,3,550000,275000,1.114

@@ -1,0 +1,8 @@
+^\.local$
+^inputs$
+^outputs$
+^scripts$
+^AGENTS\.md$
+^CLAUDE\.md$
+^HANDOFF\.md$
+^README_files$

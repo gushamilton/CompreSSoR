@@ -1,0 +1,11 @@
+benchmark_id,access_mode,run,seconds,rows,region
+vcf_tabix_11m,full_read,1,12.08,11106737,
+vcf_tabix_11m,full_read,2,13.28,11106737,
+vcf_tabix_11m,full_read,3,14.05,11106737,
+vcf_tabix_11m,full_read,4,13.65,11106737,
+vcf_tabix_11m,full_read,5,12.92,11106737,
+vcf_tabix_11m,regional,1,0.05,40822,1:100000000-110000000
+vcf_tabix_11m,regional,2,0.05,40822,1:100000000-110000000
+vcf_tabix_11m,regional,3,0.09,40822,1:100000000-110000000
+vcf_tabix_11m,regional,4,0.09,40822,1:100000000-110000000
+vcf_tabix_11m,regional,5,0.09,40822,1:100000000-110000000
