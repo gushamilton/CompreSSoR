@@ -128,7 +128,8 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
       finngen_optimization = finngen_optimization_metadata(),
       modes_edge = mode_benchmark_metadata(),
       release_gate = release_gate_benchmark_metadata(),
-      release_gate_followup = release_gate_followup_metadata()
+      release_gate_followup = release_gate_followup_metadata(),
+      storage_size = storage_size_benchmark_metadata()
     ),
     created_utc = now_utc(),
     tolerances = if (profile == "standard") list(eaf_abs_max = 0.0002, z_central_range = c(-3.5, 3.5)) else list(exact = TRUE)

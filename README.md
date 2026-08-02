@@ -65,6 +65,17 @@ The output store manifest also records this benchmark's ID and measurement
 definition. These are design-record measurements, not hardware-independent
 performance guarantees.
 
+The package also ships an absolute storage-size benchmark for the real
+16,111,549-row FinnGen GWAS. It reports bytes, bytes per row, and size ratios
+for the source gzip, raw TSV, standard q9 Parquet, exact Parquet, and the
+optional q8 cache in [inst/benchmarks/storage-size-benchmark.csv](inst/benchmarks/storage-size-benchmark.csv).
+
+On that run, the preserve-all standard q9 store was 892,353,845 bytes
+(55.39 bytes/row) for convert-only output and 899,137,039 bytes (55.81
+bytes/row) after GRCh38 QC. The raw TSV was 1,273,085,087 bytes and the
+source gzip was 391,708,712 bytes. The exact and q8 comparison outputs were
+created temporarily for measurement and then removed from the external SSD.
+
 ## Conversion and QC modes
 
 The package has one deliberately conservative default and explicit shortcuts

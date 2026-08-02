@@ -42,6 +42,16 @@ q8-cache medians were 0.048 and 0.018 seconds; serial and four-worker QC
 medians were 21.244 and 18.985 seconds, with real serial/parallel output
 parity checked separately.
 
+## Storage-size benchmark
+
+`storage-size-benchmark.csv` records absolute on-disk bytes and bytes per row
+for the same 16,111,549-row real GWAS. The source gzip was 391,708,712 bytes,
+the raw TSV stream was 1,273,085,087 bytes, and the standard q9 Parquet store
+was 892,353,845 bytes for convert-only output and 899,137,039 bytes after
+GRCh38 QC. Exact Parquet and q8 cache sizes were measured in temporary stores;
+the q8 cache is reported as an optional serving layer, not as a standalone
+replacement for the q9 variant spine.
+
 ## VCF.bgz + Tabix comparison
 
 vcf-tabix.csv and vcf-tabix-runs.csv record a separate comparison against

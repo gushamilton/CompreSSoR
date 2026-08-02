@@ -20,11 +20,13 @@ benchmark_metadata <- function() {
 #'   reference-cache compression-time benchmark, "modes" for the
 #'   chromosome/QC/panel edge benchmark, "release_gate" for the repeated
 #'   real-GWAS release-gate run, or "release_gate_followup" for its real
-#'   chromosome-parallel slice follow-up.
+#'   chromosome-parallel slice follow-up, or "storage_size" for the measured
+#'   on-disk size comparison on the real release-gate GWAS.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
 benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimization",
-                                    "modes", "release_gate", "release_gate_followup")) {
+                                    "modes", "release_gate", "release_gate_followup",
+                                    "storage_size")) {
   kind <- match.arg(kind)
   filename <- switch(kind,
                      pareto = "first-pareto.csv",
@@ -33,7 +35,8 @@ benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimi
                      finngen_optimization = "finngen-end-to-end-optimization.csv",
                      modes = "modes-edge.csv",
                      release_gate = "release-gate-benchmark.csv",
-                     release_gate_followup = "release-gate-followup.csv")
+                     release_gate_followup = "release-gate-followup.csv",
+                     storage_size = "storage-size-benchmark.csv")
   path <- system.file("benchmarks", filename, package = "CompreSSoR")
   if (!nzchar(path)) path <- file.path("inst", "benchmarks", filename)
   utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
@@ -121,5 +124,16 @@ release_gate_followup_metadata <- function() {
     direct_region_median_seconds = 0.048,
     q8_region_median_seconds = 0.018,
     data = "inst/benchmarks/release-gate-followup.csv"
+  )
+}
+
+storage_size_benchmark_metadata <- function() {
+  list(
+    benchmark_id = "compressor_storage_size_finngen_16111549",
+    description = "Measured on-disk storage comparison for a real 16.1-million-row GWAS",
+    input_rows = 16111549L,
+    standard_output_bytes = 892353845L,
+    qc_output_bytes = 899137039L,
+    data = "inst/benchmarks/storage-size-benchmark.csv"
   )
 }

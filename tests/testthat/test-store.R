@@ -22,6 +22,8 @@ test_that("standard stores round-trip and validate", {
                "compressor_release_gate_finngen_16111549")
   expect_equal(store$manifest$benchmark_comparisons$release_gate_followup$benchmark_id,
                "compressor_release_gate_slice_parallel_100k")
+  expect_equal(store$manifest$benchmark_comparisons$storage_size$benchmark_id,
+               "compressor_storage_size_finngen_16111549")
   got <- read_sumstats(store, region = "chr1:100100-100250",
                        columns = c("variant_id", "beta", "standard_error", "p_value", "annotation"))
   expect_equal(nrow(got), 151L)
@@ -55,6 +57,10 @@ test_that("the shipped benchmark table is available", {
   followup <- benchmark_table("release_gate_followup")
   expect_true(nrow(followup) >= 45L)
   expect_equal(median(followup$elapsed_seconds[followup$scenario == "slice_qc_chrom4_compress"]), 18.985)
+  sizes <- benchmark_table("storage_size")
+  expect_equal(nrow(sizes), 7L)
+  expect_equal(sizes$bytes[sizes$representation == "q9 Parquet (convert-only)"], 892353845)
+  expect_true(all(sizes$bytes_per_row > 0))
 })
 
 test_that("exact profile retains numeric values", {
