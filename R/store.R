@@ -530,7 +530,8 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #'
 #' @param store A store object or path.
 #' @param region Optional genomic region.
-#' @param variants Optional variant IDs or zero-based row IDs.
+#' @param variants Optional variant IDs, zero-based row IDs, or—for Pcodec
+#'   stores—canonical `chromosome:position:REF:ALT` keys.
 #' @param columns Optional output columns.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.

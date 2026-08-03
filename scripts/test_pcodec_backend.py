@@ -180,6 +180,25 @@ def main() -> None:
             MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
             MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS,
         ]
+        frame_keys = [
+            f"1:{MODULE.VALUE_BLOCK_ROWS}:A:C",
+            f"1:{MODULE.VALUE_BLOCK_ROWS + 1}:A:C",
+            f"1:{MODULE.KEY_BLOCK_ROWS}:A:C",
+            f"1:{MODULE.KEY_BLOCK_ROWS + 1}:A:C",
+            "2:200000:A:C",
+        ]
+        frame_key_sparse = root / "frame-key-sparse.tsv"
+        MODULE.read_store(frame_store, frame_key_sparse, identity_keys=frame_keys)
+        assert [int(row["row"]) for row in read_rows(frame_key_sparse)] == [
+            MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
+            MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS,
+        ]
+        try:
+            MODULE.read_store(frame_store, root / "bad-key.tsv", identity_keys=["rs123"])
+        except ValueError as exc:
+            assert "chromosome:position:REF:ALT" in str(exc)
+        else:
+            raise AssertionError("malformed canonical identity key was accepted")
         assert MODULE.validate_store(frame_store, full=True)["valid"]
 
         # Exception records are owned by one value frame. Repointing a frame
@@ -296,7 +315,7 @@ def main() -> None:
             raise AssertionError("corrupted middle payload passed validation")
 
         print(json.dumps({"valid": True, "rows": len(decoded), "frames": len(key_index),
-                          "adversarial_cases": 13}))
+                          "adversarial_cases": 15}))
 
 
 def dense_manifest_file(store: Path, name: str) -> str:

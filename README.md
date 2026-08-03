@@ -163,7 +163,8 @@ Rows are sorted by the identity key before encoding. `A=0`, `C=1`, `G=2`, and
 Key frames contain 131,072 rows and value frames contain 65,536 rows. Z, EAF,
 and SE are independent streams. Sparse exceptional values are held in
 value-block-aligned Zstandard-compressed float32 frames. Frame offsets and genomic bounds support
-regional and sparse-row reads without scanning the whole file. The complete
+regional, sparse-row, and canonical `chromosome:position:REF:ALT` lookups
+without scanning the whole file. The complete
 layout is specified in [inst/doc/pcodec-format.md](inst/doc/pcodec-format.md).
 
 For a numerically lossless Z/SE/EAF representation, use

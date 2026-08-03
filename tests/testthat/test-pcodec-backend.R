@@ -63,9 +63,36 @@ test_that("Pcodec is the default self-contained backend", {
   selected <- read_sumstats(store, variants = c(0L, nrow(input) - 1L),
                             columns = c("base_pair_location", "z", "beta"))
   expect_equal(nrow(selected), 2L)
+  keys <- compressor_variant_key(
+    input$chromosome, input$base_pair_location,
+    input$other_allele, input$effect_allele
+  )
+  selected_by_key <- read_sumstats(
+    store,
+    variants = c(keys[c(17L, 3L)], "2:200000000:A:C"),
+    columns = c("chromosome", "base_pair_location", "effect_allele", "other_allele", "z")
+  )
+  selected_keys <- compressor_variant_key(
+    selected_by_key$chromosome, selected_by_key$base_pair_location,
+    selected_by_key$other_allele, selected_by_key$effect_allele
+  )
+  expect_setequal(selected_keys, keys[c(3L, 17L)])
+  expect_error(read_sumstats(store, variants = "rs123"),
+               "chromosome:position:REF:ALT")
   identity_only <- read_sumstats(store, variants = 0L, columns = "chromosome")
   expect_identical(names(identity_only), "chromosome")
   expect_error(read_sumstats(store, variants = 1.5), "whole-number")
+})
+
+test_that("canonical key construction validates the identity contract", {
+  expect_identical(compressor_variant_key("chr1", 123, "a", "g"), "1:123:A:G")
+  expect_identical(
+    compressor_variant_key(c("1", "X"), c(1, 2), "A", c("C", "T")),
+    c("1:1:A:C", "X:2:A:T")
+  )
+  expect_error(compressor_variant_key("MT", 1, "A", "C"), "1-22")
+  expect_error(compressor_variant_key("1", 1.5, "A", "C"), "whole-number")
+  expect_error(compressor_variant_key("1", 1, "A", "A"), "distinct")
 })
 
 test_that("Pcodec convert mode requires an explicit REF/ALT assertion", {

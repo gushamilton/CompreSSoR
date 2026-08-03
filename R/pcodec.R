@@ -291,19 +291,28 @@ read_pcodec_binary_bridge <- function(path) {
 pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = NULL) {
   store <- if (inherits(store, "compressor_store")) store else open_compressor(store)
   m <- store$manifest
-  if (!is.null(variants) && !is.numeric(variants)) {
-    stop("Pcodec stores do not store rsIDs or variant IDs; use zero-based row IDs in variants", call. = FALSE)
+  key_variants <- !is.null(variants) && is.character(variants)
+  if (!is.null(variants) && !is.numeric(variants) && !key_variants) {
+    stop("Pcodec variants must be zero-based row IDs or canonical chromosome:position:REF:ALT keys",
+         call. = FALSE)
   }
   n <- as.integer(m$n_rows %||% m$rows)
-  if (!is.null(variants)) {
+  if (!is.null(variants) && !key_variants) {
     numeric_rows <- as.numeric(variants)
     if (any(!is.finite(numeric_rows) | numeric_rows != floor(numeric_rows))) {
       stop("variants must contain finite whole-number zero-based row IDs", call. = FALSE)
     }
     variants <- unique(as.integer(numeric_rows))
   }
-  if (!is.null(variants) && any(is.na(variants) | variants < 0L | variants >= n)) {
+  if (!is.null(variants) && !key_variants &&
+      any(is.na(variants) | variants < 0L | variants >= n)) {
     stop("variants must be valid zero-based row IDs", call. = FALSE)
+  }
+  if (key_variants) {
+    variants <- unique(trimws(variants))
+    if (any(is.na(variants) | !nzchar(variants))) {
+      stop("canonical variant keys must be non-empty strings", call. = FALSE)
+    }
   }
   if (!is.null(variants) && !length(variants)) {
     out <- data.frame(row = integer(), chromosome = character(), base_pair_location = integer(),
@@ -319,7 +328,12 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
                 fileext = ".bridge"
               )), "--output-format", "binary")
     on.exit(unlink(output_path, recursive = TRUE, force = TRUE), add = TRUE)
-    if (!is.null(variants)) {
+    if (key_variants) {
+      keys_path <- tempfile("compressor-pcodec-keys-", tmpdir = pcodec_tempdir(dirname(store$path)))
+      on.exit(unlink(keys_path, force = TRUE), add = TRUE)
+      writeLines(variants, keys_path, useBytes = TRUE)
+      args <- c(args, "--keys-file", keys_path)
+    } else if (!is.null(variants)) {
       args <- c(args, "--rows", paste(variants, collapse = ","))
     }
     if (!is.null(bounds)) {

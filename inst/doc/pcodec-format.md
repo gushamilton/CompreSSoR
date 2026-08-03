@@ -102,7 +102,10 @@ uint16/uint8 semantic codes. The package's compiled reader loads those files,
 applies block centres and exceptions, reconstructs requested identity and
 numeric columns directly as R vectors, and derives beta/p in the same pass.
 Regional and sparse reads decode only intersecting frames and use a projected
-float bridge because their output is small. Numeric-only whole scans do not
+float bridge because their output is small. Canonical
+`chromosome:position:REF:ALT` lookups use the key-frame genomic bounds and
+binary search within only candidate frames, then decode the corresponding
+value rows. Numeric-only whole scans do not
 open identity payloads, and Z-only scans do not open EAF or SE payloads. The
 bridge is temporary and is not part of the durable file format; its multibyte
 fields are little-endian and the compiled reader converts them on big-endian

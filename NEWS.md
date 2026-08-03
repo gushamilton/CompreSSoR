@@ -6,6 +6,8 @@
   integrity validation.
 - Adds lossless GRCh38 position/REF/ALT identity keys without per-row rsIDs or
   a decode-time reference dependency.
+- Adds indexed sparse lookup by canonical `chromosome:position:REF:ALT` key so
+  the same variants can be resolved across stores with different row sets.
 - Adds block-aligned exception frames, per-frame and per-file SHA-256 checks,
   atomic store replacement, and a compiled full-scan bridge reader.
 - Adds adversarial input/codec tests and five-repeat full-FinnGen API

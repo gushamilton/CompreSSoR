@@ -9,7 +9,8 @@ read_sumstats(store, region = NULL, variants = NULL, columns = NULL,
 \arguments{
   \item{store}{A \code{compressor_store} object or store directory path.}
   \item{region}{Optional region such as \code{"chr1:100-200"}.}
-  \item{variants}{Optional variant IDs or zero-based row IDs.}
+  \item{variants}{Optional variant IDs, zero-based row IDs, or, for Pcodec
+  stores, canonical \code{chromosome:position:REF:ALT} keys.}
   \item{columns}{Optional output columns to return.}
   \item{use_cache}{Use an existing q8 cache for a regional read when available.}
 }

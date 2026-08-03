@@ -886,12 +886,77 @@ def _rows_for_global_region(key_index, global_start: int, global_end: int):
     return selected[0]["row_start"], selected[-1]["row_stop"]
 
 
+def parse_identity_keys(values, manifest):
+    """Parse canonical ``chromosome:position:REF:ALT`` keys."""
+    np, _, _, _ = _dependencies()
+    offsets = manifest["identity"]["chromosome_offsets"]
+    lengths = manifest["identity"]["chromosome_lengths"]
+    parsed = []
+    for raw in values:
+        value = str(raw).strip()
+        fields = value.split(":")
+        if len(fields) != 4:
+            raise ValueError(
+                f"invalid canonical identity key {value!r}; expected chromosome:position:REF:ALT"
+            )
+        chromosome = fields[0]
+        if chromosome.lower().startswith("chr"):
+            chromosome = chromosome[3:]
+        chromosome = chromosome.upper()
+        ref = fields[2].upper()
+        alt = fields[3].upper()
+        try:
+            position = int(fields[1])
+        except ValueError as exc:
+            raise ValueError(f"invalid position in canonical identity key {value!r}") from exc
+        if chromosome not in offsets:
+            raise ValueError(f"unsupported chromosome in canonical identity key {value!r}")
+        if position < 1 or position > int(lengths[chromosome]):
+            raise ValueError(f"position outside GRCh38 in canonical identity key {value!r}")
+        if ref not in BASE_CODE or alt not in BASE_CODE or ref == alt:
+            raise ValueError(f"invalid REF/ALT substitution in canonical identity key {value!r}")
+        global_position = int(offsets[chromosome]) + position - 1
+        parsed.append((global_position << 4) | (BASE_CODE[ref] << 2) | BASE_CODE[alt])
+    return np.asarray(sorted(set(parsed)), dtype=np.uint64)
+
+
+def _rows_for_identity_keys(store: Path, manifest: dict[str, Any], key_index, target_keys):
+    """Resolve sorted canonical keys to zero-based rows without a whole-key scan."""
+    np, _, _, _ = _dependencies()
+    if not len(target_keys):
+        return np.empty(0, dtype=np.int64)
+    target_positions = target_keys >> np.uint64(4)
+    hits = []
+    for frame in key_index:
+        base_position = int(frame["base_position"])
+        last_position = int(frame["last_position"])
+        lo = int(np.searchsorted(target_positions, base_position, side="left"))
+        hi = int(np.searchsorted(target_positions, last_position, side="right"))
+        if lo == hi:
+            continue
+        candidates = target_keys[lo:hi]
+        decoded = decode_key_frame(store, manifest, frame)
+        locations = np.searchsorted(decoded, candidates)
+        valid = locations < len(decoded)
+        if np.any(valid):
+            valid_locations = locations[valid]
+            matched = decoded[valid_locations] == candidates[valid]
+            if np.any(matched):
+                hits.append(
+                    np.asarray(valid_locations[matched] + int(frame["row_start"]), dtype=np.int64)
+                )
+    if not hits:
+        return np.empty(0, dtype=np.int64)
+    return np.asarray(sorted(set(np.concatenate(hits).tolist())), dtype=np.int64)
+
+
 def read_store(
     store: Path,
     output: Path,
     row_start: int | None = None,
     row_stop: int | None = None,
     row_indices=None,
+    identity_keys=None,
     chromosome: str | None = None,
     start: int | None = None,
     end: int | None = None,
@@ -912,21 +977,25 @@ def read_store(
     if unknown:
         raise ValueError("unknown output column(s): " + ", ".join(sorted(unknown)))
     n = int(manifest["rows"])
+    if row_indices is not None and identity_keys is not None:
+        raise ValueError("row indices and canonical identity keys are mutually exclusive")
     requested_rows = None if row_indices is None else np.asarray(sorted(set(int(row) for row in row_indices)), dtype=np.int64)
     if requested_rows is not None and np.any((requested_rows < 0) | (requested_rows >= n)):
         raise ValueError("row indices are outside the store")
+    key_index = json.loads((store / manifest["files"]["key_index"]).read_text())
+    if identity_keys is not None:
+        requested_keys = parse_identity_keys(identity_keys, manifest)
+        requested_rows = _rows_for_identity_keys(store, manifest, key_index, requested_keys)
     global_region = None
     if chromosome is not None or start is not None or end is not None:
         if chromosome is None or start is None or end is None:
             raise ValueError("chromosome, start, and end must be supplied together")
         global_region = _region_global_bounds(manifest, chromosome, int(start), int(end))
-        key_index = json.loads((store / manifest["files"]["key_index"]).read_text())
         region_start, region_stop = _rows_for_global_region(key_index, *global_region)
         row_start = region_start if row_start is None else max(row_start, region_start)
         row_stop = region_stop if row_stop is None else min(row_stop, region_stop)
     row_start = 0 if row_start is None else max(0, int(row_start))
     row_stop = n if row_stop is None else min(n, int(row_stop))
-    key_index = json.loads((store / manifest["files"]["key_index"]).read_text())
     identity_columns = {
         "chromosome", "base_pair_location", "effect_allele", "other_allele"
     }
@@ -1159,6 +1228,7 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("--row-start", type=int)
     read.add_argument("--row-stop", type=int)
     read.add_argument("--rows")
+    read.add_argument("--keys-file", type=Path)
     read.add_argument("--chromosome")
     read.add_argument("--start", type=int)
     read.add_argument("--end", type=int)
@@ -1174,9 +1244,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(write_store(args.input, args.output, metadata=metadata), indent=2))
     elif args.command == "read":
         rows = None if args.rows is None else [int(value) for value in args.rows.split(",") if value]
+        keys = None if args.keys_file is None else [
+            value.strip() for value in args.keys_file.read_text().splitlines() if value.strip()
+        ]
         columns = None if args.columns is None else [value for value in args.columns.split(",") if value]
         read_store(args.store, args.output, row_start=args.row_start, row_stop=args.row_stop,
-                   row_indices=rows, chromosome=args.chromosome, start=args.start, end=args.end,
+                   row_indices=rows, identity_keys=keys, chromosome=args.chromosome,
+                   start=args.start, end=args.end,
                    include_p=not args.omit_p, columns=columns,
                    output_format=args.output_format)
     else:
