@@ -254,6 +254,23 @@ def main() -> None:
         else:
             raise AssertionError("altered semantic constants were trusted")
 
+        order_store = root / "manifest-order-store"
+        shutil.copytree(dense_store, order_store)
+        reordered = json.loads((order_store / "manifest.json").read_text())
+        for field in ("chromosome_lengths", "chromosome_offsets"):
+            values = reordered["identity"][field]
+            reordered["identity"][field] = {
+                name: values[name] for name in reversed(list(values))
+            }
+        (order_store / "manifest.json").write_text(json.dumps(reordered, indent=2) + "\n")
+        MODULE._seal_manifest(order_store)
+        try:
+            MODULE.load_manifest(order_store)
+        except ValueError as exc:
+            assert "canonical GRCh38 order" in str(exc)
+        else:
+            raise AssertionError("reordered chromosome manifest was trusted")
+
         # A whole-file Z projection must not open identity, EAF, or SE payloads.
         dense_manifest = json.loads((dense_store / "manifest.json").read_text())
         hidden = []
@@ -315,7 +332,7 @@ def main() -> None:
             raise AssertionError("corrupted middle payload passed validation")
 
         print(json.dumps({"valid": True, "rows": len(decoded), "frames": len(key_index),
-                          "adversarial_cases": 15}))
+                          "adversarial_cases": 16}))
 
 
 def dense_manifest_file(store: Path, name: str) -> str:

@@ -291,6 +291,9 @@ read_pcodec_binary_bridge <- function(path) {
 pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = NULL) {
   store <- if (inherits(store, "compressor_store")) store else open_compressor(store)
   m <- store$manifest
+  if (!is.null(columns) && !length(columns)) {
+    stop("columns must contain at least one column name", call. = FALSE)
+  }
   key_variants <- !is.null(variants) && is.character(variants)
   if (!is.null(variants) && !is.numeric(variants) && !key_variants) {
     stop("Pcodec variants must be zero-based row IDs or canonical chromosome:position:REF:ALT keys",

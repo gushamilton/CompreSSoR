@@ -82,9 +82,14 @@ test_that("Pcodec is the default self-contained backend", {
   identity_only <- read_sumstats(store, variants = 0L, columns = "chromosome")
   expect_identical(names(identity_only), "chromosome")
   expect_error(read_sumstats(store, variants = 1.5), "whole-number")
+  expect_error(read_sumstats(store, columns = character()), "at least one")
 })
 
 test_that("canonical key construction validates the identity contract", {
+  expect_identical(
+    compressor_variant_key(character(), numeric(), character(), character()),
+    character()
+  )
   expect_identical(compressor_variant_key("chr1", 123, "a", "g"), "1:123:A:G")
   expect_identical(
     compressor_variant_key(c("1", "X"), c(1, 2), "A", c("C", "T")),
@@ -92,6 +97,9 @@ test_that("canonical key construction validates the identity contract", {
   )
   expect_error(compressor_variant_key("MT", 1, "A", "C"), "1-22")
   expect_error(compressor_variant_key("1", 1.5, "A", "C"), "whole-number")
+  expect_error(compressor_variant_key("1", 248956423, "A", "C"), "outside its GRCh38")
+  expect_identical(compressor_variant_key("X", 156040895, "A", "G"),
+                   "X:156040895:A:G")
   expect_error(compressor_variant_key("1", 1, "A", "A"), "distinct")
 })
 

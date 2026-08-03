@@ -1,3 +1,14 @@
+compressor_grch38_chromosome_lengths <- c(
+  `1` = 248956422, `2` = 242193529, `3` = 198295559,
+  `4` = 190214555, `5` = 181538259, `6` = 170805979,
+  `7` = 159345973, `8` = 145138636, `9` = 138394717,
+  `10` = 133797422, `11` = 135086622, `12` = 133275309,
+  `13` = 114364328, `14` = 107043718, `15` = 101991189,
+  `16` = 90338345, `17` = 83257441, `18` = 80373285,
+  `19` = 58617616, `20` = 64444167, `21` = 46709983,
+  `22` = 50818468, X = 156040895, Y = 57227415
+)
+
 #' Construct canonical CompreSSoR variant keys
 #'
 #' Canonical keys identify a GRCh38 biallelic SNV without an rsID or external
@@ -17,6 +28,7 @@ compressor_variant_key <- function(chromosome, position,
   lengths <- c(length(chromosome), length(position), length(reference_allele),
                length(alternate_allele))
   n <- max(lengths)
+  if (!n && all(lengths == 0L)) return(character())
   if (!n || any(lengths != 1L & lengths != n)) {
     stop("key fields must have length one or a common positive length", call. = FALSE)
   }
@@ -30,6 +42,10 @@ compressor_variant_key <- function(chromosome, position,
   }
   if (any(!is.finite(position) | position < 1 | position != floor(position))) {
     stop("position must contain positive whole-number GRCh38 coordinates", call. = FALSE)
+  }
+  chromosome_limit <- unname(compressor_grch38_chromosome_lengths[chromosome])
+  if (any(position > chromosome_limit)) {
+    stop("position lies outside its GRCh38 primary chromosome", call. = FALSE)
   }
   bases <- c("A", "C", "G", "T")
   if (any(is.na(reference_allele) | is.na(alternate_allele) |

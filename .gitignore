@@ -10,3 +10,4 @@ src/symbols.rds
 __pycache__/
 *.pyc
 .DS_Store
+scripts/.syncthing.*.tmp

@@ -143,6 +143,10 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
     }
     if identity != expected_identity:
         raise ValueError("manifest identity constants differ from the fixed GRCh38 contract")
+    chromosome_order = list(CHROM_LENGTHS)
+    if (list(identity.get("chromosome_lengths", {})) != chromosome_order or
+            list(identity.get("chromosome_offsets", {})) != chromosome_order):
+        raise ValueError("manifest chromosomes are not in canonical GRCh38 order")
 
     semantic = manifest.get("semantic_codec", {})
     fixed_semantic = {
@@ -631,7 +635,7 @@ def decode_value_frame(
 
 def _keys_to_columns(keys, manifest):
     np, _, _, _ = _dependencies()
-    offsets = np.asarray(list(manifest["identity"]["chromosome_offsets"].values()), dtype=np.uint64)
+    offsets = np.asarray(list(chromosome_offsets().values()), dtype=np.uint64)
     positions = keys >> np.uint64(4)
     chrom_ids = np.searchsorted(offsets, positions, side="right") - 1
     local_positions = (positions - offsets[chrom_ids] + 1).astype(np.int32)
@@ -644,7 +648,7 @@ def _keys_to_columns(keys, manifest):
 def _keys_to_rows(keys, manifest):
     np, _, _, _ = _dependencies()
     chromosome_codes, local_positions, alts, refs = _keys_to_columns(keys, manifest)
-    chromosome_names = list(manifest["identity"]["chromosome_offsets"].keys())
+    chromosome_names = list(CHROM_LENGTHS)
     bases = np.asarray(["A", "C", "G", "T"])
     return ([chromosome_names[index - 1] for index in chromosome_codes],
             local_positions, bases[alts], bases[refs])
@@ -869,8 +873,8 @@ def decode_values(
 
 def _region_global_bounds(manifest: dict[str, Any], chromosome: str, start: int, end: int):
     chromosome = str(chromosome).removeprefix("chr").upper()
-    lengths = manifest["identity"]["chromosome_lengths"]
-    offsets = manifest["identity"]["chromosome_offsets"]
+    lengths = CHROM_LENGTHS
+    offsets = chromosome_offsets()
     if chromosome not in lengths:
         raise ValueError(f"unsupported GRCh38 primary chromosome: {chromosome}")
     if start < 1 or end < start or end > int(lengths[chromosome]):
@@ -889,8 +893,8 @@ def _rows_for_global_region(key_index, global_start: int, global_end: int):
 def parse_identity_keys(values, manifest):
     """Parse canonical ``chromosome:position:REF:ALT`` keys."""
     np, _, _, _ = _dependencies()
-    offsets = manifest["identity"]["chromosome_offsets"]
-    lengths = manifest["identity"]["chromosome_lengths"]
+    offsets = chromosome_offsets()
+    lengths = CHROM_LENGTHS
     parsed = []
     for raw in values:
         value = str(raw).strip()
@@ -1061,7 +1065,7 @@ def read_store(
         effect_codes = np.empty(0, dtype=np.uint8)
         other_codes = np.empty(0, dtype=np.uint8)
     if global_region is not None:
-        chromosome_names = list(manifest["identity"]["chromosome_offsets"].keys())
+        chromosome_names = list(CHROM_LENGTHS)
         target_chromosome = str(chromosome).removeprefix("chr").upper()
         target_code = chromosome_names.index(target_chromosome) + 1
         keep = ((chromosome_codes == target_code) &
@@ -1101,7 +1105,7 @@ def read_store(
         return
     if output_format != "tsv":
         raise ValueError(f"unsupported output format: {output_format}")
-    chromosome_names = list(manifest["identity"]["chromosome_offsets"].keys())
+    chromosome_names = list(CHROM_LENGTHS)
     bases = np.asarray(["A", "C", "G", "T"])
     output_values["chromosome"] = [chromosome_names[index - 1] for index in chromosome_codes]
     output_values["effect_allele"] = bases[effect_codes]
