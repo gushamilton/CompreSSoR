@@ -76,6 +76,12 @@ all_rows <- decompress_sumstats(store)
 region <- read_sumstats(store, region = "chr1:1000000-2000000")
 sparse <- read_sumstats(store, variants = c(0L, 1000L, 100000L))
 validate_compressor(store)
+
+# Pay codec startup once when extracting instruments from several GWAS files.
+panels <- read_sumstats_batch(
+  c(exposure = "exposure.cpr", outcome = "outcome.cpr"),
+  c("1:100000:G:A", "2:200000:C:T")
+)
 ```
 
 For data already harmonised to GRCh38, the minimal conversion path is:
@@ -160,9 +166,12 @@ Rows are sorted by the identity key before encoding. `A=0`, `C=1`, `G=2`, and
 | rsID / textual variant ID | Not stored | Not reconstructed; identity is chromosome, position, REF, ALT |
 | arbitrary extra columns | Not in the default Pcodec payload | Use `backend = "parquet", keep_extras = TRUE` when required |
 
-Key frames contain 131,072 rows and value frames contain 65,536 rows. Z, EAF,
-and SE are independent streams. Sparse exceptional values are held in
-value-block-aligned Zstandard-compressed float32 frames. Frame offsets and genomic bounds support
+New stores use 8,192-row identity frames and 32,768-row value frames; older
+0.2 stores remain readable because physical frame sizes are declared and
+validated in the manifest. SE centre blocks remain 65,536 rows independently
+of physical frame geometry. Z, EAF, and SE are independent streams. Sparse
+exceptional values are held in value-frame-aligned Zstandard-compressed
+float32 frames. Frame offsets and genomic bounds support
 regional, sparse-row, and canonical `chromosome:position:REF:ALT` lookups
 without scanning the whole file. The complete
 layout is specified in [inst/doc/pcodec-format.md](inst/doc/pcodec-format.md).
@@ -187,48 +196,48 @@ package.
 
 ### Selected-format measurements
 
-The exported R API was measured on the Mac mini against a real 14,923,434-row
-FinnGen SNP GWAS. The source was an eight-column gzip containing
-`chrom/pos/a1/a2/beta/se/eaf/p`. The source, store, and temporary bridges all
-remained on the same external SSD. Timing values below are medians of five
-complete runs. Byte sizes are direct file measurements; the compression ratio
-is calculated from those sizes, and the 10,000-row round-trip audit was run
-once over a deterministic genome-wide sample.
+The current exported R API was measured on the Mac mini against a real
+14,923,434-row FinnGen SNP GWAS. Its eight-column gzip contains
+`chrom/pos/ALT/REF/beta/se/eaf/p`; the canonical Pcodec store was rebuilt with
+the same REF/ALT identity as the indexed VCF and passed full validation across
+all 2,278 key and value frames. Source, store, and temporary bridges remained
+on the same external SSD. Access timings are medians of five complete runs.
+The retained [full-FinnGen frame-geometry results](inst/benchmarks/pcodec-geometry-full.csv)
+show why 8,192-row key frames are the default.
 
 | Storage/write measure | Result |
 |---|---:|
-| Source TSV.gz | 198,128,448 B |
-| Self-contained CompreSSoR store | 57,582,268 B |
-| Compression ratio | 3.44x |
-| `compress_sumstats()` end-to-end | 63.210 s |
+| Source TSV.gz | 201,658,018 B |
+| Self-contained CompreSSoR store | 59,369,314 B |
+| Compression ratio | 3.40x |
+| Observed canonical rebuild | 63.564 s |
 
-| Access workload | CompreSSoR | TSV.gz | CompreSSoR speedup |
-|---|---:|---:|---:|
-| Full identity + Z/SE/EAF | 1.487 s | 1.730 s | 1.16x |
-| Full identity + Z/SE/EAF + reconstructed beta/p | 1.476 s | 1.790 s | 1.21x |
-| chr1 1 Mb region, 6,444 rows | 0.114 s | 1.694 s | 14.86x |
-| 1,000 sparse genome-wide rows | 0.387 s | 1.617 s | 4.18x |
-| Verify all file checksums | 0.139 s | — | — |
-| Decode and validate every frame | 0.430 s | — | — |
+| Access workload | Median |
+|---|---:|
+| 25 canonical keys, identity + beta/SE | 0.127 s |
+| chr1 1 Mb region, 4,325 rows | 0.114 s |
+| Full identity + Z/SE/EAF | 1.267 s |
+| Full identity + Z/SE/EAF + reconstructed beta/p | 1.255 s |
 
-The gzip region and sparse workloads necessarily scan the non-indexed source.
-The full-core gzip benchmark loads its seven relevant stored columns and
-calculates Z; the derived benchmark also loads p. CompreSSoR reconstructs beta
-and the two-sided p-value from decoded Z/SE. The Pcodec timings include Python
-startup, Pcodec decompression, the compact binary bridge, compiled native
-reconstruction, and creation of the final R data frame. These are
-hardware-specific engineering measurements, not universal guarantees.
+The single-call timings include Python startup. Analyses spanning several GWAS
+should use `read_sumstats_batch()`, which starts the codec once, verifies and
+indexes each store once, and coalesces repeated identical reads. In a five
+exposure by five outcome IVW benchmark using 25 exact REF/ALT keys, ten logical
+reads plus all 25 MR estimates took a median 0.140 s. The same work took 0.196 s
+from VCF.gz plus Tabix and 18.175 s from ten full TSV.gz scans: 1.40x faster
+than Tabix and 129.8x faster than gzip scanning. All three paths returned 25
+keys per pair and an expected self-comparison estimate of one.
 
-A 10,000-row audit sampled evenly across the same real store. Identity was
-exact; maximum observed errors were 0.0069 for Z, 0.0031 for EAF, 1.13% relative
-for SE, and 0.0197 absolute for derived beta. P-values exactly followed the
-declared function of decoded Z.
+The timings include Pcodec decompression, compact binary bridges, compiled
+reconstruction, R data frames, and—for the grid benchmark—the FastMR estimate.
+They are hardware-specific engineering measurements, not universal guarantees.
 
 Machine-readable records:
 
-- [five-run full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
-- [individual benchmark runs](inst/benchmarks/pcodec-full-api-runs.csv)
-- [real-data round-trip audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
+- [five-run canonical access benchmark](inst/benchmarks/pcodec-canonical-access.json)
+- [individual canonical access runs](inst/benchmarks/pcodec-canonical-access-runs.csv)
+- [earlier full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
+- [earlier real-data numerical audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
 - `benchmark_table()` for the shipped historical benchmark tables
 
 ## Optional Parquet backend

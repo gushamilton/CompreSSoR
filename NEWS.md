@@ -1,3 +1,15 @@
+# CompreSSoR 0.2.1
+
+- Moves the default identity-frame geometry to the measured 8,192-row Pareto
+  point and value frames to 32,768 rows while retaining compatibility with
+  larger 0.2 stores.
+- Adds `read_sumstats_batch()` so multi-GWAS analyses pay Python startup once,
+  cache store indexes, and coalesce identical canonical-key reads.
+- Decouples physical value frames from SE centre blocks and validates every
+  self-described frame-size field.
+- Adds corrected REF/ALT FinnGen, full-frame, five-repeat access, Tabix, and
+  direct 5 x 5 FastMR benchmarks from the Mac mini.
+
 # CompreSSoR 0.2.0
 
 - Makes the self-contained Pcodec Z9/EAF8/SE6 format the default backend.

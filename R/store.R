@@ -605,6 +605,54 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
   out[columns]
 }
 
+#' Read canonical variants from several compressed GWAS files
+#'
+#' Starts the Pcodec runtime once for the complete batch. This is substantially
+#' faster than repeated [read_sumstats()] calls when an analysis extracts a
+#' small instrument set from several GWAS files.
+#'
+#' @param stores A non-empty list or character vector of Pcodec stores.
+#' @param variants A canonical `chromosome:position:REF:ALT` vector shared by
+#'   every store, or one such vector per store in a list.
+#' @param columns Output columns requested from every store.
+#' @param threads Number of stores to decode concurrently inside the shared
+#'   Pcodec process.
+#' @return A list of decoded data frames in the same order as `stores`.
+#' @examples
+#' \dontrun{
+#' read_sumstats_batch(
+#'   c(exposure = "exposure.cpr", outcome = "outcome.cpr"),
+#'   c("1:100000:A:G", "1:200000:C:T"),
+#'   columns = c("chromosome", "base_pair_location", "effect_allele",
+#'               "other_allele", "beta", "standard_error")
+#' )
+#' }
+#' @export
+read_sumstats_batch <- function(
+    stores,
+    variants,
+    columns = c("chromosome", "base_pair_location", "effect_allele",
+                "other_allele", "beta", "standard_error"),
+    threads = 1L) {
+  if (is.character(stores)) stores <- as.list(stores)
+  if (!is.list(stores) || !length(stores)) {
+    stop("stores must be a non-empty list or character vector", call. = FALSE)
+  }
+  store_names <- names(stores)
+  if (is.character(variants)) {
+    variants <- rep(list(variants), length(stores))
+  }
+  if (!is.list(variants) || length(variants) != length(stores)) {
+    stop("variants must be a canonical-key vector or one list element per store",
+         call. = FALSE)
+  }
+  result <- pcodec_read_stores(
+    stores, variants, unique(as.character(columns)), threads = threads
+  )
+  if (!is.null(store_names)) names(result) <- store_names
+  result
+}
+
 #' Decompress a CompreSSoR store
 #'
 #' @inheritParams read_sumstats

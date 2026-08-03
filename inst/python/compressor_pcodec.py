@@ -16,6 +16,7 @@ usable directly for smoke tests and future Python readers.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import gzip
 import hashlib
@@ -59,8 +60,11 @@ CHROM_LENGTHS = {
     "Y": 57_227_415,
 }
 BASE_CODE = {"A": 0, "C": 1, "G": 2, "T": 3}
-KEY_BLOCK_ROWS = 131_072
-VALUE_BLOCK_ROWS = 65_536
+KEY_BLOCK_ROWS = 8_192
+VALUE_BLOCK_ROWS = 32_768
+SE_CENTER_BLOCK_ROWS = 65_536
+MIN_FRAME_ROWS = 4_096
+MAX_FRAME_ROWS = 1_048_576
 GAP_ESCAPE = 511
 GAP_ESCAPE_THRESHOLD = 510
 SECOND_GAP_ESCAPE = 65_535
@@ -110,6 +114,20 @@ def _seal_manifest(store: Path) -> None:
     (store / MANIFEST_CHECKSUM).write_text(hashlib.sha256(blob).hexdigest() + "\n")
 
 
+def _validated_block_rows(value: Any, label: str) -> int:
+    try:
+        block_rows = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} is invalid") from exc
+    if (block_rows < MIN_FRAME_ROWS or block_rows > MAX_FRAME_ROWS or
+            block_rows & (block_rows - 1)):
+        raise ValueError(
+            f"{label} must be a power of two from "
+            f"{MIN_FRAME_ROWS} through {MAX_FRAME_ROWS}"
+        )
+    return block_rows
+
+
 def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
     """Reject altered decode-critical constants for the fixed v0.2 format."""
     if manifest.get("format") != FORMAT:
@@ -127,10 +145,12 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
         raise ValueError("manifest row count is missing or invalid") from exc
     if rows < 1 or n_rows != rows:
         raise ValueError("manifest row counts disagree or are empty")
-    if int(manifest.get("key_block_rows", -1)) != KEY_BLOCK_ROWS:
-        raise ValueError("manifest key frame size is incompatible with this format")
-    if int(manifest.get("value_block_rows", -1)) != VALUE_BLOCK_ROWS:
-        raise ValueError("manifest value frame size is incompatible with this format")
+    key_block_rows = _validated_block_rows(
+        manifest.get("key_block_rows"), "manifest key frame size"
+    )
+    value_block_rows = _validated_block_rows(
+        manifest.get("value_block_rows"), "manifest value frame size"
+    )
 
     identity = manifest.get("identity", {})
     expected_identity = {
@@ -161,8 +181,12 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
     }
     if any(semantic.get(name) != value for name, value in fixed_semantic.items()):
         raise ValueError("manifest semantic codec constants differ from the fixed Z9/EAF8/SE6 contract")
+    center_block_rows = _validated_block_rows(
+        semantic.get("se_center_block_rows", value_block_rows),
+        "manifest SE centre block size",
+    )
     centers = semantic.get("block_centers_log2_residual")
-    expected_centers = (rows + VALUE_BLOCK_ROWS - 1) // VALUE_BLOCK_ROWS
+    expected_centers = (rows + center_block_rows - 1) // center_block_rows
     if not isinstance(centers, list) or len(centers) != expected_centers:
         raise ValueError("manifest has the wrong number of SE block centres")
     try:
@@ -381,7 +405,7 @@ def encode_key_frames(keys, output: Path, block_rows: int = KEY_BLOCK_ROWS):
     return index, paths
 
 
-def quantise_values(data, block_rows: int = VALUE_BLOCK_ROWS):
+def quantise_values(data, block_rows: int = SE_CENTER_BLOCK_ROWS):
     np, _, _, _ = _dependencies()
     n = len(data["beta"])
     z = data["z"].copy()
@@ -482,15 +506,29 @@ def encode_value_frames(values, output: Path, block_rows: int = VALUE_BLOCK_ROWS
     return index, paths
 
 
-def write_store(input_path: Path, output: Path, metadata: dict[str, Any] | None = None):
+def write_store(
+    input_path: Path,
+    output: Path,
+    metadata: dict[str, Any] | None = None,
+    key_block_rows: int = KEY_BLOCK_ROWS,
+    value_block_rows: int = VALUE_BLOCK_ROWS,
+    se_center_block_rows: int = SE_CENTER_BLOCK_ROWS,
+):
     np, _, _, _ = _dependencies()
+    key_block_rows = _validated_block_rows(key_block_rows, "key frame size")
+    value_block_rows = _validated_block_rows(value_block_rows, "value frame size")
+    se_center_block_rows = _validated_block_rows(
+        se_center_block_rows, "SE centre block size"
+    )
     output.mkdir(parents=True, exist_ok=True)
     data = read_tsv(input_path)
     keys, order = identity_keys(data)
     ordered = {name: values[order] for name, values in data.items()}
-    values = quantise_values(ordered)
-    key_index, key_paths = encode_key_frames(keys, output)
-    value_index, value_paths = encode_value_frames(values, output)
+    values = quantise_values(ordered, block_rows=se_center_block_rows)
+    key_index, key_paths = encode_key_frames(keys, output, block_rows=key_block_rows)
+    value_index, value_paths = encode_value_frames(
+        values, output, block_rows=value_block_rows
+    )
     manifest = {
         "format": FORMAT,
         "format_version": VERSION,
@@ -498,8 +536,8 @@ def write_store(input_path: Path, output: Path, metadata: dict[str, Any] | None 
         "profile": "standard",
         "rows": len(keys),
         "n_rows": len(keys),
-        "key_block_rows": KEY_BLOCK_ROWS,
-        "value_block_rows": VALUE_BLOCK_ROWS,
+        "key_block_rows": key_block_rows,
+        "value_block_rows": value_block_rows,
         "identity": {
             "encoding": "global_grch38_primary_position_plus_full_ref_alt_code",
             "external_reference_required": False,
@@ -514,6 +552,7 @@ def write_store(input_path: Path, output: Path, metadata: dict[str, Any] | None 
             "eaf_bits": 8,
             "se_bits": 6,
             "z_range": [-3.5, 3.5],
+            "se_center_block_rows": se_center_block_rows,
             "block_centers_log2_residual": values["centers"],
             "exception_rows": int(len(values["exceptions"])),
             "exception_precision": "float32",
@@ -711,7 +750,9 @@ def _write_binary_bridge(
             "z_count": 2**int(semantic["z_bits"]) - 2,
             "se_count": 2**int(semantic["se_bits"]) - 2,
             "eaf_count": 2**int(semantic["eaf_bits"]) - 1,
-            "block_rows": int(manifest["value_block_rows"]),
+            "block_rows": int(
+                semantic.get("se_center_block_rows", manifest["value_block_rows"])
+            ),
             "block_centers_log2_residual": semantic["block_centers_log2_residual"],
             "streams": sorted(semantic_codes),
         }
@@ -740,12 +781,17 @@ def _write_binary_bridge(
     }, indent=2))
 
 
-def decode_full_semantic_codes(store: Path, manifest: dict[str, Any], streams):
+def decode_full_semantic_codes(
+    store: Path, manifest: dict[str, Any], streams, value_index=None
+):
     np, _, _, _ = _dependencies()
     streams = set(streams)
     if "se" in streams:
         streams.add("eaf")
-    value_index = json.loads((store / manifest["files"]["value_index"]).read_text())
+    if value_index is None:
+        value_index = json.loads(
+            (store / manifest["files"]["value_index"]).read_text()
+        )
     parts = {name: [] for name in streams}
     exception_parts = []
     for frame in value_index:
@@ -798,6 +844,7 @@ def decode_values(
     row_stop: int,
     row_indices=None,
     needed=("z", "se", "eaf"),
+    value_index=None,
 ):
     np, _, _, _ = _dependencies()
     needed = set(needed)
@@ -806,14 +853,15 @@ def decode_values(
     streams = set(needed)
     if "se" in streams:
         streams.add("eaf")
-    value_index = json.loads((store / manifest["files"]["value_index"]).read_text())
+    if value_index is None:
+        value_index = json.loads(
+            (store / manifest["files"]["value_index"]).read_text()
+        )
     if row_indices is None:
         target_rows = np.arange(row_start, row_stop, dtype=np.int64)
     else:
         target_rows = np.asarray(sorted(set(int(row) for row in row_indices)), dtype=np.int64)
-    selected = [frame for frame in value_index if np.any(
-        (target_rows >= frame["row_start"]) & (target_rows < frame["row_stop"])
-    )]
+    selected = _frames_containing_rows(value_index, target_rows)
     parts = {name: [] for name in streams}
     exception_parts = []
     for frame in selected:
@@ -844,7 +892,11 @@ def decode_values(
         se = np.full(len(codes["se"]), np.nan, dtype=np.float64)
         centers = np.asarray(manifest["semantic_codec"]["block_centers_log2_residual"], dtype=np.float64)
         if len(codes["se"]):
-            block_rows = int(manifest["value_block_rows"])
+            block_rows = int(
+                manifest["semantic_codec"].get(
+                    "se_center_block_rows", manifest["value_block_rows"]
+                )
+            )
             block_centers = centers[target_rows // block_rows]
             ok = codes["se"] < se_count
             safe = np.clip(result["eaf"], 1e-12, 1.0 - 1e-12)
@@ -924,14 +976,41 @@ def parse_identity_keys(values, manifest):
     return np.asarray(sorted(set(parsed)), dtype=np.uint64)
 
 
-def _rows_for_identity_keys(store: Path, manifest: dict[str, Any], key_index, target_keys):
+def _rows_for_identity_keys(
+    store: Path,
+    manifest: dict[str, Any],
+    key_index,
+    target_keys,
+    return_keys: bool = False,
+):
     """Resolve sorted canonical keys to zero-based rows without a whole-key scan."""
     np, _, _, _ = _dependencies()
     if not len(target_keys):
-        return np.empty(0, dtype=np.int64)
+        empty_rows = np.empty(0, dtype=np.int64)
+        if return_keys:
+            return empty_rows, np.empty(0, dtype=np.uint64)
+        return empty_rows
     target_positions = target_keys >> np.uint64(4)
+    frame_starts = np.fromiter(
+        (int(frame["base_position"]) for frame in key_index),
+        dtype=np.uint64,
+        count=len(key_index),
+    )
+    frame_stops = np.fromiter(
+        (int(frame["last_position"]) for frame in key_index),
+        dtype=np.uint64,
+        count=len(key_index),
+    )
+    candidate_ids = set()
+    for position in np.unique(target_positions):
+        frame_id = int(np.searchsorted(frame_stops, position, side="left"))
+        while frame_id < len(key_index) and frame_starts[frame_id] <= position:
+            candidate_ids.add(frame_id)
+            frame_id += 1
     hits = []
-    for frame in key_index:
+    key_hits = []
+    for frame_id in sorted(candidate_ids):
+        frame = key_index[frame_id]
         base_position = int(frame["base_position"])
         last_position = int(frame["last_position"])
         lo = int(np.searchsorted(target_positions, base_position, side="left"))
@@ -946,12 +1025,52 @@ def _rows_for_identity_keys(store: Path, manifest: dict[str, Any], key_index, ta
             valid_locations = locations[valid]
             matched = decoded[valid_locations] == candidates[valid]
             if np.any(matched):
-                hits.append(
-                    np.asarray(valid_locations[matched] + int(frame["row_start"]), dtype=np.int64)
-                )
+                hits.append(np.asarray(
+                    valid_locations[matched] + int(frame["row_start"]),
+                    dtype=np.int64,
+                ))
+                key_hits.append(np.asarray(candidates[valid][matched], dtype=np.uint64))
     if not hits:
-        return np.empty(0, dtype=np.int64)
-    return np.asarray(sorted(set(np.concatenate(hits).tolist())), dtype=np.int64)
+        empty_rows = np.empty(0, dtype=np.int64)
+        if return_keys:
+            return empty_rows, np.empty(0, dtype=np.uint64)
+        return empty_rows
+    rows = np.concatenate(hits)
+    matched_keys = np.concatenate(key_hits)
+    order = np.argsort(rows, kind="stable")
+    rows = rows[order]
+    matched_keys = matched_keys[order]
+    keep = np.concatenate((np.asarray([True]), rows[1:] != rows[:-1]))
+    rows = rows[keep]
+    matched_keys = matched_keys[keep]
+    if return_keys:
+        return rows, matched_keys
+    return rows
+
+
+def _frames_containing_rows(index, rows):
+    """Return only indexed frames containing at least one sorted row ID."""
+    np, _, _, _ = _dependencies()
+    if not len(rows) or not index:
+        return []
+    row_ids = np.asarray(rows, dtype=np.int64)
+    frame_stops = np.fromiter(
+        (int(frame["row_stop"]) for frame in index),
+        dtype=np.int64,
+        count=len(index),
+    )
+    frame_ids = np.unique(np.searchsorted(frame_stops, row_ids, side="right"))
+    selected = []
+    for frame_id in frame_ids:
+        if frame_id >= len(index):
+            continue
+        frame = index[int(frame_id)]
+        if np.any(
+            (row_ids >= int(frame["row_start"])) &
+            (row_ids < int(frame["row_stop"]))
+        ):
+            selected.append(frame)
+    return selected
 
 
 def read_store(
@@ -967,9 +1086,12 @@ def read_store(
     include_p: bool = True,
     columns=None,
     output_format: str = "tsv",
+    _manifest=None,
+    _key_index=None,
+    _value_index=None,
 ):
     np, _, _, _ = _dependencies()
-    manifest = load_manifest(store)
+    manifest = load_manifest(store) if _manifest is None else _manifest
     default_columns = [
         "chromosome", "base_pair_location", "effect_allele", "other_allele",
         "z", "beta", "standard_error", "effect_allele_frequency", "p_value",
@@ -986,10 +1108,17 @@ def read_store(
     requested_rows = None if row_indices is None else np.asarray(sorted(set(int(row) for row in row_indices)), dtype=np.int64)
     if requested_rows is not None and np.any((requested_rows < 0) | (requested_rows >= n)):
         raise ValueError("row indices are outside the store")
-    key_index = json.loads((store / manifest["files"]["key_index"]).read_text())
+    key_index = _key_index
+    if key_index is None:
+        key_index = json.loads(
+            (store / manifest["files"]["key_index"]).read_text()
+        )
+    resolved_identity_keys = None
     if identity_keys is not None:
         requested_keys = parse_identity_keys(identity_keys, manifest)
-        requested_rows = _rows_for_identity_keys(store, manifest, key_index, requested_keys)
+        requested_rows, resolved_identity_keys = _rows_for_identity_keys(
+            store, manifest, key_index, requested_keys, return_keys=True
+        )
     global_region = None
     if chromosome is not None or start is not None or end is not None:
         if chromosome is None or start is None or end is None:
@@ -1014,10 +1143,11 @@ def read_store(
     elif requested_rows is None:
         frames = [frame for frame in key_index if frame["row_stop"] > row_start and frame["row_start"] < row_stop]
     else:
-        frames = [frame for frame in key_index if np.any(
-            (requested_rows >= frame["row_start"]) & (requested_rows < frame["row_stop"])
-        )]
-    if need_identity:
+        frames = _frames_containing_rows(key_index, requested_rows)
+    if need_identity and resolved_identity_keys is not None:
+        keys = resolved_identity_keys
+        output_rows = requested_rows
+    elif need_identity:
         key_parts = []
         row_parts = []
         for frame in frames:
@@ -1048,7 +1178,7 @@ def read_store(
     semantic_codes = exceptions = None
     if full_code_bridge:
         semantic_codes, exceptions = decode_full_semantic_codes(
-            store, manifest, streams=numeric_needed
+            store, manifest, streams=numeric_needed, value_index=_value_index
         )
         values = {}
     else:
@@ -1056,6 +1186,7 @@ def read_store(
             store, manifest, row_start, row_stop,
             row_indices=output_rows if requested_rows is not None else None,
             needed=numeric_needed,
+            value_index=_value_index,
         )
     if need_identity:
         chromosome_codes, positions, effect_codes, other_codes = _keys_to_columns(keys, manifest)
@@ -1129,15 +1260,112 @@ def read_store(
             writer.writerow(row)
 
 
-def _validate_index(index, rows: int, label: str):
+def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
+    """Execute many sparse canonical reads in one Python process."""
+    if threads < 1:
+        raise ValueError("batch threads must be at least one")
+    payload = json.loads(request_path.read_text())
+    reads = payload.get("reads") if isinstance(payload, dict) else None
+    if not isinstance(reads, list) or not reads:
+        raise ValueError("batch request must contain a non-empty reads list")
+    output.mkdir(parents=True, exist_ok=False)
+    cache = {}
+    prepared = []
+    bridge_for = {}
+    seen_requests = {}
+    for index, item in enumerate(reads):
+        if not isinstance(item, dict):
+            raise ValueError("every batch read must be an object")
+        try:
+            store = Path(item["store"]).expanduser().resolve(strict=True)
+        except (KeyError, OSError) as exc:
+            raise ValueError(f"batch read {index} has an invalid store") from exc
+        if not store.is_dir():
+            raise ValueError(f"batch read {index} store is not a directory")
+        keys = item.get("keys")
+        columns = item.get("columns")
+        if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
+            raise ValueError(f"batch read {index} keys must be a string list")
+        if (not isinstance(columns, list) or not columns or
+                any(not isinstance(column, str) or not column for column in columns)):
+            raise ValueError(f"batch read {index} columns must be non-empty strings")
+        cache_key = str(store)
+        if cache_key not in cache:
+            manifest = load_manifest(store)
+            key_index = json.loads(
+                (store / manifest["files"]["key_index"]).read_text()
+            )
+            value_index = json.loads(
+                (store / manifest["files"]["value_index"]).read_text()
+            )
+            cache[cache_key] = (manifest, key_index, value_index)
+        manifest, key_index, value_index = cache[cache_key]
+        signature = (cache_key, tuple(keys), tuple(columns))
+        if signature in seen_requests:
+            bridge_for[index] = seen_requests[signature]
+        else:
+            seen_requests[signature] = index
+            bridge_for[index] = index
+            prepared.append(
+                (index, store, keys, columns, manifest, key_index, value_index)
+            )
+
+    def execute(item):
+        index, store, keys, columns, manifest, key_index, value_index = item
+        bridge = output / str(index)
+        try:
+            read_store(
+                store,
+                bridge,
+                identity_keys=keys,
+                columns=columns,
+                output_format="binary",
+                _manifest=manifest,
+                _key_index=key_index,
+                _value_index=value_index,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"failed to read {store}: {exc}") from exc
+        bridge_manifest = json.loads((bridge / "bridge.json").read_text())
+        return {"index": index, "rows": int(bridge_manifest["rows"])}
+
+    workers = min(int(threads), len(prepared))
+    if workers == 1:
+        results = [execute(item) for item in prepared]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(execute, prepared))
+    unique_results = {item["index"]: item for item in results}
+    results = [
+        {
+            "index": index,
+            "bridge": bridge_for[index],
+            "rows": unique_results[bridge_for[index]]["rows"],
+        }
+        for index in range(len(reads))
+    ]
+    response = {
+        "format": "CompreSSoR-batch-bridge",
+        "version": 1,
+        "reads": results,
+    }
+    (output / "batch.json").write_text(json.dumps(response, indent=2) + "\n")
+    return response
+
+
+def _validate_index(index, rows: int, label: str, block_rows: int):
     if rows and not index:
         raise ValueError(f"{label} index is empty")
     expected = 0
-    for frame in index:
+    for frame_number, frame in enumerate(index):
         start = int(frame["row_start"])
         stop = int(frame["row_stop"])
         if start != expected or stop <= start or stop > rows:
             raise ValueError(f"{label} index does not cover contiguous valid rows")
+        frame_rows = stop - start
+        is_final = frame_number == len(index) - 1
+        if (not is_final and frame_rows != block_rows) or frame_rows > block_rows:
+            raise ValueError(f"{label} index frame size differs from the manifest")
         expected = stop
     if expected != rows:
         raise ValueError(f"{label} index ends at {expected}, expected {rows}")
@@ -1151,8 +1379,8 @@ def validate_store(store: Path, full: bool = False):
         _verify_file(store, manifest, relative)
     key_index = json.loads((store / manifest["files"]["key_index"]).read_text())
     value_index = json.loads((store / manifest["files"]["value_index"]).read_text())
-    _validate_index(key_index, rows, "key")
-    _validate_index(value_index, rows, "value")
+    _validate_index(key_index, rows, "key", int(manifest["key_block_rows"]))
+    _validate_index(value_index, rows, "value", int(manifest["value_block_rows"]))
     exception_dtype = np.dtype([("row", "<u4"), ("z", "<f4"), ("log2se", "<f4"), ("eaf", "<f4"), ("flags", "u1")])
     exception_parts = [decode_exception_frame(store, manifest, frame) for frame in value_index]
     exceptions = np.concatenate(exception_parts) if exception_parts else np.empty(0, dtype=exception_dtype)
@@ -1226,6 +1454,9 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--input", type=Path, required=True)
     write.add_argument("--output", type=Path, required=True)
     write.add_argument("--metadata", type=Path)
+    write.add_argument("--key-block-rows", type=int, default=KEY_BLOCK_ROWS)
+    write.add_argument("--value-block-rows", type=int, default=VALUE_BLOCK_ROWS)
+    write.add_argument("--se-center-block-rows", type=int, default=SE_CENTER_BLOCK_ROWS)
     read = subparsers.add_parser("read")
     read.add_argument("--store", type=Path, required=True)
     read.add_argument("--output", type=Path, required=True)
@@ -1239,13 +1470,24 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("--omit-p", action="store_true")
     read.add_argument("--columns")
     read.add_argument("--output-format", choices=("tsv", "binary"), default="tsv")
+    batch_read = subparsers.add_parser("batch-read")
+    batch_read.add_argument("--request", type=Path, required=True)
+    batch_read.add_argument("--output", type=Path, required=True)
+    batch_read.add_argument("--threads", type=int, default=1)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--store", type=Path, required=True)
     validate.add_argument("--full", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "write":
         metadata = json.loads(args.metadata.read_text()) if args.metadata else None
-        print(json.dumps(write_store(args.input, args.output, metadata=metadata), indent=2))
+        print(json.dumps(write_store(
+            args.input,
+            args.output,
+            metadata=metadata,
+            key_block_rows=args.key_block_rows,
+            value_block_rows=args.value_block_rows,
+            se_center_block_rows=args.se_center_block_rows,
+        ), indent=2))
     elif args.command == "read":
         rows = None if args.rows is None else [int(value) for value in args.rows.split(",") if value]
         keys = None if args.keys_file is None else [
@@ -1257,6 +1499,11 @@ def main(argv: list[str] | None = None) -> int:
                    start=args.start, end=args.end,
                    include_p=not args.omit_p, columns=columns,
                    output_format=args.output_format)
+    elif args.command == "batch-read":
+        print(json.dumps(
+            read_stores_batch(args.request, args.output, threads=args.threads),
+            indent=2,
+        ))
     else:
         print(json.dumps(validate_store(args.store, full=args.full), indent=2))
     return 0

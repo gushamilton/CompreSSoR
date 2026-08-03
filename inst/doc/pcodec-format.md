@@ -22,14 +22,16 @@ This is a lossless biallelic-SNV identity. It needs no rsID, textual variant ID,
 FASTA, or shared study reference to decode. The standard encoder rejects
 indels, MNVs, multiallelic records, alternate contigs, and mitochondrial rows.
 
-Key frames contain 131,072 rows. Position gaps `0..510` are uint16 values;
+The current writer uses 8,192-row key frames. The manifest self-describes
+power-of-two physical frame sizes from 4,096 through 1,048,576 rows, so earlier
+0.2 stores with larger frames remain readable. Position gaps `0..510` are uint16 values;
 `511` escapes into a second uint16 Pcodec stream. Values above `65,534` use
 `65,535` there and a uint32 Pcodec stream. The low four substitution bits are
 an independent uint8 Pcodec stream.
 
 ## Numeric streams
 
-Value frames contain 65,536 rows. Columns are independent so projection can
+The current writer uses 32,768-row value frames. Columns are independent so projection can
 avoid unrelated streams.
 
 ### Z9
@@ -61,7 +63,7 @@ The encoder forms:
 residual = log2(SE) + 0.5 * log2(2 * EAF * (1 - EAF))
 ```
 
-It subtracts the median residual in each value frame and quantises the central
+It subtracts the median residual in each 65,536-row SE centre block and quantises the central
 `[-1, 1)` interval into codes `0..61`. Code `62` means missing and code `63`
 means a float32 `log2(SE)` exception. A valid SE with missing EAF is always an
 SE exception; missing Z never erases SE. Half a residual bin is `1/62`, giving
@@ -80,9 +82,10 @@ lossless double-precision Z/SE/EAF.
 ## Indexes and integrity
 
 `manifest.sha256` is verified before any decoding metadata is trusted. The
-format version fixes chromosome lengths/offsets, stream names, frame sizes,
-code widths, sentinels, and Z range; changing them is an incompatible format,
-not a manifest option.
+format version fixes chromosome lengths/offsets, stream names, the allowed
+frame-size domain, code widths, sentinels, and Z range. Physical key/value
+frame sizes and the SE centre-block size are explicit manifest fields and are
+validated before decoding.
 
 `key.index.json` and `value.index.json` store row ranges, byte offsets, byte
 lengths, genomic bounds where relevant, and per-frame SHA-256 values. The
@@ -110,3 +113,8 @@ open identity payloads, and Z-only scans do not open EAF or SE payloads. The
 bridge is temporary and is not part of the durable file format; its multibyte
 fields are little-endian and the compiled reader converts them on big-endian
 hosts.
+
+`read_sumstats_batch()` sends several canonical-key requests through one
+Python process. Store manifests and indexes are loaded once per path, identical
+requests share one decoded bridge, and optional store-level threads do not
+change the durable format.

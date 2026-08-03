@@ -1,7 +1,7 @@
 Package: CompreSSoR
 Type: Package
 Title: Compressed GWAS Summary Statistics
-Version: 0.2.0
+Version: 0.2.1
 Authors@R: person("Fergus", "Hamilton", role = c("aut", "cre"),
     email = "fh6520@users.noreply.github.com")
 Author: Fergus Hamilton [aut, cre]

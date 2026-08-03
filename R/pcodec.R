@@ -356,6 +356,73 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
   out[columns]
 }
 
+pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
+  if (!length(stores) || length(stores) != length(variants)) {
+    stop("stores and variants must have the same non-zero length", call. = FALSE)
+  }
+  if (!length(columns) || anyNA(columns) || any(!nzchar(columns))) {
+    stop("columns must contain at least one non-empty column name", call. = FALSE)
+  }
+  if (!is.numeric(threads) || length(threads) != 1L || is.na(threads) ||
+      !is.finite(threads) || threads < 1 || threads != floor(threads)) {
+    stop("threads must be one positive integer", call. = FALSE)
+  }
+  stores <- lapply(stores, function(store) {
+    opened <- if (inherits(store, "compressor_store")) store else open_compressor(store)
+    if (!identical(opened$manifest$backend, "pcodec")) {
+      stop("batched reads require Pcodec CompreSSoR stores", call. = FALSE)
+    }
+    opened
+  })
+  variants <- lapply(variants, function(keys) {
+    if (!is.character(keys) || anyNA(keys) || any(!nzchar(trimws(keys)))) {
+      stop("each variants element must contain canonical variant keys", call. = FALSE)
+    }
+    unique(trimws(keys))
+  })
+  bridge_tmp <- pcodec_tempdir(dirname(stores[[1L]]$path))
+  request_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
+                           fileext = ".json")
+  output_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
+                          fileext = ".bridge")
+  on.exit(unlink(c(request_path, output_path), recursive = TRUE, force = TRUE), add = TRUE)
+  reads <- lapply(seq_along(stores), function(index) {
+    list(
+      store = jsonlite::unbox(normalizePath(stores[[index]]$path, mustWork = TRUE)),
+      keys = unname(variants[[index]]),
+      columns = unname(unique(columns))
+    )
+  })
+  jsonlite::write_json(list(reads = reads), request_path, auto_unbox = FALSE)
+  pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
+               "--threads", as.character(as.integer(threads))))
+  response <- jsonlite::fromJSON(
+    file.path(output_path, "batch.json"), simplifyVector = FALSE
+  )
+  if (!identical(response$format, "CompreSSoR-batch-bridge") ||
+      length(response$reads) != length(stores)) {
+    stop("Pcodec batch bridge response is malformed", call. = FALSE)
+  }
+  lapply(seq_along(stores), function(index) {
+    bridge <- as.integer(response$reads[[index]]$bridge)
+    if (length(bridge) != 1L || is.na(bridge) || bridge < 0L ||
+        bridge >= length(stores)) {
+      stop("Pcodec batch bridge index is malformed", call. = FALSE)
+    }
+    out <- read_pcodec_binary_bridge(file.path(output_path, bridge))
+    if ("row" %in% names(out)) {
+      out <- out[order(out$row), , drop = FALSE]
+      out$row <- NULL
+    }
+    missing <- setdiff(columns, names(out))
+    if (length(missing)) {
+      stop("requested columns are not present: ", paste(missing, collapse = ", "),
+           call. = FALSE)
+    }
+    out[columns]
+  })
+}
+
 pcodec_validate_store <- function(store, full = FALSE) {
   tryCatch({
     s <- if (inherits(store, "compressor_store")) store else open_compressor(store)

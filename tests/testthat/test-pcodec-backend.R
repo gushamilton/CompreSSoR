@@ -33,6 +33,9 @@ test_that("Pcodec is the default self-contained backend", {
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
   expect_equal(store$manifest$backend, "pcodec")
   expect_equal(store$manifest$variant_storage, "self_contained_identity_key")
+  expect_equal(store$manifest$key_block_rows, 8192L)
+  expect_equal(store$manifest$value_block_rows, 32768L)
+  expect_equal(store$manifest$semantic_codec$se_center_block_rows, 65536L)
   expect_false(file.exists(file.path(path, "variants.parquet")))
   expect_true(validate_compressor(store)$valid)
   expect_true(validate_compressor(store, full = TRUE)$valid)
@@ -101,6 +104,36 @@ test_that("canonical key construction validates the identity contract", {
   expect_identical(compressor_variant_key("X", 156040895, "A", "G"),
                    "X:156040895:A:G")
   expect_error(compressor_variant_key("1", 1, "A", "A"), "distinct")
+})
+
+test_that("batched canonical reads equal independent reads", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(200L)
+  path <- tempfile("pcodec-batch-")
+  compress_sumstats(input, path, reference = NULL, mode = "convert",
+                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  keys <- compressor_variant_key(
+    input$chromosome, input$base_pair_location,
+    input$other_allele, input$effect_allele
+  )
+  variants <- list(keys[c(2L, 50L, 199L)], keys[17L])
+  columns <- c("chromosome", "base_pair_location", "effect_allele",
+               "other_allele", "beta", "standard_error")
+  observed <- read_sumstats_batch(
+    c(first = path, second = path), variants, columns = columns, threads = 2L
+  )
+  expected <- lapply(variants, function(selected) {
+    read_sumstats(path, variants = selected, columns = columns)
+  })
+  expect_named(observed, c("first", "second"))
+  expect_equal(unname(observed), expected, tolerance = 1e-12)
+  expect_error(read_sumstats_batch(path, keys[1L], threads = 0L),
+               "positive integer")
 })
 
 test_that("Pcodec convert mode requires an explicit REF/ALT assertion", {
