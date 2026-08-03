@@ -159,40 +159,37 @@ def main() -> None:
         assert len(read_rows(single_out)) == 1
 
         frame_input = root / "frame-boundaries.tsv"
+        frame_rows = max(MODULE.KEY_BLOCK_ROWS, 2 * MODULE.VALUE_BLOCK_ROWS) + 1
         write_rows(frame_input, (
             ("1", pos, "C", "A",
              0.4 if pos == MODULE.VALUE_BLOCK_ROWS + 1 else 0.1,
              0.05, 0.2,
              8.0 if pos == MODULE.VALUE_BLOCK_ROWS + 1 else 2.0)
-            for pos in range(1, MODULE.KEY_BLOCK_ROWS + 2)
+            for pos in range(1, frame_rows + 1)
         ))
         frame_store = root / "frame-boundary-store"
         frame_manifest = MODULE.write_store(frame_input, frame_store)
-        assert len(json.loads((frame_store / frame_manifest["files"]["key_index"]).read_text())) == 2
-        assert len(json.loads((frame_store / frame_manifest["files"]["value_index"]).read_text())) == 3
+        assert len(json.loads((frame_store / frame_manifest["files"]["key_index"]).read_text())) == math.ceil(
+            frame_rows / MODULE.KEY_BLOCK_ROWS
+        )
+        assert len(json.loads((frame_store / frame_manifest["files"]["value_index"]).read_text())) == math.ceil(
+            frame_rows / MODULE.VALUE_BLOCK_ROWS
+        )
+        boundary_rows = sorted({
+            MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
+            MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS,
+        })
         frame_sparse = root / "frame-sparse.tsv"
         MODULE.read_store(
             frame_store, frame_sparse,
-            row_indices=[MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
-                         MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS],
+            row_indices=boundary_rows,
         )
-        assert [int(row["row"]) for row in read_rows(frame_sparse)] == [
-            MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
-            MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS,
-        ]
-        frame_keys = [
-            f"1:{MODULE.VALUE_BLOCK_ROWS}:A:C",
-            f"1:{MODULE.VALUE_BLOCK_ROWS + 1}:A:C",
-            f"1:{MODULE.KEY_BLOCK_ROWS}:A:C",
-            f"1:{MODULE.KEY_BLOCK_ROWS + 1}:A:C",
-            "2:200000:A:C",
-        ]
+        assert [int(row["row"]) for row in read_rows(frame_sparse)] == boundary_rows
+        frame_keys = [f"1:{row + 1}:A:C" for row in boundary_rows]
+        frame_keys.append("2:200000:A:C")
         frame_key_sparse = root / "frame-key-sparse.tsv"
         MODULE.read_store(frame_store, frame_key_sparse, identity_keys=frame_keys)
-        assert [int(row["row"]) for row in read_rows(frame_key_sparse)] == [
-            MODULE.VALUE_BLOCK_ROWS - 1, MODULE.VALUE_BLOCK_ROWS,
-            MODULE.KEY_BLOCK_ROWS - 1, MODULE.KEY_BLOCK_ROWS,
-        ]
+        assert [int(row["row"]) for row in read_rows(frame_key_sparse)] == boundary_rows
         try:
             MODULE.read_store(frame_store, root / "bad-key.tsv", identity_keys=["rs123"])
         except ValueError as exc:
