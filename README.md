@@ -197,18 +197,18 @@ once over a deterministic genome-wide sample.
 | Storage/write measure | Result |
 |---|---:|
 | Source TSV.gz | 198,128,448 B |
-| Self-contained CompreSSoR store | 57,591,123 B |
+| Self-contained CompreSSoR store | 57,582,268 B |
 | Compression ratio | 3.44x |
-| `compress_sumstats()` end-to-end | 62.157 s |
+| `compress_sumstats()` end-to-end | 63.210 s |
 
 | Access workload | CompreSSoR | TSV.gz | CompreSSoR speedup |
 |---|---:|---:|---:|
-| Full identity + Z/SE/EAF | 1.300 s | 1.584 s | 1.22x |
-| Full identity + Z/SE/EAF + reconstructed beta/p | 1.370 s | 1.623 s | 1.18x |
-| chr1 1 Mb region, 6,444 rows | 0.125 s | 1.557 s | 12.46x |
-| 1,000 sparse genome-wide rows | 0.374 s | 1.498 s | 4.01x |
-| Verify all file checksums | 0.135 s | — | — |
-| Decode and validate every frame | 0.423 s | — | — |
+| Full identity + Z/SE/EAF | 1.487 s | 1.730 s | 1.16x |
+| Full identity + Z/SE/EAF + reconstructed beta/p | 1.476 s | 1.790 s | 1.21x |
+| chr1 1 Mb region, 6,444 rows | 0.114 s | 1.694 s | 14.86x |
+| 1,000 sparse genome-wide rows | 0.387 s | 1.617 s | 4.18x |
+| Verify all file checksums | 0.139 s | — | — |
+| Decode and validate every frame | 0.430 s | — | — |
 
 The gzip region and sparse workloads necessarily scan the non-indexed source.
 The full-core gzip benchmark loads its seven relevant stored columns and

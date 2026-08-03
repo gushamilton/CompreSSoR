@@ -1,0 +1,696 @@
+{
+  "schema_version": "1.0.0",
+  "measured_utc": "2026-08-03 20:06:08 UTC",
+  "machine": ["Ferguss-Mini", "Darwin", "24.6.0", "arm64"],
+  "R": "R version 4.5.2 (2025-10-31)",
+  "data_table_threads": 5,
+  "python": "Python 3.12.12; numpy 1.26.4; pcodec 1.0.3; zstandard 0.25.0",
+  "runs_required": 5,
+  "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49",
+  "implementation": {
+    "package": "0.2.0",
+    "git_sha": "1d9087157ccccac6dbd765f5e44a978e877b578f",
+    "git_worktree_dirty": false,
+    "benchmark_script_sha256": "6af3ed87cb693b8318bca56bbf1b89a1758862b866be592a6b2b4bd43a2969c3",
+    "pcodec_backend_sha256": "897c5fc9192df7962b8a5a6f3e830bb163070b3c519169cca65f4d619d07baff",
+    "native_reader_sha256": "11fef293836a5e38f0c65ec893e13d39d2f0b097a13b76e7cd3537f05e182bb7",
+    "source_sha256": "a546fcd0d0ebb1a860e211710523d27cd66f0213b4448090d8068603a4d59003"
+  },
+  "source": {
+    "file": "FinnGen SNP core.tsv.gz on external SSD",
+    "bytes": 198128448,
+    "sha256": "a546fcd0d0ebb1a860e211710523d27cd66f0213b4448090d8068603a4d59003",
+    "columns": ["chrom", "pos", "a1", "a2", "beta", "se", "eaf", "p"]
+  },
+  "store": {
+    "path": "FinnGen full Pcodec store on external SSD",
+    "bytes": 57582268,
+    "manifest_sha256": "7a16a9d1db48b5a27e48f207c2f211b4524e46abd5e39f98c164af1efb62c257",
+    "self_contained_identity": true,
+    "representation": "lossless GRCh38 position+REF+ALT key; Z9/EAF8/SE6 Pcodec streams"
+  },
+  "summaries": [
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "repeats": 5,
+      "median_seconds": 63.21,
+      "min_seconds": 60.967,
+      "max_seconds": 66.33,
+      "rows": 14923434,
+      "bytes": 57582268
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "repeats": 5,
+      "median_seconds": 1.487,
+      "min_seconds": 1.155,
+      "max_seconds": 1.505,
+      "rows": 14923434,
+      "bytes": 57582268
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "repeats": 5,
+      "median_seconds": 1.476,
+      "min_seconds": 1.211,
+      "max_seconds": 1.532,
+      "rows": 14923434,
+      "bytes": 57582268
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "repeats": 5,
+      "median_seconds": 0.114,
+      "min_seconds": 0.108,
+      "max_seconds": 0.124,
+      "rows": 6444,
+      "bytes": 57582268
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "repeats": 5,
+      "median_seconds": 0.387,
+      "min_seconds": 0.373,
+      "max_seconds": 0.396,
+      "rows": 1000,
+      "bytes": 57582268
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "repeats": 5,
+      "median_seconds": 1.73,
+      "min_seconds": 1.687,
+      "max_seconds": 1.898,
+      "rows": 14923434,
+      "bytes": 198128448
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "repeats": 5,
+      "median_seconds": 1.79,
+      "min_seconds": 1.775,
+      "max_seconds": 1.813,
+      "rows": 14923434,
+      "bytes": 198128448
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "repeats": 5,
+      "median_seconds": 1.694,
+      "min_seconds": 1.689,
+      "max_seconds": 1.704,
+      "rows": 6444,
+      "bytes": 198128448
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "repeats": 5,
+      "median_seconds": 1.617,
+      "min_seconds": 1.593,
+      "max_seconds": 1.695,
+      "rows": 1000,
+      "bytes": 198128448
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "repeats": 5,
+      "median_seconds": 0.139,
+      "min_seconds": 0.127,
+      "max_seconds": 0.151,
+      "rows": 14923434,
+      "bytes": 57582268
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "repeats": 5,
+      "median_seconds": 0.43,
+      "min_seconds": 0.416,
+      "max_seconds": 0.434,
+      "rows": 14923434,
+      "bytes": 57582268
+    }
+  ],
+  "runs": [
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "run": 1,
+      "seconds": 66.33,
+      "rows": 14923434,
+      "checksum": 14923434,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "run": 2,
+      "seconds": 60.967,
+      "rows": 14923434,
+      "checksum": 14923434,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "run": 3,
+      "seconds": 62.163,
+      "rows": 14923434,
+      "checksum": 14923434,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "run": 4,
+      "seconds": 64.821,
+      "rows": 14923434,
+      "checksum": 14923434,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "compress_end_to_end",
+      "run": 5,
+      "seconds": 63.21,
+      "rows": 14923434,
+      "checksum": 14923434,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "run": 1,
+      "seconds": 1.155,
+      "rows": 14923434,
+      "checksum": 1171929090002924.2,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "run": 1,
+      "seconds": 1.211,
+      "rows": 14923434,
+      "checksum": 1171929097316302,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "run": 1,
+      "seconds": 0.113,
+      "rows": 6444,
+      "checksum": 9450592223.9736,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "run": 1,
+      "seconds": 0.382,
+      "rows": 1000,
+      "checksum": 78445789657.3209,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "run": 2,
+      "seconds": 1.411,
+      "rows": 14923434,
+      "checksum": 1171929090002924.2,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "run": 2,
+      "seconds": 1.532,
+      "rows": 14923434,
+      "checksum": 1171929097316302,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "run": 2,
+      "seconds": 0.122,
+      "rows": 6444,
+      "checksum": 9450592223.9736,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "run": 2,
+      "seconds": 0.373,
+      "rows": 1000,
+      "checksum": 78445789657.3209,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "run": 3,
+      "seconds": 1.505,
+      "rows": 14923434,
+      "checksum": 1171929090002924.2,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "run": 3,
+      "seconds": 1.459,
+      "rows": 14923434,
+      "checksum": 1171929097316302,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "run": 3,
+      "seconds": 0.108,
+      "rows": 6444,
+      "checksum": 9450592223.9736,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "run": 3,
+      "seconds": 0.387,
+      "rows": 1000,
+      "checksum": 78445789657.3209,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "run": 4,
+      "seconds": 1.493,
+      "rows": 14923434,
+      "checksum": 1171929090002924.2,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "run": 4,
+      "seconds": 1.476,
+      "rows": 14923434,
+      "checksum": 1171929097316302,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "run": 4,
+      "seconds": 0.114,
+      "rows": 6444,
+      "checksum": 9450592223.9736,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "run": 4,
+      "seconds": 0.391,
+      "rows": 1000,
+      "checksum": 78445789657.3209,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_core",
+      "run": 5,
+      "seconds": 1.487,
+      "rows": 14923434,
+      "checksum": 1171929090002924.2,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "full_with_beta_p",
+      "run": 5,
+      "seconds": 1.499,
+      "rows": 14923434,
+      "checksum": 1171929097316302,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "region_chr1_1mb",
+      "run": 5,
+      "seconds": 0.124,
+      "rows": 6444,
+      "checksum": 9450592223.9736,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "sparse_1000_rows",
+      "run": 5,
+      "seconds": 0.396,
+      "rows": 1000,
+      "checksum": 78445789657.3209,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "run": 1,
+      "seconds": 1.898,
+      "rows": 14923434,
+      "checksum": 1171929090002770.8,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "run": 1,
+      "seconds": 1.79,
+      "rows": 14923434,
+      "checksum": 1171929097310066,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "run": 1,
+      "seconds": 1.694,
+      "rows": 6444,
+      "checksum": 9450592223.7967,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "run": 1,
+      "seconds": 1.676,
+      "rows": 1000,
+      "checksum": 78445789657.2555,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "run": 2,
+      "seconds": 1.687,
+      "rows": 14923434,
+      "checksum": 1171929090002770.8,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "run": 2,
+      "seconds": 1.811,
+      "rows": 14923434,
+      "checksum": 1171929097310066,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "run": 2,
+      "seconds": 1.702,
+      "rows": 6444,
+      "checksum": 9450592223.7967,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "run": 2,
+      "seconds": 1.695,
+      "rows": 1000,
+      "checksum": 78445789657.2555,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "run": 3,
+      "seconds": 1.725,
+      "rows": 14923434,
+      "checksum": 1171929090002770.8,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "run": 3,
+      "seconds": 1.775,
+      "rows": 14923434,
+      "checksum": 1171929097310066,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "run": 3,
+      "seconds": 1.689,
+      "rows": 6444,
+      "checksum": 9450592223.7967,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "run": 3,
+      "seconds": 1.617,
+      "rows": 1000,
+      "checksum": 78445789657.2555,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "run": 4,
+      "seconds": 1.73,
+      "rows": 14923434,
+      "checksum": 1171929090002770.8,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "run": 4,
+      "seconds": 1.783,
+      "rows": 14923434,
+      "checksum": 1171929097310066,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "run": 4,
+      "seconds": 1.704,
+      "rows": 6444,
+      "checksum": 9450592223.7967,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "run": 4,
+      "seconds": 1.613,
+      "rows": 1000,
+      "checksum": 78445789657.2555,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_core",
+      "run": 5,
+      "seconds": 1.731,
+      "rows": 14923434,
+      "checksum": 1171929090002770.8,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "full_with_beta_p",
+      "run": 5,
+      "seconds": 1.813,
+      "rows": 14923434,
+      "checksum": 1171929097310066,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "region_chr1_1mb",
+      "run": 5,
+      "seconds": 1.689,
+      "rows": 6444,
+      "checksum": 9450592223.7967,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "TSV gzip",
+      "workload": "sparse_1000_rows",
+      "run": 5,
+      "seconds": 1.593,
+      "rows": 1000,
+      "checksum": 78445789657.2555,
+      "bytes": 198128448,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "run": 1,
+      "seconds": 0.137,
+      "rows": 14923434,
+      "checksum": 10,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "run": 1,
+      "seconds": 0.43,
+      "rows": 14923434,
+      "checksum": 342,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "run": 2,
+      "seconds": 0.151,
+      "rows": 14923434,
+      "checksum": 10,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "run": 2,
+      "seconds": 0.434,
+      "rows": 14923434,
+      "checksum": 342,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "run": 3,
+      "seconds": 0.145,
+      "rows": 14923434,
+      "checksum": 10,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "run": 3,
+      "seconds": 0.416,
+      "rows": 14923434,
+      "checksum": 342,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "run": 4,
+      "seconds": 0.139,
+      "rows": 14923434,
+      "checksum": 10,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "run": 4,
+      "seconds": 0.427,
+      "rows": 14923434,
+      "checksum": 342,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_checksums",
+      "run": 5,
+      "seconds": 0.127,
+      "rows": 14923434,
+      "checksum": 10,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    },
+    {
+      "format": "CompreSSoR Pcodec",
+      "workload": "validate_all_frames",
+      "run": 5,
+      "seconds": 0.432,
+      "rows": 14923434,
+      "checksum": 342,
+      "bytes": 57582268,
+      "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49"
+    }
+  ]
+}

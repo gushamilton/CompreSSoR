@@ -11,11 +11,11 @@ are direct measurements and the round-trip file records one deterministic
 10,000-row audit.
 
 The source gzip is 198,128,448 bytes and the self-contained Pcodec store is
-57,591,123 bytes (3.44x compression). Median end-to-end compression is 62.157
-seconds. Median full-core read time is 1.300 seconds versus 1.584 seconds for
-TSV.gz; including reconstructed beta and p takes 1.370 versus 1.623 seconds.
-A 1 Mb region takes 0.125 versus 1.557 seconds, and 1,000 sparse rows take
-0.374 versus 1.498 seconds.
+57,582,268 bytes (3.44x compression). Median end-to-end compression is 63.210
+seconds. Median full-core read time is 1.487 seconds versus 1.730 seconds for
+TSV.gz; including reconstructed beta and p takes 1.476 versus 1.790 seconds.
+A 1 Mb region takes 0.114 versus 1.694 seconds, and 1,000 sparse rows take
+0.387 versus 1.617 seconds.
 
 The round-trip record checks 10,000 rows spread across the genome. Full
 position/REF/ALT identity is exact. Its observed numeric errors fall within
