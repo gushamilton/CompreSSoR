@@ -20,11 +20,11 @@ build_cache <- function(store, output = NULL, block_rows = 65536L, overwrite = F
   dir.create(output, recursive = TRUE, showWarnings = FALSE)
   data <- read_sumstats(store, use_cache = FALSE)
   n <- nrow(data)
-  se_meta <- q_profile_metadata(data$standard_error)
   cache_meta <- q_encode(data$beta[seq_len(min(n, 1L))], data$standard_error[seq_len(min(n, 1L))],
                          data$effect_allele_frequency[seq_len(min(n, 1L))],
-                         z_bits = 8L, se_bits = 8L,
-                         se_lo = se_meta$se_log_min, se_hi = se_meta$se_log_max)$metadata
+                         z = data$z[seq_len(min(n, 1L))],
+                         z_bits = 8L, se_bits = 8L, eaf_bits = 8L,
+                         block_rows = block_rows)$metadata
   frame_path <- file.path(output, "frames.bin")
   con <- file(frame_path, open = "wb")
   on.exit(close(con), add = TRUE)
@@ -34,13 +34,12 @@ build_cache <- function(store, output = NULL, block_rows = 65536L, overwrite = F
     stop <- min(n, i * block_rows)
     encoded <- q_encode(data$beta[start:stop], data$standard_error[start:stop],
                         data$effect_allele_frequency[start:stop],
-                        z_bits = 8L, se_bits = 8L,
-                        se_lo = se_meta$se_log_min, se_hi = se_meta$se_log_max)
+                        z = data$z[start:stop], z_bits = 8L, se_bits = 8L,
+                        eaf_bits = 8L, block_rows = block_rows)
     payload <- list(
       row_start = start - 1L,
       main = encoded$main,
       exceptions = encoded$exceptions,
-      p_value = data$p_value[start:stop],
       metadata = encoded$metadata
     )
     compressed <- memCompress(serialize(payload, NULL, version = 3), type = "gzip")
@@ -84,13 +83,15 @@ read_q8_cache <- function(store, region = NULL) {
     seek(con, where = frame$offset, origin = "start")
     compressed <- readBin(con, what = raw(), n = frame$length)
     payload <- unserialize(memDecompress(compressed, type = "gzip"))
-    values <- q_decode(payload$main, payload$exceptions, payload$metadata)
+    values <- q_decode(payload$main, payload$exceptions, payload$metadata,
+                       include_p = TRUE)
     decoded[[k <- k + 1L]] <- data.frame(
       row = payload$row_start + seq_len(nrow(payload$main)) - 1L,
       beta = values$beta,
+      z = values$z,
       standard_error = values$standard_error,
       effect_allele_frequency = values$effect_allele_frequency,
-      p_value = payload$p_value
+      p_value = values$p_value
     )
   }
   values <- do.call(rbind, decoded)

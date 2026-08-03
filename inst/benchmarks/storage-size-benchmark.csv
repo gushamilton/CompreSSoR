@@ -1,8 +1,12 @@
-"benchmark_id","representation","backend","profile","rows","bytes","bytes_per_row","size_ratio_vs_source_gzip","size_ratio_vs_raw_tsv","size_runs","note"
-"compressor_storage_size_finngen_16111549","Source gzip","gzip","source",16111549,391708712,24.3122937465541,1,3.25008111384564,5,"Baseline distributed input"
-"compressor_storage_size_finngen_16111549","Raw TSV","text","raw",16111549,1273085087,79.0169267399429,0.307684628466628,1,5,"Uncompressed text stream; not retained on disk"
-"compressor_storage_size_finngen_16111549","q9 Parquet (convert-only)","Parquet","standard",16111549,892353845,55.3859746818881,0.43896119705743,1.42665949626743,5,"Default durable output; all rows retained"
-"compressor_storage_size_finngen_16111549","q9 Parquet (GRCh38 QC)","Parquet","standard",16111549,899137039,55.8069890734901,0.435649622926945,1.41589661172884,5,"Default durable output after GRCh38 QC; all rows retained"
-"compressor_storage_size_finngen_16111549","Exact Parquet (convert-only)","Parquet","exact",16111549,916599396,56.8908300499226,0.427349956490698,1.38892202259317,5,"Lossless comparison; temporary measurement store"
-"compressor_storage_size_finngen_16111549","q8 cache only (optional serving layer)","framed-gzip","q8",16111549,128881188,7.99930459821089,3.03930091023059,9.8779744876343,5,"Optional q8 values cache; not standalone without the q9 spine"
-"compressor_storage_size_finngen_16111549","q9 Parquet + q8 cache (convert-only)","combined","standard+q8",16111549,1021235033,63.385279280099,0.383563723670259,1.24661321425702,5,"Durable q9 store plus optional q8 cache"
+"benchmark_id","representation","backend","profile","rows","bytes","bytes_per_row","size_runs","note","size_vs_source_gzip","size_vs_raw_tsv"
+"compressor_storage_size_finngen_16111549","Source gzip","gzip","source",16111549,391708712,24.3122937465541,5,"Baseline distributed input",1,0.307684628466628
+"compressor_storage_size_finngen_16111549","Raw TSV","text","raw",16111549,1273085087,79.0169267399429,5,"Uncompressed text stream; not retained on disk",3.25008111384564,1
+"compressor_storage_size_finngen_16111549","Shared BP canonical spine","Parquet","shared-reference",6271258,142797914,22.7702183517246,5,"One shared BP canonical GRCh38 spine; not duplicated per study",0.364551284220607,0.11216682644245
+"compressor_storage_size_finngen_16111549","q9 numeric payload","Parquet","q9-payload",16111549,156092361,9.68822805305685,5,"q9 values, p-values and exceptions only",0.398490909745199,0.12260952751228
+"compressor_storage_size_finngen_16111549","q9 shared reference index","Parquet","q9-index",16111549,92851161,5.76301887546629,5,"Per-study zero-based indices into the shared canonical spine",0.237041347704311,0.0729339789996299
+"compressor_storage_size_finngen_16111549","q9 unresolved-variant table","Parquet","q9-unmatched",16111549,302472945,18.7736725376312,5,"Local identity rows retained for variants absent/ambiguous in the spine",0.772188454669857,0.237590517781315
+"compressor_storage_size_finngen_16111549","q9 shared-reference store","Parquet","standard",16111549,551423360,34.2253472959056,5,"Default durable reference-anchored output",1.40773830937924,0.433139438699591
+"compressor_storage_size_finngen_16111549","q9 inline store (comparison)","Parquet","inline",16111549,545059798,33.8303783205451,5,"No reference; full inline identity comparison",1.39149266100571,0.428140902415582
+"compressor_storage_size_finngen_16111549","Exact shared-reference store","Parquet","exact",16111549,575667719,35.730128679744,5,"Lossless reference-anchored comparison",1.46963215615179,0.452183223948173
+"compressor_storage_size_finngen_16111549","q8 cache only (optional serving layer)","framed-gzip","q8",16111549,128881187,7.99930453614361,5,"Optional q8 values cache; not standalone without the q9 spine",0.329023029235051,0.101235328507151
+"compressor_storage_size_finngen_16111549","q9 shared-reference + q8 cache","combined","standard+q8",16111549,680304547,42.2246518320492,5,"Durable q9 store plus optional q8 cache and shared spine",1.73676133861429,0.534374767206742

@@ -1,3 +1,16 @@
+# CompreSSoR 0.2.0
+
+- Makes the self-contained Pcodec Z9/EAF8/SE6 format the default backend.
+- Adds public import, GRCh38 liftover, conservative BP-style harmonisation,
+  compression, decompression, projection, regional/sparse reads, and full
+  integrity validation.
+- Adds lossless GRCh38 position/REF/ALT identity keys without per-row rsIDs or
+  a decode-time reference dependency.
+- Adds block-aligned exception frames, per-frame and per-file SHA-256 checks,
+  atomic store replacement, and a compiled full-scan bridge reader.
+- Adds adversarial input/codec tests and five-repeat full-FinnGen API
+  benchmarks on the Mac mini.
+
 # CompreSSoR 0.1.0
 
 Initial standalone package release candidate.

@@ -1,0 +1,293 @@
+pcodec_test_python <- function() {
+  candidates <- c(
+    getOption("CompreSSoR.python", NULL),
+    Sys.getenv("COMPRESSOR_PYTHON", unset = ""),
+    Sys.which("python3"), Sys.which("python")
+  )
+  candidates <- unique(candidates[nzchar(candidates)])
+  for (candidate in candidates) {
+    resolved <- if (grepl("[/\\\\]", candidate)) candidate else Sys.which(candidate)
+    if (!nzchar(resolved) || !file.exists(resolved)) next
+    old <- getOption("CompreSSoR.python")
+    options(CompreSSoR.python = resolved)
+    ok <- tryCatch({
+      CompreSSoR:::pcodec_invocation(refresh = TRUE)
+      TRUE
+    }, error = function(e) FALSE)
+    options(CompreSSoR.python = old)
+    if (ok) return(resolved)
+  }
+  NULL
+}
+
+test_that("Pcodec is the default self-contained backend", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(2000L)
+  path <- file.path(tempdir(), "pcodec-default.cpr")
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  expect_equal(store$manifest$backend, "pcodec")
+  expect_equal(store$manifest$variant_storage, "self_contained_identity_key")
+  expect_false(file.exists(file.path(path, "variants.parquet")))
+  expect_true(validate_compressor(store)$valid)
+  expect_true(validate_compressor(store, full = TRUE)$valid)
+
+  got <- read_sumstats(store)
+  expect_equal(nrow(got), nrow(input))
+  expect_false("variant_id" %in% names(got))
+  expect_equal(got[c("chromosome", "base_pair_location", "effect_allele", "other_allele")],
+               input[c("chromosome", "base_pair_location", "effect_allele", "other_allele")])
+  expect_equal(got$effect_allele_frequency, input$effect_allele_frequency, tolerance = 0.006)
+  expect_lt(max(abs(got$beta - input$beta), na.rm = TRUE), 0.02)
+  expect_lt(max(abs(got$standard_error - input$standard_error), na.rm = TRUE), 0.01)
+
+  old_native <- getOption("CompreSSoR.native_bridge")
+  options(CompreSSoR.native_bridge = FALSE)
+  fallback <- read_sumstats(store)
+  options(CompreSSoR.native_bridge = old_native)
+  expect_equal(got, fallback, tolerance = 1e-12)
+
+  regional <- read_sumstats(store, region = "chr1:100100-100150",
+                            columns = c("chromosome", "base_pair_location", "z", "beta",
+                                         "standard_error", "effect_allele_frequency", "p_value"))
+  expected <- input[input$chromosome == "1" & input$base_pair_location >= 100100L &
+                      input$base_pair_location <= 100150L, , drop = FALSE]
+  expect_equal(nrow(regional), nrow(expected))
+  expect_true(all(regional$base_pair_location >= 100100L & regional$base_pair_location <= 100150L))
+
+  selected <- read_sumstats(store, variants = c(0L, nrow(input) - 1L),
+                            columns = c("base_pair_location", "z", "beta"))
+  expect_equal(nrow(selected), 2L)
+  identity_only <- read_sumstats(store, variants = 0L, columns = "chromosome")
+  expect_identical(names(identity_only), "chromosome")
+  expect_error(read_sumstats(store, variants = 1.5), "whole-number")
+})
+
+test_that("Pcodec convert mode requires an explicit REF/ALT assertion", {
+  input <- make_fixture(5L)
+  expect_error(
+    compress_sumstats(input, tempfile(), reference = NULL, mode = "convert",
+                      overwrite = TRUE),
+    "assume_grch38_ref_alt"
+  )
+  expect_error(
+    compress_sumstats(input, tempfile(), reference = input, mode = "qc",
+                      drop_unresolved = FALSE, overwrite = TRUE),
+    "cannot retain unresolved"
+  )
+})
+
+test_that("Pcodec validation detects corruption in a payload", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+  input <- make_fixture(1000L)
+  path <- file.path(tempdir(), "pcodec-corrupt.cpr")
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  z_path <- file.path(path, store$manifest$files$z)
+  con <- file(z_path, open = "r+b")
+  on.exit(try(close(con), silent = TRUE), add = TRUE)
+  offset <- floor(file.info(z_path)$size / 2)
+  seek(con, where = offset, origin = "start")
+  byte <- readBin(con, "raw", n = 1L)
+  seek(con, where = offset, origin = "start")
+  writeBin(as.raw(bitwXor(as.integer(byte), 1L)), con)
+  close(con)
+  result <- validate_compressor(path)
+  expect_false(result$valid)
+  expect_match(result$errors, "checksum")
+})
+
+test_that("Pcodec rejects unsupported exact and extras requests clearly", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+  input <- make_fixture(20L)
+  expect_error(
+    compress_sumstats(input, tempfile(), reference = NULL, mode = "convert",
+                      profile = "exact", assume_grch38_ref_alt = TRUE,
+                      overwrite = TRUE),
+    "backend='parquet'"
+  )
+  expect_error(
+    compress_sumstats(input, tempfile(), reference = NULL, mode = "convert",
+                      keep_extras = TRUE, assume_grch38_ref_alt = TRUE,
+                      overwrite = TRUE),
+    "core summary-statistics"
+  )
+})
+
+test_that("Pcodec drops and audits identities outside its SNV contract", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(3L)
+  input$chromosome <- c("1", "1", "MT")
+  input$effect_allele <- c("A", "AT", "G")
+  input$other_allele <- c("C", "A", "T")
+  path <- tempfile("pcodec-supported-identities-")
+  store <- compress_sumstats(
+    input, path, reference = NULL, mode = "convert",
+    assume_grch38_ref_alt = TRUE, overwrite = TRUE
+  )
+  expect_equal(store$manifest$n_rows, 1L)
+  expect_equal(store$manifest$harmonisation$alignment$unsupported_pcodec_rows, 2L)
+  expect_equal(store$manifest$harmonisation$alignment$dropped_unsupported_pcodec, 2L)
+  expect_equal(read_sumstats(store)$base_pair_location, input$base_pair_location[1L])
+
+  expect_error(
+    compress_sumstats(
+      input, tempfile(), reference = NULL, mode = "convert", strict = TRUE,
+      assume_grch38_ref_alt = TRUE, overwrite = TRUE
+    ),
+    "unsupported row"
+  )
+})
+
+test_that("Pcodec handles spaces and failed overwrites atomically", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(100L)
+  path <- file.path(tempdir(), "pcodec store with spaces.cpr")
+  unlink(path, recursive = TRUE, force = TRUE)
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  expect_true(validate_compressor(store)$valid)
+  manifest_before <- readLines(file.path(path, "manifest.json"), warn = FALSE)
+
+  broken <- rbind(input, input[1L, , drop = FALSE])
+  expect_error(
+    compress_sumstats(broken, path, reference = NULL, mode = "convert",
+                      assume_grch38_ref_alt = TRUE, overwrite = TRUE),
+    "duplicate full REF/ALT identity keys"
+  )
+  expect_identical(readLines(file.path(path, "manifest.json"), warn = FALSE),
+                   manifest_before)
+  expect_true(validate_compressor(path)$valid)
+})
+
+test_that("Pcodec rejects altered manifests before native decoding", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(100L)
+  path <- tempfile("pcodec-manifest-contract-")
+  compress_sumstats(input, path, reference = NULL, mode = "convert",
+                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  manifest_path <- file.path(path, "manifest.json")
+  manifest <- CompreSSoR:::read_manifest(manifest_path)
+  manifest$semantic_codec$eaf_bits <- 1L
+  CompreSSoR:::write_manifest(manifest, manifest_path)
+  CompreSSoR:::seal_pcodec_manifest(manifest_path)
+
+  result <- validate_compressor(path, full = TRUE)
+  expect_false(result$valid)
+  expect_match(result$errors, "semantic codec constants")
+
+  manifest$semantic_codec$eaf_bits <- 8L
+  manifest$semantic_codec$z_range <- c(-35, 35)
+  CompreSSoR:::write_manifest(manifest, manifest_path)
+  expect_error(open_compressor(path), "manifest checksum mismatch")
+})
+
+test_that("projected full reads avoid unrelated durable streams", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(500L)
+  path <- tempfile("pcodec-projection-")
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  eaf <- file.path(path, store$manifest$files$eaf)
+  key <- file.path(path, store$manifest$files$key_gap)
+  hidden_eaf <- paste0(eaf, ".hidden")
+  hidden_key <- paste0(key, ".hidden")
+  expect_true(file.rename(eaf, hidden_eaf))
+  expect_true(file.rename(key, hidden_key))
+  on.exit({
+    if (file.exists(hidden_eaf)) file.rename(hidden_eaf, eaf)
+    if (file.exists(hidden_key)) file.rename(hidden_key, key)
+  }, add = TRUE)
+
+  z <- read_sumstats(store, columns = "z")
+  expect_identical(names(z), "z")
+  expect_equal(nrow(z), nrow(input))
+})
+
+test_that("whole, fallback, regional and sparse exception reads agree", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- getOption("CompreSSoR.python")
+  options(CompreSSoR.python = python)
+  on.exit(options(CompreSSoR.python = old), add = TRUE)
+
+  input <- make_fixture(20L)
+  input$z <- input$beta / input$standard_error
+  input$standard_error[10L] <- 1000
+  input$z[10L] <- 100
+  input$beta[10L] <- 100000
+  path <- tempfile("pcodec-access-parity-")
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  columns <- c("z", "beta", "standard_error", "effect_allele_frequency", "p_value")
+  whole <- read_sumstats(store, columns = columns)
+  old_native <- getOption("CompreSSoR.native_bridge")
+  options(CompreSSoR.native_bridge = FALSE)
+  fallback <- read_sumstats(store, columns = columns)
+  options(CompreSSoR.native_bridge = old_native)
+  regional <- read_sumstats(
+    store,
+    region = paste0("chr1:", input$base_pair_location[10L], "-", input$base_pair_location[10L]),
+    columns = columns
+  )
+  sparse <- read_sumstats(store, variants = 9L, columns = columns)
+  expected <- whole[10L, , drop = FALSE]
+  row.names(expected) <- NULL
+
+  expect_equal(whole, fallback, tolerance = 1e-12)
+  expect_equal(regional, expected, tolerance = 1e-12)
+  expect_equal(sparse, expected, tolerance = 1e-12)
+})
+
+test_that("native bridge fails closed on hostile codec domains", {
+  bridge <- tempfile("pcodec-hostile-bridge-")
+  dir.create(bridge)
+  writeBin(as.raw(0L), file.path(bridge, "se_code.bin"))
+  writeBin(as.raw(255L), file.path(bridge, "eaf_code.bin"))
+  file.create(file.path(bridge, "exception_row.bin"),
+              file.path(bridge, "exception_z.bin"),
+              file.path(bridge, "exception_se.bin"),
+              file.path(bridge, "exception_eaf.bin"),
+              file.path(bridge, "exception_flags.bin"))
+  hostile_call <- function() .Call(
+    "compressor_read_pcodec_bridge", normalizePath(bridge), "standard_error",
+    1, 0, -3.5, 3.5, 510L, 62L, 1L, 65536L,
+    PACKAGE = "CompreSSoR"
+  )
+  for (i in seq_len(20L)) {
+    expect_error(hostile_call(), "codec constants are invalid")
+  }
+})

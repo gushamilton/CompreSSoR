@@ -19,11 +19,26 @@ jobs:
         r: [release]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Pcodec runtime
+        run: python -m pip install numpy==1.26.4 pcodec==1.0.3 zstandard==0.25.0
+      - name: Run Pcodec adversarial tests
+        run: python scripts/test_pcodec_backend.py
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: ${{ matrix.r }}
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           needs: check
-          extra-packages: any::rcmdcheck
+          extra-packages: |
+            any::rcmdcheck
+            any::arrow
+            any::dplyr
+            bioc::rtracklayer
+            bioc::GenomicRanges
+            bioc::IRanges
       - uses: r-lib/actions/check-r-package@v2
+        env:
+          COMPRESSOR_PYTHON: python

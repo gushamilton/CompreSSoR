@@ -14,3 +14,8 @@ decompress_sumstats(store, region = NULL, variants = NULL, columns = NULL,
   \item{use_cache}{Use an existing q8 cache for a regional read when available.}
 }
 \value{A data frame with ordinary summary-statistics columns.}
+\examples{
+\dontrun{
+decoded <- decompress_sumstats("gwas.cpr")
+}
+}

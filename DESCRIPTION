@@ -1,28 +1,35 @@
 Package: CompreSSoR
 Type: Package
-Title: Reference-Anchored Compressed Summary Statistics
-Version: 0.1.0
+Title: Compressed GWAS Summary Statistics
+Version: 0.2.0
 Authors@R: person("Fergus", "Hamilton", role = c("aut", "cre"),
     email = "fh6520@users.noreply.github.com")
 Author: Fergus Hamilton [aut, cre]
 Maintainer: Fergus Hamilton <fh6520@users.noreply.github.com>
 Description: Convert genome-wide association study summary statistics into a
-    reference-anchored, block-indexed Parquet store with compact q9/SE10
-    numeric encoding, exact p-values, validation metadata, and an optional
-    q8 framed binary cache for repeated regional and MR access.
+    compact, block-indexed Pcodec store with a self-contained GRCh38 variant
+    identity key, semantic Z/EAF/SE encoding, and explicit import, liftover,
+    allele-harmonisation, decompression, and validation tools. P-values and
+    beta are reconstructed on demand; Parquet remains available as an
+    interoperability backend.
 URL: https://github.com/gushamilton/CompreSSoR
 BugReports: https://github.com/gushamilton/CompreSSoR/issues
 License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
 Imports:
-    arrow (>= 23.0.0),
     data.table (>= 1.15.0),
     digest,
-    dplyr,
     jsonlite
 Suggests:
-    testthat (>= 3.0.0)
+    arrow (>= 23.0.0),
+    dplyr,
+    testthat (>= 3.0.0),
+    rtracklayer,
+    GenomicRanges,
+    IRanges
 Config/testthat/edition: 3
+SystemRequirements: Python (>= 3.10) with numpy, pcodec, and zstandard for the
+    default Pcodec backend
+NeedsCompilation: yes
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3

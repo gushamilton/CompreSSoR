@@ -83,20 +83,48 @@ variant_set_membership <- function(data, panel) {
 }
 
 prepare_sumstats_data <- function(raw, reference, mode = c("qc", "convert", "all", "core", "hm3"),
-                                  variant_set = NULL, strict = FALSE, chrom_threads = 1L) {
+                                  variant_set = NULL, strict = FALSE, chrom_threads = 1L,
+                                  drop_unresolved = TRUE, input_build = "GRCh38", chain = NULL) {
   requested_mode <- match.arg(mode)
   effective_mode <- if (requested_mode == "all") "qc" else requested_mode
   if (effective_mode %in% c("core", "hm3") && is.null(variant_set)) {
     stop("mode='", requested_mode, "' requires variant_set = a core/HM3 panel file or data.frame", call. = FALSE)
   }
   alignment_reference <- if (effective_mode == "convert") NULL else reference
-  alignment <- if (!is.null(alignment_reference) && as.integer(chrom_threads) > 1L) {
-    harmonise_by_chromosome(raw, alignment_reference, strict = strict, preserve = TRUE,
+  if (effective_mode != "convert" && is.null(alignment_reference)) {
+    stop("reference is required for harmonised CompreSSoR conversion; use mode='convert' explicitly to bypass it",
+         call. = FALSE)
+  }
+  had_coordinate <- !is.na(raw$chromosome) & nzchar(raw$chromosome) &
+    !is.na(raw$base_pair_location) & raw$base_pair_location >= 1L
+  raw <- lift_table_to_grch38(raw, input_build = input_build, chain = chain)
+  if (!is.null(alignment_reference)) {
+    build <- toupper(gsub("[. -]", "", as.character(input_build %||% "GRCh38")))
+    eligible_alias <- if (build %in% c("GRCH38", "HG38", "38")) {
+      rep(TRUE, nrow(raw))
+    } else {
+      !had_coordinate
+    }
+    raw <- resolve_sumstats_aliases(raw, alignment_reference, eligible = eligible_alias)
+    resolved_alias <- raw$.compressor_reference_alias_status == "resolved"
+    raw$.compressor_liftover_status[resolved_alias] <- "resolved_by_grch38_alias"
+  }
+  partitioned_reference <- !is.null(alignment_reference) &&
+    is_partitioned_reference(alignment_reference)
+  alignment <- if (!is.null(alignment_reference) &&
+                  (as.integer(chrom_threads) > 1L || partitioned_reference)) {
+    harmonise_by_chromosome(raw, alignment_reference, strict = strict,
+                            preserve = !isTRUE(drop_unresolved),
                             chrom_threads = chrom_threads)
   } else {
-    harmonise_to_reference(raw, alignment_reference, strict = strict, preserve = TRUE)
+    harmonise_to_reference(raw, alignment_reference, strict = strict,
+                           preserve = !isTRUE(drop_unresolved))
   }
   data <- alignment$data
+  alias_status <- raw$.compressor_reference_alias_status %||% rep("not_attempted", nrow(raw))
+  liftover_status <- raw$.compressor_liftover_status %||% rep("not_needed", nrow(raw))
+  alignment$alignment_stats$alias_resolution <- as.list(table(alias_status, useNA = "ifany"))
+  alignment$alignment_stats$liftover <- as.list(table(liftover_status, useNA = "ifany"))
   filter_stats <- list(name = "all", input_rows = nrow(data), kept_rows = nrow(data), dropped_rows = 0L)
   if (effective_mode %in% c("core", "hm3")) {
     panel <- read_variant_set(variant_set)

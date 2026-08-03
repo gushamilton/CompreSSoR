@@ -4,4 +4,9 @@
 *.tar.gz
 *.tar.*
 .local/
+src/*.o
+src/*.so
+src/symbols.rds
+__pycache__/
+*.pyc
 .DS_Store

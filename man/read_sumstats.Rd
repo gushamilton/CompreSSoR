@@ -14,4 +14,11 @@ read_sumstats(store, region = NULL, variants = NULL, columns = NULL,
   \item{use_cache}{Use an existing q8 cache for a regional read when available.}
 }
 \value{A data frame with ordinary summary-statistics columns.}
+\examples{
+\dontrun{
+store <- open_compressor("gwas.cpr")
+read_sumstats(store, region = "chr1:1000000-2000000",
+              columns = c("beta", "standard_error", "p_value"))
+}
+}
 \seealso{\link{compress_sumstats}, \link{decompress_sumstats}}

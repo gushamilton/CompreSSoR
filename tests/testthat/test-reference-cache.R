@@ -1,4 +1,5 @@
 test_that("reference descriptors download, cache and enter the manifest", {
+  skip_if_not_installed("arrow")
   source_path <- tempfile(fileext = ".tsv")
   writeLines(c(
     "variant_id\tchromosome\tbase_pair_location\teffect_allele\tother_allele",
@@ -29,7 +30,7 @@ test_that("reference descriptors download, cache and enter the manifest", {
     standard_error = c(0.1, 0.2), stringsAsFactors = FALSE
   )
   store <- compress_sumstats(input, tempfile("reference-store-"),
-                             reference = resolved, overwrite = TRUE)
+                             reference = resolved, backend = "parquet", overwrite = TRUE)
   expect_equal(store$manifest$reference$id, "fixture-reference")
   expect_equal(store$manifest$reference$rows, 2L)
   expect_true(file.exists(store$manifest$reference$normalized_cache_path))
@@ -38,7 +39,7 @@ test_that("reference descriptors download, cache and enter the manifest", {
 test_that("the built-in reference is an external, pinned descriptor", {
   reference <- grch38_reference()
   expect_equal(reference$build, "GRCh38")
-  expect_true(grepl("1kg_dbsnp151_hg38_auto", reference$variants$filename))
-  expect_true(nzchar(reference$variants$md5))
-  expect_true(grepl("gwaslab", reference$source_url, ignore.case = TRUE))
+  expect_equal(reference$id, "ebi_ensembl95_grch38_all_v1")
+  expect_null(reference$variants)
+  expect_error(resolve_reference(reference), "build_ebi_reference")
 })
