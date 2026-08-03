@@ -77,7 +77,15 @@ pcodec_invocation <- function(refresh = FALSE) {
   for (probe in probes) {
     status <- suppressWarnings(system2(
       probe$command,
-      shQuote(c(probe$prefix, "-c", "import numpy, pcodec, zstandard")),
+      shQuote(c(
+        probe$prefix, "-c",
+        paste(
+          "import sys; assert sys.version_info >= (3, 10);",
+          "import numpy, pcodec, zstandard;",
+          "from pcodec.wrapped import FileCompressor, FileDecompressor;",
+          "assert hasattr(FileCompressor, 'write_header')"
+        )
+      )),
       stdout = FALSE, stderr = FALSE
     ))
     if (identical(as.integer(status), 0L)) {
@@ -89,6 +97,176 @@ pcodec_invocation <- function(refresh = FALSE) {
   stop("The selected Python cannot import numpy, pcodec, and zstandard; install them together in one environment or select another interpreter with COMPRESSOR_PYTHON",
        call. = FALSE)
 }
+
+pcodec_worker_enabled <- function() {
+  isTRUE(getOption("CompreSSoR.persistent_worker", TRUE)) &&
+    requireNamespace("processx", quietly = TRUE)
+}
+
+pcodec_stop_worker <- function() {
+  worker <- .pcodec_state$worker %||% NULL
+  if (!is.null(worker)) {
+    if (isTRUE(tryCatch(worker$is_alive(), error = function(...) FALSE))) {
+      try(worker$write_input('{"id":0,"command":"shutdown"}\n'), silent = TRUE)
+      try(worker$poll_io(100L), silent = TRUE)
+      if (isTRUE(tryCatch(worker$is_alive(), error = function(...) FALSE))) {
+        try(worker$kill(), silent = TRUE)
+      }
+    }
+    .pcodec_state$worker <- NULL
+    .pcodec_state$worker_key <- NULL
+    .pcodec_state$worker_checked_at <- NULL
+  }
+  invisible(NULL)
+}
+
+pcodec_worker_read_line <- function(worker, timeout = 30000L) {
+  deadline <- unname(proc.time()[["elapsed"]]) + as.numeric(timeout) / 1000
+  connection <- worker$get_output_connection()
+  # processx's high-level read/poll cycle has an approximately 8 ms fixed cost
+  # on macOS.  Sparse Pcodec reads normally finish inside 2 ms, so directly
+  # inspect the pipe for a short bounded interval before entering normal polls.
+  # Long scans still sleep in poll_io() and therefore do not busy-wait.
+  spin_ms <- getOption("CompreSSoR.worker_spin_ms", 0)
+  spin_ms <- max(0, min(10, as.numeric(spin_ms)))
+  spin_deadline <- min(deadline, unname(proc.time()[["elapsed"]]) + spin_ms / 1000)
+  repeat {
+    lines <- processx::conn_read_lines(connection, n = 1L)
+    if (length(lines)) return(lines[[1L]])
+    if (!worker$is_alive()) {
+      error <- paste(worker$read_error_lines(), collapse = "\n")
+      if (!nzchar(error)) error <- "Pcodec worker stopped unexpectedly"
+      stop(error, call. = FALSE)
+    }
+    now <- unname(proc.time()[["elapsed"]])
+    remaining <- deadline - now
+    if (remaining <= 0) stop("timed out waiting for the Pcodec worker", call. = FALSE)
+    if (now < spin_deadline) next
+    break
+  }
+  # Switch back to processx's buffered reader after the low-latency window.
+  # Keeping the two modes separate avoids losing a response when poll_io()
+  # buffers output from a longer-running request.
+  repeat {
+    lines <- worker$read_output_lines()
+    if (length(lines)) return(lines[[1L]])
+    if (!worker$is_alive()) {
+      error <- paste(worker$read_error_lines(), collapse = "\n")
+      if (!nzchar(error)) error <- "Pcodec worker stopped unexpectedly"
+      stop(error, call. = FALSE)
+    }
+    remaining <- deadline - unname(proc.time()[["elapsed"]])
+    if (remaining <= 0) stop("timed out waiting for the Pcodec worker", call. = FALSE)
+    poll_ms <- getOption("CompreSSoR.worker_poll_ms", 1L)
+    poll_ms <- max(1L, min(10L, as.integer(poll_ms)))
+    worker$poll_io(as.integer(min(poll_ms, ceiling(remaining * 1000))))
+  }
+}
+
+pcodec_worker <- function() {
+  worker <- .pcodec_state$worker %||% NULL
+  now <- unname(proc.time()[["elapsed"]])
+  if (!is.null(worker) &&
+      isTRUE(tryCatch(worker$is_alive(), error = function(...) FALSE)) &&
+      now - (.pcodec_state$worker_checked_at %||% -Inf) < 1) {
+    return(worker)
+  }
+  invocation <- pcodec_invocation()
+  script <- pcodec_script()
+  script_info <- file.info(script)
+  worker_key <- paste(
+    invocation$command, paste(invocation$prefix, collapse = "\037"), script,
+    script_info$size, as.numeric(script_info$mtime), Sys.getpid(), sep = "|"
+  )
+  if (!is.null(worker) && identical(.pcodec_state$worker_key %||% NULL, worker_key) &&
+      isTRUE(tryCatch(worker$is_alive(), error = function(...) FALSE))) {
+    .pcodec_state$worker_checked_at <- now
+    return(worker)
+  }
+  pcodec_stop_worker()
+  worker <- processx::process$new(
+    invocation$command,
+    c(invocation$prefix, "-u", script, "serve"),
+    stdin = "|", stdout = "|", stderr = "|",
+    cleanup = TRUE, cleanup_tree = TRUE
+  )
+  ready <- tryCatch(
+    jsonlite::fromJSON(pcodec_worker_read_line(worker), simplifyVector = FALSE),
+    error = function(error) {
+      try(worker$kill(), silent = TRUE)
+      stop(conditionMessage(error), call. = FALSE)
+    }
+  )
+  if (!identical(ready$format, "CompreSSoR-worker") ||
+      !identical(as.integer(ready$version), 1L) || !isTRUE(ready$ready)) {
+    try(worker$kill(), silent = TRUE)
+    stop("Pcodec worker returned an invalid startup response", call. = FALSE)
+  }
+  .pcodec_state$worker <- worker
+  .pcodec_state$worker_key <- worker_key
+  .pcodec_state$worker_checked_at <- now
+  .pcodec_state$worker_request <- 0L
+  worker
+}
+
+pcodec_worker_request <- function(payload, timeout = 300000L) {
+  worker <- pcodec_worker()
+  request_id <- as.integer((.pcodec_state$worker_request %||% 0L) + 1L)
+  .pcodec_state$worker_request <- request_id
+  payload$id <- request_id
+  request <- jsonlite::toJSON(
+    payload, auto_unbox = TRUE, null = "null", digits = NA
+  )
+  tryCatch(
+    worker$write_input(paste0(request, "\n")),
+    error = function(error) {
+      pcodec_stop_worker()
+      stop("could not write to the Pcodec worker: ", conditionMessage(error),
+           call. = FALSE)
+    }
+  )
+  response <- tryCatch(
+    jsonlite::fromJSON(
+      pcodec_worker_read_line(worker, timeout = timeout), simplifyVector = FALSE
+    ),
+    error = function(error) {
+      pcodec_stop_worker()
+      stop(conditionMessage(error), call. = FALSE)
+    }
+  )
+  if (!identical(as.integer(response$id), request_id)) {
+    pcodec_stop_worker()
+    stop("Pcodec worker response ID did not match its request", call. = FALSE)
+  }
+  if (!isTRUE(response$ok)) {
+    stop(response$error %||% "Pcodec worker request failed", call. = FALSE)
+  }
+  response$result
+}
+
+pcodec_open_store_cached <- function(store) {
+  if (inherits(store, "compressor_store")) return(store)
+  path <- normalizePath(store, mustWork = FALSE)
+  manifest_path <- file.path(path, "manifest.json")
+  checksum_path <- file.path(path, "manifest.sha256")
+  info <- file.info(c(manifest_path, checksum_path))
+  if (anyNA(info$size)) return(open_compressor(path))
+  fingerprint <- paste(info$size, as.numeric(info$mtime), collapse = "|")
+  cache <- .pcodec_state$store_cache %||% list()
+  entry <- cache[[path]] %||% NULL
+  if (!is.null(entry) && identical(entry$fingerprint, fingerprint)) {
+    return(entry$store)
+  }
+  opened <- open_compressor(path)
+  cache[[path]] <- list(fingerprint = fingerprint, store = opened)
+  if (length(cache) > 32L) cache <- cache[seq.int(length(cache) - 31L, length(cache))]
+  .pcodec_state$store_cache <- cache
+  opened
+}
+
+reg.finalizer(.pcodec_state, function(environment) {
+  try(pcodec_stop_worker(), silent = TRUE)
+}, onexit = TRUE)
 
 pcodec_tempdir <- function(preferred = NULL) {
   configured <- getOption("CompreSSoR.tempdir", NULL) %||%
@@ -163,7 +341,11 @@ pcodec_write_store <- function(data, output, metadata = list()) {
   manifest$derived_columns <- list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))")
   manifest$source_columns <- metadata$source_columns %||% names(data)
   manifest$codec <- list(
-    name = "pcodec_z9_eaf8_se6_block_framed",
+    name = if (identical(manifest$format_version, "0.3.0-pcodec")) {
+      "pcodec_wrapped_z9_eaf8_se6_paged"
+    } else {
+      "pcodec_z9_eaf8_se6_block_framed"
+    },
     library = "pcodec",
     key = "recursive_escaped_position_gap_plus_full_ref_alt_code",
     compression = "Pcodec per independent numerical stream; block-framed Zstandard exceptions",
@@ -325,27 +507,46 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
                       stringsAsFactors = FALSE)
   } else {
     bounds <- read_region_bounds(region)
-    args <- c("read", "--store", normalizePath(store$path, mustWork = TRUE),
-              "--output", (output_path <- tempfile(
-                "compressor-pcodec-read-", tmpdir = pcodec_tempdir(dirname(store$path)),
-                fileext = ".bridge"
-              )), "--output-format", "binary")
+    output_path <- tempfile(
+      "compressor-pcodec-read-", tmpdir = pcodec_tempdir(),
+      fileext = ".bridge"
+    )
     on.exit(unlink(output_path, recursive = TRUE, force = TRUE), add = TRUE)
-    if (key_variants) {
-      keys_path <- tempfile("compressor-pcodec-keys-", tmpdir = pcodec_tempdir(dirname(store$path)))
-      on.exit(unlink(keys_path, force = TRUE), add = TRUE)
-      writeLines(variants, keys_path, useBytes = TRUE)
-      args <- c(args, "--keys-file", keys_path)
-    } else if (!is.null(variants)) {
-      args <- c(args, "--rows", paste(variants, collapse = ","))
+    if (pcodec_worker_enabled()) {
+      pcodec_worker_request(list(
+        command = "read",
+        store = normalizePath(store$path, mustWork = TRUE),
+        output = output_path,
+        rows = if (!key_variants) unname(variants) else NULL,
+        keys = if (key_variants) unname(variants) else NULL,
+        chromosome = if (!is.null(bounds)) as.character(bounds$chromosome) else NULL,
+        start = if (!is.null(bounds)) as.integer(bounds$start) else NULL,
+        end = if (!is.null(bounds)) as.integer(bounds$end) else NULL,
+        columns = if (!is.null(columns)) unname(unique(columns)) else NULL
+      ))
+    } else {
+      args <- c("read", "--store", normalizePath(store$path, mustWork = TRUE),
+                "--output", output_path, "--output-format", "binary")
+      if (key_variants) {
+        keys_path <- tempfile(
+          "compressor-pcodec-keys-", tmpdir = pcodec_tempdir(dirname(store$path))
+        )
+        on.exit(unlink(keys_path, force = TRUE), add = TRUE)
+        writeLines(variants, keys_path, useBytes = TRUE)
+        args <- c(args, "--keys-file", keys_path)
+      } else if (!is.null(variants)) {
+        args <- c(args, "--rows", paste(variants, collapse = ","))
+      }
+      if (!is.null(bounds)) {
+        args <- c(args, "--chromosome", as.character(bounds$chromosome),
+                  "--start", as.character(as.integer(bounds$start)),
+                  "--end", as.character(as.integer(bounds$end)))
+      }
+      if (!is.null(columns)) {
+        args <- c(args, "--columns", paste(unique(columns), collapse = ","))
+      }
+      pcodec_run(args)
     }
-    if (!is.null(bounds)) {
-      args <- c(args, "--chromosome", as.character(bounds$chromosome),
-                "--start", as.character(as.integer(bounds$start)),
-                "--end", as.character(as.integer(bounds$end)))
-    }
-    if (!is.null(columns)) args <- c(args, "--columns", paste(unique(columns), collapse = ","))
-    pcodec_run(args)
     out <- read_pcodec_binary_bridge(output_path)
   }
   if ("row" %in% names(out)) out <- out[order(out$row), , drop = FALSE]
@@ -368,7 +569,7 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     stop("threads must be one positive integer", call. = FALSE)
   }
   stores <- lapply(stores, function(store) {
-    opened <- if (inherits(store, "compressor_store")) store else open_compressor(store)
+    opened <- pcodec_open_store_cached(store)
     if (!identical(opened$manifest$backend, "pcodec")) {
       stop("batched reads require Pcodec CompreSSoR stores", call. = FALSE)
     }
@@ -380,12 +581,10 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     }
     unique(trimws(keys))
   })
-  bridge_tmp <- pcodec_tempdir(dirname(stores[[1L]]$path))
-  request_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
-                           fileext = ".json")
+  bridge_tmp <- pcodec_tempdir()
   output_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
                           fileext = ".bridge")
-  on.exit(unlink(c(request_path, output_path), recursive = TRUE, force = TRUE), add = TRUE)
+  on.exit(unlink(output_path, recursive = TRUE, force = TRUE), add = TRUE)
   reads <- lapply(seq_along(stores), function(index) {
     list(
       store = jsonlite::unbox(normalizePath(stores[[index]]$path, mustWork = TRUE)),
@@ -393,23 +592,41 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
       columns = unname(unique(columns))
     )
   })
-  jsonlite::write_json(list(reads = reads), request_path, auto_unbox = FALSE)
-  pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
-               "--threads", as.character(as.integer(threads))))
-  response <- jsonlite::fromJSON(
-    file.path(output_path, "batch.json"), simplifyVector = FALSE
-  )
+  if (pcodec_worker_enabled()) {
+    response <- pcodec_worker_request(list(
+      command = "batch-read", output = output_path, reads = reads,
+      threads = as.integer(threads)
+    ))
+  } else {
+    request_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
+                             fileext = ".json")
+    on.exit(unlink(request_path, force = TRUE), add = TRUE)
+    jsonlite::write_json(list(reads = reads), request_path, auto_unbox = FALSE)
+    pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
+                 "--threads", as.character(as.integer(threads))))
+    response <- jsonlite::fromJSON(
+      file.path(output_path, "batch.json"), simplifyVector = FALSE
+    )
+  }
   if (!identical(response$format, "CompreSSoR-batch-bridge") ||
       length(response$reads) != length(stores)) {
     stop("Pcodec batch bridge response is malformed", call. = FALSE)
   }
-  lapply(seq_along(stores), function(index) {
+  bridge_ids <- vapply(seq_along(stores), function(index) {
     bridge <- as.integer(response$reads[[index]]$bridge)
     if (length(bridge) != 1L || is.na(bridge) || bridge < 0L ||
         bridge >= length(stores)) {
       stop("Pcodec batch bridge index is malformed", call. = FALSE)
     }
-    out <- read_pcodec_binary_bridge(file.path(output_path, bridge))
+    bridge
+  }, integer(1))
+  unique_bridges <- unique(bridge_ids)
+  decoded <- lapply(unique_bridges, function(bridge) {
+    read_pcodec_binary_bridge(file.path(output_path, bridge))
+  })
+  names(decoded) <- as.character(unique_bridges)
+  lapply(bridge_ids, function(bridge) {
+    out <- decoded[[as.character(bridge)]]
     if ("row" %in% names(out)) {
       out <- out[order(out$row), , drop = FALSE]
       out$row <- NULL

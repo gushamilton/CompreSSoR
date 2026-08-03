@@ -296,6 +296,9 @@ lift_table_to_grch38 <- function(data, input_build, chain = NULL) {
     data$.compressor_liftover_status <- rep("not_needed", nrow(data))
     return(data)
   }
+  if (!build %in% c("GRCH37", "HG19", "37")) {
+    stop("input_build must be GRCh37/hg19 or GRCh38/hg38", call. = FALSE)
+  }
   if (!requireNamespace("rtracklayer", quietly = TRUE)) {
     stop("liftover requires the Bioconductor package 'rtracklayer'", call. = FALSE)
   }
@@ -359,11 +362,26 @@ lift_table_to_grch38 <- function(data, input_build, chain = NULL) {
   out$base_pair_location[source_rows[not_one]] <- NA_integer_
   if (any(one)) {
     mapped <- unlist(lifted[one], use.names = FALSE)
-    mapped_rows <- source_rows[one]
-    out$chromosome[mapped_rows] <- sub(
+    mapped_rows_all <- source_rows[one]
+    mapped_chromosome <- sub(
       "^chr", "", as.character(GenomicRanges::seqnames(mapped)), ignore.case = TRUE
     )
-    out$base_pair_location[mapped_rows] <- GenomicRanges::start(mapped)
+    mapped_position <- GenomicRanges::start(mapped)
+    chromosome_limit <- unname(
+      compressor_grch38_chromosome_lengths[mapped_chromosome]
+    )
+    primary <- !is.na(chromosome_limit) & mapped_position >= 1L &
+      mapped_position <= chromosome_limit
+    if (any(!primary)) {
+      rejected <- mapped_rows_all[!primary]
+      out$.compressor_liftover_status[rejected] <- "non_primary_target"
+      out$chromosome[rejected] <- NA_character_
+      out$base_pair_location[rejected] <- NA_integer_
+    }
+    mapped_rows <- mapped_rows_all[primary]
+    mapped <- mapped[primary]
+    out$chromosome[mapped_rows] <- mapped_chromosome[primary]
+    out$base_pair_location[mapped_rows] <- mapped_position[primary]
     reverse <- as.character(GenomicRanges::strand(mapped)) == "-"
     if (any(reverse)) {
       rows <- mapped_rows[reverse]
@@ -678,14 +696,9 @@ harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = F
   ambiguous <- multi
   incompatible <- !unmatched & !multi & !is.na(key) &
     !(is_reference_allele(data$effect_allele) & is_reference_allele(data$other_allele))
-  # Palindromic strand matches are not resolvable from alleles alone. If both
-  # the study and reference carry EAF, accept only a clearly separated match.
-  ref_eaf <- ref$effect_allele_frequency[key]
-  same_error <- abs(data$effect_allele_frequency - ref_eaf)
-  flip_error <- abs((1 - data$effect_allele_frequency) - ref_eaf)
-  informative <- multi & is.finite(same_error) & is.finite(flip_error)
-  resolved_multi <- informative & abs(same_error - flip_error) > 0.1
-  ambiguous[resolved_multi] <- FALSE
+  # Palindromic strand matches cannot be proven from alleles. Population EAF
+  # differences are not strand evidence, so ambiguous A/T and C/G rows remain
+  # ambiguous and are dropped rather than risking an effect inversion.
   status <- rep("aligned", input_rows)
   status[unmatched] <- "unmatched"
   status[incompatible] <- "incompatible"
@@ -693,7 +706,6 @@ harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = F
   flip_flag <- (!is.na(key) & !is.na(reverse_i) & reverse_i == key) |
     (!is.na(key) & !is.na(complement_reverse_i) & complement_reverse_i == key)
   flip_flag[is.na(flip_flag)] <- FALSE
-  if (any(resolved_multi)) flip_flag[resolved_multi] <- flip_error[resolved_multi] < same_error[resolved_multi]
   flip_flag[unmatched | incompatible | ambiguous] <- FALSE
   aligned <- !unmatched & !incompatible & !ambiguous
 

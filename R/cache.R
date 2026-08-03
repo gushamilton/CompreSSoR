@@ -12,6 +12,10 @@
 #' @export
 build_cache <- function(store, output = NULL, block_rows = 65536L, overwrite = FALSE) {
   store <- if (inherits(store, "compressor_store")) store else open_compressor(store)
+  if (identical(store$manifest$backend, "pcodec")) {
+    stop("Pcodec stores are already independently paged and do not use q8 caches",
+         call. = FALSE)
+  }
   output <- output %||% file.path(store$path, "cache.q8")
   if (dir.exists(output)) {
     if (!overwrite) stop("cache already exists; use overwrite = TRUE", call. = FALSE)

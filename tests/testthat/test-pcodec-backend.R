@@ -33,8 +33,9 @@ test_that("Pcodec is the default self-contained backend", {
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
   expect_equal(store$manifest$backend, "pcodec")
   expect_equal(store$manifest$variant_storage, "self_contained_identity_key")
-  expect_equal(store$manifest$key_block_rows, 8192L)
-  expect_equal(store$manifest$value_block_rows, 32768L)
+  expect_equal(store$manifest$format_version, "0.3.0-pcodec")
+  expect_equal(store$manifest$key_block_rows, 4096L)
+  expect_equal(store$manifest$value_block_rows, 4096L)
   expect_equal(store$manifest$semantic_codec$se_center_block_rows, 65536L)
   expect_false(file.exists(file.path(path, "variants.parquet")))
   expect_true(validate_compressor(store)$valid)
@@ -134,6 +135,49 @@ test_that("batched canonical reads equal independent reads", {
   expect_equal(unname(observed), expected, tolerance = 1e-12)
   expect_error(read_sumstats_batch(path, keys[1L], threads = 0L),
                "positive integer")
+})
+
+test_that("persistent Pcodec worker is reused and restarts safely", {
+  python <- pcodec_test_python()
+  skip_if(is.null(python), "Pcodec Python dependencies are not available")
+  old <- options(
+    CompreSSoR.python = python,
+    CompreSSoR.persistent_worker = TRUE
+  )
+  CompreSSoR:::pcodec_stop_worker()
+  on.exit({
+    CompreSSoR:::pcodec_stop_worker()
+    options(old)
+  }, add = TRUE)
+
+  input <- make_fixture(100L)
+  path <- tempfile("pcodec-worker-")
+  compress_sumstats(input, path, reference = NULL, mode = "convert",
+                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  columns <- c("chromosome", "base_pair_location", "beta", "standard_error")
+  first <- read_sumstats(path, variants = 0:9, columns = columns)
+  worker <- get(".pcodec_state", asNamespace("CompreSSoR"))$worker
+  expect_true(worker$is_alive())
+  first_pid <- worker$get_pid()
+
+  second <- read_sumstats(path, variants = 0:9, columns = columns)
+  expect_equal(second, first, tolerance = 1e-12)
+  expect_identical(
+    get(".pcodec_state", asNamespace("CompreSSoR"))$worker$get_pid(),
+    first_pid
+  )
+
+  worker$kill()
+  restarted <- read_sumstats(path, variants = 0:9, columns = columns)
+  expect_equal(restarted, first, tolerance = 1e-12)
+  expect_false(identical(
+    get(".pcodec_state", asNamespace("CompreSSoR"))$worker$get_pid(),
+    first_pid
+  ))
+
+  options(CompreSSoR.persistent_worker = FALSE)
+  fallback <- read_sumstats(path, variants = 0:9, columns = columns)
+  expect_equal(fallback, first, tolerance = 1e-12)
 })
 
 test_that("Pcodec convert mode requires an explicit REF/ALT assertion", {
@@ -289,15 +333,14 @@ test_that("projected full reads avoid unrelated durable streams", {
   path <- tempfile("pcodec-projection-")
   store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  eaf <- file.path(path, store$manifest$files$eaf)
-  key <- file.path(path, store$manifest$files$key_gap)
-  hidden_eaf <- paste0(eaf, ".hidden")
-  hidden_key <- paste0(key, ".hidden")
-  expect_true(file.rename(eaf, hidden_eaf))
-  expect_true(file.rename(key, hidden_key))
+  unrelated <- file.path(
+    path, unlist(store$manifest$files[c("position", "eaf", "se")], use.names = FALSE)
+  )
+  hidden <- paste0(unrelated, ".hidden")
+  expect_true(all(file.rename(unrelated, hidden)))
   on.exit({
-    if (file.exists(hidden_eaf)) file.rename(hidden_eaf, eaf)
-    if (file.exists(hidden_key)) file.rename(hidden_key, key)
+    restore <- file.exists(hidden)
+    if (any(restore)) file.rename(hidden[restore], unrelated[restore])
   }, add = TRUE)
 
   z <- read_sumstats(store, columns = "z")

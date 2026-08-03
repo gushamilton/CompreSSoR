@@ -12,7 +12,7 @@ suppressPackageStartupMessages({
 
 store_path <- Sys.getenv(
   "COMPRESSOR_CANONICAL_BENCH_STORE",
-  "/Volumes/crucial_x9/CompreSSoR-benchmarks/finngen-full-pcodec-canonical.cpr"
+  "/Volumes/crucial_x9/CompreSSoR-benchmarks/finngen-full-pcodec-v03-release.cpr"
 )
 output_dir <- Sys.getenv(
   "COMPRESSOR_CANONICAL_BENCH_OUTPUT",
@@ -86,10 +86,19 @@ fwrite(records, file.path(output_dir, "pcodec-canonical-access-runs.csv"))
 write_json(list(
   schema_version = "1.0.0",
   measured_utc = format(Sys.time(), tz = "UTC", usetz = TRUE),
+  package_version = as.character(utils::packageVersion("CompreSSoR")),
+  source_revision = Sys.getenv(
+    "COMPRESSOR_BENCH_COMMIT",
+    system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE)
+  ),
   machine = Sys.info()[c("nodename", "sysname", "release", "machine")],
   store = list(
     rows = n,
     bytes = unname(store_bytes),
+    format_version = store$manifest$format_version,
+    chunk_rows = store$manifest$wrapped_codec$chunk_rows,
+    page_rows = store$manifest$wrapped_codec$page_rows,
+    index_version = store$manifest$wrapped_codec$index_version,
     key_block_rows = store$manifest$key_block_rows,
     value_block_rows = store$manifest$value_block_rows,
     first_key = keys[[1L]]

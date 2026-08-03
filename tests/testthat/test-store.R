@@ -1,6 +1,9 @@
 test_that("standard stores use semantic codes and omit P", {
   skip_if_not_installed("arrow")
   input <- make_fixture(120L)
+  # This test targets storage semantics, not palindromic harmonisation.
+  input$effect_allele <- "C"
+  input$other_allele <- "A"
   reference <- input[c("chromosome", "base_pair_location", "effect_allele",
                        "other_allele", "rsid", "effect_allele_frequency")]
   path <- file.path(tempdir(), "standard.cpr")

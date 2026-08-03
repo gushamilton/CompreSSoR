@@ -84,12 +84,15 @@ def main() -> None:
         expected = write_input(input_path)
         manifest = MODULE.write_store(input_path, output)
         assert manifest["backend"] == "pcodec"
+        assert manifest["format_version"] == MODULE.VERSION
         assert manifest["identity"]["external_reference_required"] is False
 
-        key_index = json.loads((output / "key.index.json").read_text())
-        decoded_keys = []
-        for frame in key_index:
-            decoded_keys.extend(MODULE.decode_key_frame(output, manifest, frame).tolist())
+        context = MODULE.WrappedStoreReader(output, manifest)
+        positions = context.stream("position").read_rows().astype(MODULE._dependencies()[0].uint64)
+        substitutions = context.stream("substitution").read_rows().astype(MODULE._dependencies()[0].uint64)
+        decoded_keys = ((positions << MODULE._dependencies()[0].uint64(4)) | substitutions).tolist()
+        key_frames = len(context.stream("position").pages)
+        context.close()
         source_keys, _ = MODULE.identity_keys(MODULE.read_tsv(input_path))
         assert decoded_keys == source_keys.tolist(), "identity key frame round-trip failed"
 
@@ -139,13 +142,142 @@ def main() -> None:
         assert [int(row["base_pair_location"]) for row in read_rows(boundary_out)] == boundary_positions
         assert MODULE.validate_store(boundary_store, full=True)["valid"]
 
+        # Wrapped v0.3 streams must preserve dense, boundary-crossing, and
+        # sparse access over several independent Pcodec pages.  This catches
+        # regressions in the optimized contiguous and grouped-sparse readers.
+        multipage_input = root / "multipage.tsv"
+        multipage_rows = 2 * MODULE.WRAPPED_PAGE_ROWS + 17
+        write_rows(multipage_input, (
+            ("1", pos, "C", "A", 0.1, 0.05, 0.2, 2.0)
+            for pos in range(1, multipage_rows + 1)
+        ))
+        multipage_store = root / "multipage-store"
+        multipage_manifest = MODULE.write_store(multipage_input, multipage_store)
+        np = MODULE._dependencies()[0]
+        multipage_context = MODULE.WrappedStoreReader(
+            multipage_store, multipage_manifest
+        )
+        position_stream = multipage_context.stream("position")
+        all_positions = position_stream.read_rows()
+        contiguous_rows = np.arange(
+            MODULE.WRAPPED_PAGE_ROWS - 2,
+            MODULE.WRAPPED_PAGE_ROWS + 3,
+            dtype=np.int64,
+        )
+        sparse_rows = np.asarray([
+            0, MODULE.WRAPPED_PAGE_ROWS - 1, MODULE.WRAPPED_PAGE_ROWS,
+            2 * MODULE.WRAPPED_PAGE_ROWS - 1,
+            2 * MODULE.WRAPPED_PAGE_ROWS, multipage_rows - 1,
+        ], dtype=np.int64)
+        assert np.array_equal(
+            position_stream.read_rows(contiguous_rows), all_positions[contiguous_rows]
+        )
+        assert np.array_equal(
+            position_stream.read_rows(sparse_rows), all_positions[sparse_rows]
+        )
+        multipage_context.close()
+        assert MODULE.validate_store(multipage_store, full=True)["valid"]
+
+        # Stream headers have their own index-protected CRC, so changing a
+        # header cannot survive merely by recomputing the manifest file digest.
+        header_store = root / "header-tamper-store"
+        shutil.copytree(multipage_store, header_store)
+        header_manifest = json.loads((header_store / "manifest.json").read_text())
+        header_path = header_store / header_manifest["files"]["z"]
+        header_blob = bytearray(header_path.read_bytes())
+        header_blob[0] ^= 0x01
+        header_path.write_bytes(header_blob)
+        header_manifest["integrity"]["files"][header_path.name] = {
+            "bytes": len(header_blob),
+            "sha256": MODULE.hashlib.sha256(header_blob).hexdigest(),
+        }
+        (header_store / "manifest.json").write_text(
+            json.dumps(header_manifest, indent=2) + "\n"
+        )
+        MODULE._seal_manifest(header_store)
+        try:
+            MODULE.read_store(header_store, root / "header-tamper.tsv", columns=["z"])
+        except ValueError as exc:
+            assert "header checksum" in str(exc)
+        else:
+            raise AssertionError("altered wrapped header was accepted")
+
+        # Every page must belong to the indexed chunk that physically contains
+        # it; non-full reads reject malformed references before page access.
+        chunk_store = root / "chunk-tamper-store"
+        shutil.copytree(multipage_store, chunk_store)
+        chunk_manifest = json.loads((chunk_store / "manifest.json").read_text())
+        chunk_index_path = chunk_store / chunk_manifest["files"]["z_index"]
+        chunk_blob = bytearray(chunk_index_path.read_bytes())
+        header_fields = MODULE.INDEX_HEADER.unpack_from(chunk_blob)
+        chunk_count = int(header_fields[-2])
+        first_page_offset = (
+            MODULE.INDEX_HEADER.size + chunk_count * MODULE.INDEX_CHUNK.size
+        )
+        page_fields = list(MODULE.INDEX_PAGE.unpack_from(chunk_blob, first_page_offset))
+        page_fields[-1] = chunk_count + 1
+        MODULE.INDEX_PAGE.pack_into(chunk_blob, first_page_offset, *page_fields)
+        chunk_index_path.write_bytes(chunk_blob)
+        chunk_manifest["integrity"]["files"][chunk_index_path.name] = {
+            "bytes": len(chunk_blob),
+            "sha256": MODULE.hashlib.sha256(chunk_blob).hexdigest(),
+        }
+        (chunk_store / "manifest.json").write_text(
+            json.dumps(chunk_manifest, indent=2) + "\n"
+        )
+        MODULE._seal_manifest(chunk_store)
+        try:
+            MODULE.read_store(chunk_store, root / "chunk-tamper.tsv", columns=["z"])
+        except ValueError as exc:
+            assert "page layout" in str(exc)
+        else:
+            raise AssertionError("out-of-range wrapped chunk reference was accepted")
+
+        # The substitution byte has a strict four-bit contract.  Values above
+        # 15 must not bleed into position bits and silently change identity.
+        substitution_store = root / "substitution-tamper-store"
+        shutil.copytree(multipage_store, substitution_store)
+        substitution_manifest = json.loads(
+            (substitution_store / "manifest.json").read_text()
+        )
+        substitution_context = MODULE.WrappedStoreReader(
+            substitution_store, substitution_manifest
+        )
+        substitution_values = substitution_context.stream("substitution").read_rows()
+        substitution_context.close()
+        substitution_values[0] = 16
+        substitution_metadata = MODULE._write_wrapped_stream(
+            substitution_store, "substitution", substitution_values
+        )
+        substitution_manifest["wrapped_codec"]["streams"]["substitution"] = (
+            substitution_metadata
+        )
+        for logical_name in ("substitution", "substitution_index"):
+            relative = substitution_manifest["files"][logical_name]
+            payload = (substitution_store / relative).read_bytes()
+            substitution_manifest["integrity"]["files"][relative] = {
+                "bytes": len(payload),
+                "sha256": MODULE.hashlib.sha256(payload).hexdigest(),
+            }
+        (substitution_store / "manifest.json").write_text(
+            json.dumps(substitution_manifest, indent=2) + "\n"
+        )
+        MODULE._seal_manifest(substitution_store)
+        try:
+            MODULE.validate_store(substitution_store, full=True)
+        except ValueError as exc:
+            assert "four bits" in str(exc)
+        else:
+            raise AssertionError("substitution code above 15 passed validation")
+
         dense_input = root / "dense.tsv"
         write_rows(dense_input, [
             ("1", pos, "C", "A", 0.1, 0.05, 0.2, 2.0)
             for pos in range(100, 106)
         ])
         dense_store = root / "dense-store"
-        MODULE.write_store(dense_input, dense_store)
+        dense_manifest = MODULE.write_store_v2(dense_input, dense_store)
+        assert dense_manifest["format_version"] == MODULE.VERSION_V2
         dense_out = root / "dense-out.tsv"
         MODULE.read_store(dense_store, dense_out)
         assert len(read_rows(dense_out)) == 6
@@ -168,7 +300,7 @@ def main() -> None:
             for pos in range(1, frame_rows + 1)
         ))
         frame_store = root / "frame-boundary-store"
-        frame_manifest = MODULE.write_store(frame_input, frame_store)
+        frame_manifest = MODULE.write_store_v2(frame_input, frame_store)
         assert len(json.loads((frame_store / frame_manifest["files"]["key_index"]).read_text())) == math.ceil(
             frame_rows / MODULE.KEY_BLOCK_ROWS
         )
@@ -328,8 +460,8 @@ def main() -> None:
         else:
             raise AssertionError("corrupted middle payload passed validation")
 
-        print(json.dumps({"valid": True, "rows": len(decoded), "frames": len(key_index),
-                          "adversarial_cases": 16}))
+        print(json.dumps({"valid": True, "rows": len(decoded), "frames": key_frames,
+                          "adversarial_cases": 20}))
 
 
 def dense_manifest_file(store: Path, name: str) -> str:

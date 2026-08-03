@@ -29,6 +29,9 @@ import re
 import struct
 import sys
 import tempfile
+import threading
+import zlib
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -70,9 +73,11 @@ GAP_ESCAPE_THRESHOLD = 510
 SECOND_GAP_ESCAPE = 65_535
 SECOND_GAP_ESCAPE_THRESHOLD = 65_534
 FORMAT = "CompreSSoR"
-VERSION = "0.2.0-pcodec"
+VERSION_V2 = "0.2.0-pcodec"
+VERSION = "0.3.0-pcodec"
 MANIFEST_CHECKSUM = "manifest.sha256"
-EXPECTED_FILES = {
+MAX_STORE_ROWS = 2**31 - 1
+EXPECTED_FILES_V2 = {
     "key_index": "key.index.json",
     "key_gap": "key.gap.frames",
     "key_gap_exceptions": "key.gap.exceptions.frames",
@@ -84,6 +89,28 @@ EXPECTED_FILES = {
     "se": "se.frames",
     "exceptions": "exceptions.frames",
 }
+WRAPPED_CHUNK_ROWS = 262_144
+WRAPPED_PAGE_ROWS = 4_096
+WRAPPED_PAGE_CACHE_PAGES = 64
+WRAPPED_STREAM_DTYPES = {
+    "position": ("u32", "<u4", 1),
+    "substitution": ("u8", "u1", 2),
+    "z": ("u16", "<u2", 3),
+    "eaf": ("u8", "u1", 2),
+    "se": ("u8", "u1", 2),
+}
+EXPECTED_FILES_V3 = {
+    **{name: f"{name}.pco" for name in WRAPPED_STREAM_DTYPES},
+    **{f"{name}_index": f"{name}.index" for name in WRAPPED_STREAM_DTYPES},
+    "exceptions": "exceptions.zst",
+}
+INDEX_MAGIC = b"CPRWIDX1"
+INDEX_VERSION = 2
+INDEX_FLAG_KEY_BOUNDS = 1
+INDEX_HEADER = struct.Struct("<8sBBHQIIIIII")
+INDEX_CHUNK = struct.Struct("<QIIII")
+INDEX_PAGE = struct.Struct("<QIIQII")
+INDEX_KEY_BOUNDS = struct.Struct("<QQ")
 
 
 def _dependencies():
@@ -128,13 +155,13 @@ def _validated_block_rows(value: Any, label: str) -> int:
     return block_rows
 
 
-def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
+def _validate_manifest_contract_v2(manifest: dict[str, Any]) -> None:
     """Reject altered decode-critical constants for the fixed v0.2 format."""
     if manifest.get("format") != FORMAT:
         raise ValueError("not a CompreSSoR store")
-    if manifest.get("format_version") != VERSION:
+    if manifest.get("format_version") != VERSION_V2:
         raise ValueError(
-            f"unsupported Pcodec format version: {manifest.get('format_version')!r}; expected {VERSION!r}"
+            f"unsupported Pcodec format version: {manifest.get('format_version')!r}; expected {VERSION_V2!r}"
         )
     if manifest.get("backend") != "pcodec" or manifest.get("profile") != "standard":
         raise ValueError("store is not a standard Pcodec store")
@@ -143,7 +170,7 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
         n_rows = int(manifest["n_rows"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("manifest row count is missing or invalid") from exc
-    if rows < 1 or n_rows != rows:
+    if rows < 1 or rows > MAX_STORE_ROWS or n_rows != rows:
         raise ValueError("manifest row counts disagree or are empty")
     key_block_rows = _validated_block_rows(
         manifest.get("key_block_rows"), "manifest key frame size"
@@ -196,13 +223,13 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
         raise ValueError("manifest semantic metadata is invalid") from exc
     if not finite_centers or exception_rows < 0 or exception_rows > rows:
         raise ValueError("manifest semantic metadata is outside the format contract")
-    if manifest.get("files") != EXPECTED_FILES:
+    if manifest.get("files") != EXPECTED_FILES_V2:
         raise ValueError("manifest file layout differs from the fixed Pcodec layout")
     integrity = manifest.get("integrity", {})
     records = integrity.get("files", {})
-    if integrity.get("algorithm") != "sha256" or set(records) != set(EXPECTED_FILES.values()):
+    if integrity.get("algorithm") != "sha256" or set(records) != set(EXPECTED_FILES_V2.values()):
         raise ValueError("manifest integrity table is incomplete")
-    for relative in EXPECTED_FILES.values():
+    for relative in EXPECTED_FILES_V2.values():
         record = records.get(relative, {})
         digest = record.get("sha256")
         try:
@@ -211,6 +238,116 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
             raise ValueError(f"manifest integrity size is invalid for {relative}") from exc
         if size < 0 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"manifest integrity record is invalid for {relative}")
+
+
+def _validate_manifest_contract_v3(manifest: dict[str, Any]) -> None:
+    if manifest.get("format") != FORMAT or manifest.get("format_version") != VERSION:
+        raise ValueError("store is not a supported wrapped Pcodec format")
+    if manifest.get("backend") != "pcodec" or manifest.get("profile") != "standard":
+        raise ValueError("store is not a standard Pcodec store")
+    try:
+        rows = int(manifest["rows"])
+        n_rows = int(manifest["n_rows"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("manifest row count is missing or invalid") from exc
+    if rows < 1 or rows > MAX_STORE_ROWS or n_rows != rows:
+        raise ValueError("manifest row counts disagree or are empty")
+    wrapped = manifest.get("wrapped_codec", {})
+    if not isinstance(wrapped, dict):
+        raise ValueError("manifest wrapped-codec metadata must be an object")
+    try:
+        wrapped_constants_valid = (
+            int(wrapped.get("chunk_rows", 0)) == WRAPPED_CHUNK_ROWS and
+            int(wrapped.get("page_rows", 0)) == WRAPPED_PAGE_ROWS and
+            wrapped.get("index_version") == INDEX_VERSION and
+            wrapped.get("integrity") == "CRC32 per page/meta/header; SHA256 per file"
+        )
+        page_geometry_valid = (
+            int(manifest.get("key_block_rows", 0)) == WRAPPED_PAGE_ROWS and
+            int(manifest.get("value_block_rows", 0)) == WRAPPED_PAGE_ROWS
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("manifest wrapped-codec constants are invalid") from exc
+    if not wrapped_constants_valid:
+        raise ValueError("manifest wrapped-codec constants differ from the format contract")
+    if not page_geometry_valid:
+        raise ValueError("manifest page geometry differs from the format contract")
+    identity = manifest.get("identity", {})
+    expected_identity = {
+        "encoding": "wrapped_global_position_plus_full_ref_alt_code",
+        "external_reference_required": False,
+        "chromosome_lengths": CHROM_LENGTHS,
+        "chromosome_offsets": chromosome_offsets(),
+        "effect_allele_is_alt": True,
+        "other_allele_is_ref": True,
+    }
+    if identity != expected_identity:
+        raise ValueError("manifest identity constants differ from the wrapped GRCh38 contract")
+    semantic = manifest.get("semantic_codec", {})
+    if not isinstance(semantic, dict):
+        raise ValueError("manifest semantic metadata must be an object")
+    fixed_semantic = {
+        "name": "z9/eaf8/se6",
+        "z_bits": 9,
+        "eaf_bits": 8,
+        "se_bits": 6,
+        "z_range": [-3.5, 3.5],
+        "exception_precision": "float32",
+        "beta": "derived as z * standard_error",
+        "p_value": "derived as erfc(abs(z) / sqrt(2))",
+    }
+    if any(semantic.get(name) != value for name, value in fixed_semantic.items()):
+        raise ValueError("manifest semantic codec constants differ from the fixed Z9/EAF8/SE6 contract")
+    center_rows = _validated_block_rows(
+        semantic.get("se_center_block_rows"), "manifest SE centre block size"
+    )
+    centers = semantic.get("block_centers_log2_residual")
+    try:
+        finite_centers = isinstance(centers, list) and all(
+            math.isfinite(float(value)) for value in centers
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("manifest has invalid SE block centres") from exc
+    if (not isinstance(centers, list) or
+            len(centers) != (rows + center_rows - 1) // center_rows or
+            not finite_centers):
+        raise ValueError("manifest has invalid SE block centres")
+    try:
+        exception_rows = int(semantic["exception_rows"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("manifest exception count is invalid") from exc
+    if exception_rows < 0 or exception_rows > rows:
+        raise ValueError("manifest exception count is outside the format contract")
+    if manifest.get("files") != EXPECTED_FILES_V3:
+        raise ValueError("manifest file layout differs from the wrapped format")
+    integrity = manifest.get("integrity", {})
+    if not isinstance(integrity, dict):
+        raise ValueError("manifest integrity metadata must be an object")
+    records = integrity.get("files", {})
+    if (not isinstance(records, dict) or integrity.get("algorithm") != "sha256" or
+            set(records) != set(EXPECTED_FILES_V3.values())):
+        raise ValueError("manifest integrity table is incomplete")
+    for relative in EXPECTED_FILES_V3.values():
+        record = records.get(relative, {})
+        if not isinstance(record, dict):
+            raise ValueError(f"manifest integrity record is invalid for {relative}")
+        try:
+            size = int(record.get("bytes", -1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"manifest integrity record is invalid for {relative}") from exc
+        if (not isinstance(record.get("sha256"), str) or
+                not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) or size < 0):
+            raise ValueError(f"manifest integrity record is invalid for {relative}")
+
+
+def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
+    version = manifest.get("format_version")
+    if version == VERSION_V2:
+        _validate_manifest_contract_v2(manifest)
+    elif version == VERSION:
+        _validate_manifest_contract_v3(manifest)
+    else:
+        raise ValueError(f"unsupported Pcodec format version: {version!r}")
 
 
 def _as_float(value: str) -> float:
@@ -506,7 +643,7 @@ def encode_value_frames(values, output: Path, block_rows: int = VALUE_BLOCK_ROWS
     return index, paths
 
 
-def write_store(
+def write_store_v2(
     input_path: Path,
     output: Path,
     metadata: dict[str, Any] | None = None,
@@ -523,6 +660,8 @@ def write_store(
     output.mkdir(parents=True, exist_ok=True)
     data = read_tsv(input_path)
     keys, order = identity_keys(data)
+    if len(keys) > MAX_STORE_ROWS:
+        raise ValueError(f"wrapped Pcodec stores support at most {MAX_STORE_ROWS} rows")
     ordered = {name: values[order] for name, values in data.items()}
     values = quantise_values(ordered, block_rows=se_center_block_rows)
     key_index, key_paths = encode_key_frames(keys, output, block_rows=key_block_rows)
@@ -531,7 +670,7 @@ def write_store(
     )
     manifest = {
         "format": FORMAT,
-        "format_version": VERSION,
+        "format_version": VERSION_V2,
         "backend": "pcodec",
         "profile": "standard",
         "rows": len(keys),
@@ -559,7 +698,7 @@ def write_store(
             "beta": "derived as z * standard_error",
             "p_value": "derived as erfc(abs(z) / sqrt(2))",
         },
-        "files": EXPECTED_FILES,
+        "files": EXPECTED_FILES_V2,
         "input_columns": ["chromosome", "base_pair_location", "effect_allele", "other_allele", "beta", "standard_error", "effect_allele_frequency", "z"],
         "runtime": {
             "python": platform.python_version(),
@@ -580,6 +719,426 @@ def write_store(
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     _seal_manifest(output)
     return manifest
+
+
+def _write_wrapped_stream(output: Path, name: str, values, identity_keys=None):
+    np, _, ChunkConfig, _ = _dependencies()
+    from pcodec import PagingSpec
+    from pcodec.wrapped import FileCompressor
+
+    pco_dtype, numpy_dtype, dtype_code = WRAPPED_STREAM_DTYPES[name]
+    values = np.ascontiguousarray(values, dtype=numpy_dtype)
+    data_path = output / EXPECTED_FILES_V3[name]
+    index_path = output / EXPECTED_FILES_V3[f"{name}_index"]
+    compressor = FileCompressor()
+    header = compressor.write_header()
+    config = ChunkConfig(
+        enable_8_bit=True,
+        paging_spec=PagingSpec.equal_pages_up_to(WRAPPED_PAGE_ROWS),
+    )
+    chunks = []
+    pages = []
+    with data_path.open("wb") as handle:
+        handle.write(header)
+        for chunk_start in range(0, len(values), WRAPPED_CHUNK_ROWS):
+            chunk_stop = min(chunk_start + WRAPPED_CHUNK_ROWS, len(values))
+            chunk = compressor.chunk_compressor(values[chunk_start:chunk_stop], config)
+            metadata = chunk.write_meta()
+            metadata_offset = handle.tell()
+            handle.write(metadata)
+            first_page = len(pages)
+            local_start = 0
+            counts = chunk.n_per_page()
+            for page_number, count in enumerate(counts):
+                blob = chunk.write_page(page_number)
+                offset = handle.tell()
+                handle.write(blob)
+                row_start = chunk_start + local_start
+                row_stop = row_start + int(count)
+                bounds = None
+                if identity_keys is not None:
+                    bounds = (
+                        int(identity_keys[row_start]),
+                        int(identity_keys[row_stop - 1]),
+                    )
+                pages.append((
+                    offset, len(blob), zlib.crc32(blob), row_start,
+                    int(count), len(chunks), bounds,
+                ))
+                local_start += int(count)
+            chunks.append((
+                metadata_offset, len(metadata), zlib.crc32(metadata),
+                first_page, len(counts),
+            ))
+    flags = INDEX_FLAG_KEY_BOUNDS if identity_keys is not None else 0
+    with index_path.open("wb") as handle:
+        handle.write(INDEX_HEADER.pack(
+            INDEX_MAGIC, INDEX_VERSION, dtype_code, flags, len(values),
+            WRAPPED_CHUNK_ROWS, WRAPPED_PAGE_ROWS, len(header),
+            zlib.crc32(header),
+            len(chunks), len(pages),
+        ))
+        for record in chunks:
+            handle.write(INDEX_CHUNK.pack(*record))
+        for offset, length, crc, row_start, count, chunk_id, bounds in pages:
+            handle.write(INDEX_PAGE.pack(
+                offset, length, crc, row_start, count, chunk_id
+            ))
+            if bounds is not None:
+                handle.write(INDEX_KEY_BOUNDS.pack(*bounds))
+    return {
+        "dtype": pco_dtype,
+        "chunks": len(chunks),
+        "pages": len(pages),
+        "bytes": data_path.stat().st_size + index_path.stat().st_size,
+    }
+
+
+def write_store(
+    input_path: Path,
+    output: Path,
+    metadata: dict[str, Any] | None = None,
+    key_block_rows: int = WRAPPED_PAGE_ROWS,
+    value_block_rows: int = WRAPPED_PAGE_ROWS,
+    se_center_block_rows: int = SE_CENTER_BLOCK_ROWS,
+):
+    """Write the wrapped-page v0.3 format; v0.2 remains readable."""
+    np, zstd, _, _ = _dependencies()
+    if int(key_block_rows) != WRAPPED_PAGE_ROWS or int(value_block_rows) != WRAPPED_PAGE_ROWS:
+        raise ValueError(
+            f"wrapped Pcodec stores require {WRAPPED_PAGE_ROWS}-row pages"
+        )
+    se_center_block_rows = _validated_block_rows(
+        se_center_block_rows, "SE centre block size"
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    data = read_tsv(input_path)
+    keys, order = identity_keys(data)
+    ordered = {name: column[order] for name, column in data.items()}
+    values = quantise_values(ordered, block_rows=se_center_block_rows)
+    positions = (keys >> np.uint64(4)).astype(np.uint32)
+    substitutions = (keys & np.uint64(15)).astype(np.uint8)
+    stream_values = {
+        "position": positions,
+        "substitution": substitutions,
+        "z": values["z"],
+        "eaf": values["eaf"],
+        "se": values["se"],
+    }
+    stream_metadata = {
+        name: _write_wrapped_stream(
+            output, name, column,
+            identity_keys=keys if name == "position" else None,
+        )
+        for name, column in stream_values.items()
+    }
+    exception_path = output / EXPECTED_FILES_V3["exceptions"]
+    exception_path.write_bytes(
+        zstd.ZstdCompressor(level=19).compress(values["exceptions"].tobytes())
+    )
+    manifest = {
+        "format": FORMAT,
+        "format_version": VERSION,
+        "backend": "pcodec",
+        "profile": "standard",
+        "rows": len(keys),
+        "n_rows": len(keys),
+        "key_block_rows": WRAPPED_PAGE_ROWS,
+        "value_block_rows": WRAPPED_PAGE_ROWS,
+        "wrapped_codec": {
+            "chunk_rows": WRAPPED_CHUNK_ROWS,
+            "page_rows": WRAPPED_PAGE_ROWS,
+            "index_version": INDEX_VERSION,
+            "integrity": "CRC32 per page/meta/header; SHA256 per file",
+            "streams": stream_metadata,
+        },
+        "identity": {
+            "encoding": "wrapped_global_position_plus_full_ref_alt_code",
+            "external_reference_required": False,
+            "chromosome_lengths": CHROM_LENGTHS,
+            "chromosome_offsets": chromosome_offsets(),
+            "effect_allele_is_alt": True,
+            "other_allele_is_ref": True,
+        },
+        "semantic_codec": {
+            "name": "z9/eaf8/se6",
+            "z_bits": 9,
+            "eaf_bits": 8,
+            "se_bits": 6,
+            "z_range": [-3.5, 3.5],
+            "se_center_block_rows": se_center_block_rows,
+            "block_centers_log2_residual": values["centers"],
+            "exception_rows": int(len(values["exceptions"])),
+            "exception_precision": "float32",
+            "beta": "derived as z * standard_error",
+            "p_value": "derived as erfc(abs(z) / sqrt(2))",
+        },
+        "files": EXPECTED_FILES_V3,
+        "input_columns": [
+            "chromosome", "base_pair_location", "effect_allele",
+            "other_allele", "beta", "standard_error",
+            "effect_allele_frequency", "z",
+        ],
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "pcodec": importlib.metadata.version("pcodec"),
+            "zstandard": importlib.metadata.version("zstandard"),
+        },
+        "metadata": metadata or {},
+    }
+    integrity = {}
+    for relative in manifest["files"].values():
+        path = output / relative
+        blob = path.read_bytes()
+        integrity[relative] = {
+            "bytes": len(blob),
+            "sha256": hashlib.sha256(blob).hexdigest(),
+        }
+    manifest["integrity"] = {"algorithm": "sha256", "files": integrity}
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    _seal_manifest(output)
+    return manifest
+
+
+class WrappedStreamReader:
+    def __init__(self, store: Path, manifest: dict[str, Any], name: str):
+        np, _, _, _ = _dependencies()
+        from pcodec.wrapped import FileDecompressor
+
+        self.store = store
+        self.name = name
+        self.pco_dtype, numpy_dtype, expected_dtype_code = WRAPPED_STREAM_DTYPES[name]
+        self.numpy_dtype = np.dtype(numpy_dtype)
+        self.data_path = store / manifest["files"][name]
+        index_path = store / manifest["files"][f"{name}_index"]
+        blob = index_path.read_bytes()
+        if len(blob) < INDEX_HEADER.size:
+            raise ValueError(f"wrapped {name} index is truncated")
+        fields = INDEX_HEADER.unpack_from(blob)
+        (magic, version, dtype_code, flags, rows, chunk_rows, page_rows,
+         header_length, header_crc, chunk_count, page_count) = fields
+        if (magic != INDEX_MAGIC or version != INDEX_VERSION or
+                dtype_code != expected_dtype_code or rows != int(manifest["rows"]) or
+                chunk_rows != WRAPPED_CHUNK_ROWS or page_rows != WRAPPED_PAGE_ROWS):
+            raise ValueError(f"wrapped {name} index header is invalid")
+        self.flags = flags
+        self.rows = int(rows)
+        self.header_length = int(header_length)
+        offset = INDEX_HEADER.size
+        self.chunks = []
+        for _ in range(chunk_count):
+            if offset + INDEX_CHUNK.size > len(blob):
+                raise ValueError(f"wrapped {name} chunk index is truncated")
+            self.chunks.append(INDEX_CHUNK.unpack_from(blob, offset))
+            offset += INDEX_CHUNK.size
+        self.pages = []
+        bounds = []
+        for _ in range(page_count):
+            if offset + INDEX_PAGE.size > len(blob):
+                raise ValueError(f"wrapped {name} page index is truncated")
+            self.pages.append(INDEX_PAGE.unpack_from(blob, offset))
+            offset += INDEX_PAGE.size
+            if flags & INDEX_FLAG_KEY_BOUNDS:
+                if offset + INDEX_KEY_BOUNDS.size > len(blob):
+                    raise ValueError(f"wrapped {name} key bounds are truncated")
+                bounds.append(INDEX_KEY_BOUNDS.unpack_from(blob, offset))
+                offset += INDEX_KEY_BOUNDS.size
+        if offset != len(blob):
+            raise ValueError(f"wrapped {name} index has trailing bytes")
+        expected_chunks = (self.rows + WRAPPED_CHUNK_ROWS - 1) // WRAPPED_CHUNK_ROWS
+        expected_pages = (self.rows + WRAPPED_PAGE_ROWS - 1) // WRAPPED_PAGE_ROWS
+        if len(self.chunks) != expected_chunks or len(self.pages) != expected_pages:
+            raise ValueError(f"wrapped {name} index has invalid chunk/page counts")
+        self.page_starts = np.asarray([page[3] for page in self.pages], dtype=np.int64)
+        self.page_stops = self.page_starts + np.asarray(
+            [page[4] for page in self.pages], dtype=np.int64
+        )
+        if (not len(self.pages) or self.page_starts[0] != 0 or
+                self.page_stops[-1] != self.rows or
+                np.any(self.page_starts[1:] != self.page_stops[:-1])):
+            raise ValueError(f"wrapped {name} pages do not cover every row")
+        self.first_keys = np.asarray([item[0] for item in bounds], dtype=np.uint64)
+        self.last_keys = np.asarray([item[1] for item in bounds], dtype=np.uint64)
+        data_size = self.data_path.stat().st_size
+        cursor = int(header_length)
+        page_cursor = 0
+        for chunk_id, chunk in enumerate(self.chunks):
+            metadata_offset, metadata_length, _, first_page, pages_in_chunk = chunk
+            if (metadata_length <= 0 or metadata_offset != cursor or
+                    first_page != page_cursor or pages_in_chunk <= 0 or
+                    page_cursor + pages_in_chunk > len(self.pages)):
+                raise ValueError(f"wrapped {name} chunk layout is invalid")
+            cursor += int(metadata_length)
+            for page_id in range(page_cursor, page_cursor + pages_in_chunk):
+                page_offset, page_length, _, _, count, owning_chunk = self.pages[page_id]
+                # Constant Pcodec pages legitimately have a zero-byte payload;
+                # their values are represented entirely by chunk metadata.
+                if (page_offset != cursor or count <= 0 or
+                        count > WRAPPED_PAGE_ROWS or owning_chunk != chunk_id):
+                    raise ValueError(f"wrapped {name} page layout is invalid")
+                cursor += int(page_length)
+            page_cursor += int(pages_in_chunk)
+        if page_cursor != len(self.pages) or cursor != data_size:
+            raise ValueError(f"wrapped {name} payload layout or length is invalid")
+        self.fd = None
+        try:
+            self.fd = os.open(self.data_path, os.O_RDONLY)
+            header = os.pread(self.fd, self.header_length, 0)
+            if (len(header) != self.header_length or
+                    zlib.crc32(header) != int(header_crc)):
+                raise ValueError(f"wrapped {name} header checksum mismatch")
+            self.file_decompressor, consumed = FileDecompressor.new(header)
+            if consumed != self.header_length:
+                raise ValueError(f"wrapped {name} header length is invalid")
+        except Exception:
+            self.close()
+            raise
+        self.chunk_decompressors = {}
+        try:
+            cache_pages = int(os.environ.get(
+                "COMPRESSOR_PAGE_CACHE_PAGES", WRAPPED_PAGE_CACHE_PAGES
+            ))
+        except ValueError:
+            cache_pages = WRAPPED_PAGE_CACHE_PAGES
+        self.page_cache_limit = max(0, min(4096, cache_pages))
+        self.page_cache = OrderedDict()
+
+    def close(self):
+        if getattr(self, "fd", None) is not None:
+            os.close(self.fd)
+            self.fd = None
+        if hasattr(self, "page_cache"):
+            self.page_cache.clear()
+
+    def _read_blob(self, offset: int, length: int, crc: int) -> bytes:
+        blob = os.pread(self.fd, int(length), int(offset))
+        if len(blob) != int(length) or zlib.crc32(blob) != int(crc):
+            raise ValueError(f"wrapped {self.name} page or metadata is corrupt")
+        return blob
+
+    def _chunk_decompressor(self, chunk_id: int):
+        if chunk_id not in self.chunk_decompressors:
+            offset, length, crc, _, _ = self.chunks[chunk_id]
+            metadata = self._read_blob(offset, length, crc)
+            decompressor, consumed = self.file_decompressor.chunk_decompressor(
+                metadata, self.pco_dtype
+            )
+            if consumed != length:
+                raise ValueError(f"wrapped {self.name} chunk metadata length is invalid")
+            self.chunk_decompressors[chunk_id] = decompressor
+        return self.chunk_decompressors[chunk_id]
+
+    def read_page(self, page_id: int):
+        np, _, _, _ = _dependencies()
+        page_id = int(page_id)
+        cached = self.page_cache.pop(page_id, None)
+        if cached is not None:
+            self.page_cache[page_id] = cached
+            return cached
+        offset, length, crc, _, count, chunk_id = self.pages[page_id]
+        destination = np.empty(int(count), dtype=self.numpy_dtype)
+        progress, consumed = self._chunk_decompressor(int(chunk_id)).read_page_into(
+            self._read_blob(offset, length, crc), int(count), destination
+        )
+        if consumed != length or not progress.finished or progress.n_processed != count:
+            raise ValueError(f"wrapped {self.name} page did not decode completely")
+        if self.page_cache_limit:
+            self.page_cache[page_id] = destination
+            while len(self.page_cache) > self.page_cache_limit:
+                self.page_cache.popitem(last=False)
+        return destination
+
+    def read_rows(self, rows=None):
+        np, _, _, _ = _dependencies()
+        if rows is None:
+            output = np.empty(self.rows, dtype=self.numpy_dtype)
+            for page_id in range(len(self.pages)):
+                start = int(self.page_starts[page_id])
+                stop = int(self.page_stops[page_id])
+                output[start:stop] = self.read_page(page_id)
+            return output
+        rows = np.asarray(rows, dtype=np.int64)
+        if not len(rows):
+            return np.empty(0, dtype=self.numpy_dtype)
+        if len(rows) > 1 and np.any(rows[1:] <= rows[:-1]):
+            raise ValueError("wrapped stream rows must be sorted and unique")
+
+        # Whole-genome and region reads are contiguous.  Avoid constructing a
+        # page id for every row and, especially, avoid repeatedly scanning that
+        # vector once per page.  Decode each intersecting page exactly once and
+        # trim only the boundary pages.
+        first_row = int(rows[0])
+        last_row = int(rows[-1])
+        if len(rows) == last_row - first_row + 1:
+            first_page = int(np.searchsorted(self.page_stops, first_row, side="right"))
+            last_page = int(np.searchsorted(self.page_stops, last_row, side="right"))
+            decoded = np.concatenate([
+                self.read_page(page_id)
+                for page_id in range(first_page, last_page + 1)
+            ])
+            offset = first_row - int(self.page_starts[first_page])
+            return decoded[offset:offset + len(rows)]
+
+        # Sparse rows are sorted by every caller.  Their page ids are therefore
+        # sorted too, so contiguous groups can be sliced directly.  The former
+        # flatnonzero(page_ids == page_id) loop was O(rows * pages) and became
+        # pathological for widely scattered selections.
+        page_ids = np.searchsorted(self.page_stops, rows, side="right")
+        output = np.empty(len(rows), dtype=self.numpy_dtype)
+        group_starts = np.flatnonzero(np.r_[True, page_ids[1:] != page_ids[:-1]])
+        group_stops = np.r_[group_starts[1:], len(rows)]
+        for group_start, group_stop in zip(group_starts, group_stops):
+            page_id = int(page_ids[group_start])
+            selected = slice(int(group_start), int(group_stop))
+            page = self.read_page(int(page_id))
+            output[selected] = page[rows[selected] - self.page_starts[page_id]]
+        return output
+
+
+class WrappedStoreReader:
+    def __init__(self, store: Path, manifest: dict[str, Any]):
+        self.store = store
+        self.manifest = manifest
+        self.streams = {}
+        self._exceptions = None
+        # Pcodec chunk-decompressor objects are cached and are not documented
+        # as thread-safe.  Batch reads may share one store context, so serialize
+        # operations on that context while still allowing different stores to
+        # decode concurrently.
+        self.lock = threading.RLock()
+
+    def stream(self, name: str) -> WrappedStreamReader:
+        if name not in self.streams:
+            self.streams[name] = WrappedStreamReader(self.store, self.manifest, name)
+        return self.streams[name]
+
+    def exceptions(self):
+        if self._exceptions is None:
+            np, zstd, _, _ = _dependencies()
+            relative = self.manifest["files"]["exceptions"]
+            path = self.store / relative
+            record = self.manifest["integrity"]["files"][relative]
+            blob = path.read_bytes()
+            if (len(blob) != int(record["bytes"]) or
+                    hashlib.sha256(blob).hexdigest() != record["sha256"]):
+                raise ValueError("wrapped exception stream checksum mismatch")
+            raw = zstd.ZstdDecompressor().decompress(blob)
+            dtype = np.dtype([
+                ("row", "<u4"), ("z", "<f4"), ("log2se", "<f4"),
+                ("eaf", "<f4"), ("flags", "u1"),
+            ])
+            if len(raw) % dtype.itemsize:
+                raise ValueError("wrapped exception stream has a partial record")
+            self._exceptions = np.frombuffer(raw, dtype=dtype)
+            if len(self._exceptions) != int(self.manifest["semantic_codec"]["exception_rows"]):
+                raise ValueError("wrapped exception count differs from the manifest")
+        return self._exceptions
+
+    def close(self):
+        for stream in self.streams.values():
+            stream.close()
+        self.streams.clear()
 
 
 def _verify_file(store: Path, manifest: dict[str, Any], relative: str):
@@ -613,8 +1172,12 @@ def load_manifest(store: Path, verify_indexes: bool = True):
     manifest = json.loads(blob)
     _validate_manifest_contract(manifest)
     if verify_indexes:
-        _verify_file(store, manifest, manifest["files"]["key_index"])
-        _verify_file(store, manifest, manifest["files"]["value_index"])
+        if manifest["format_version"] == VERSION_V2:
+            _verify_file(store, manifest, manifest["files"]["key_index"])
+            _verify_file(store, manifest, manifest["files"]["value_index"])
+        else:
+            for name in WRAPPED_STREAM_DTYPES:
+                _verify_file(store, manifest, manifest["files"][f"{name}_index"])
     return manifest
 
 
@@ -704,6 +1267,7 @@ def _write_binary_bridge(
 ):
     """Write a temporary columnar bridge that R can load with readBin()."""
     np, _, _, _ = _dependencies()
+    output_count = int(output_rows) if isinstance(output_rows, (int, np.integer)) else len(output_rows)
     output.mkdir(parents=True, exist_ok=False)
     files = {}
 
@@ -774,7 +1338,7 @@ def _write_binary_bridge(
     (output / "bridge.json").write_text(json.dumps({
         "format": "CompreSSoR-binary-bridge",
         "version": 1,
-        "rows": int(len(output_rows)),
+        "rows": output_count,
         "requested_columns": requested_columns,
         "files": files,
         "codec": codec,
@@ -832,7 +1396,8 @@ def decode_exception_frame(store: Path, manifest: dict[str, Any], frame: dict[st
             raise ValueError("exception row is outside its owning value frame")
         if np.any(rows[1:] <= rows[:-1]):
             raise ValueError("exception rows are not strictly increasing within their frame")
-        if np.any(decoded["flags"] == 0) or np.any((decoded["flags"] & ~7) != 0):
+        if (np.any(decoded["flags"] == 0) or
+                np.any((decoded["flags"].astype(np.uint16) & np.uint16(0xF8)) != 0)):
             raise ValueError("exception flags are invalid")
     return decoded
 
@@ -1073,7 +1638,7 @@ def _frames_containing_rows(index, rows):
     return selected
 
 
-def read_store(
+def read_store_v2(
     store: Path,
     output: Path,
     row_start: int | None = None,
@@ -1260,16 +1825,408 @@ def read_store(
             writer.writerow(row)
 
 
-def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
-    """Execute many sparse canonical reads in one Python process."""
+def _combine_wrapped_keys(positions, substitutions):
+    np, _, _, _ = _dependencies()
+    positions = np.asarray(positions, dtype=np.uint64)
+    substitutions = np.asarray(substitutions, dtype=np.uint64)
+    if np.any(substitutions > 15):
+        raise ValueError("wrapped substitution code exceeds four bits")
+    return (positions << np.uint64(4)) | substitutions
+
+
+def _wrapped_rows_for_keys(context: WrappedStoreReader, target_keys):
+    np, _, _, _ = _dependencies()
+    position_stream = context.stream("position")
+    substitution_stream = context.stream("substitution")
+    candidate_pages = set()
+    for key in target_keys:
+        page_id = int(np.searchsorted(position_stream.last_keys, key, side="left"))
+        while (page_id < len(position_stream.pages) and
+               position_stream.first_keys[page_id] <= key):
+            candidate_pages.add(page_id)
+            page_id += 1
+    rows = []
+    keys = []
+    for page_id in sorted(candidate_pages):
+        positions = position_stream.read_page(page_id).astype(np.uint64)
+        substitutions = substitution_stream.read_page(page_id).astype(np.uint64)
+        decoded = _combine_wrapped_keys(positions, substitutions)
+        lo = int(np.searchsorted(target_keys, position_stream.first_keys[page_id]))
+        hi = int(np.searchsorted(
+            target_keys, position_stream.last_keys[page_id], side="right"
+        ))
+        candidates = target_keys[lo:hi]
+        locations = np.searchsorted(decoded, candidates)
+        valid = locations < len(decoded)
+        if np.any(valid):
+            valid_locations = locations[valid]
+            matched = decoded[valid_locations] == candidates[valid]
+            if np.any(matched):
+                rows.append(
+                    valid_locations[matched].astype(np.int64) +
+                    position_stream.page_starts[page_id]
+                )
+                keys.append(candidates[valid][matched])
+    if not rows:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint64)
+    rows = np.concatenate(rows)
+    keys = np.concatenate(keys)
+    order = np.argsort(rows, kind="stable")
+    return rows[order], keys[order]
+
+
+def _wrapped_rows_for_region(
+    context: WrappedStoreReader, global_start: int, global_end: int
+):
+    np, _, _, _ = _dependencies()
+    position_stream = context.stream("position")
+    first_positions = position_stream.first_keys >> np.uint64(4)
+    last_positions = position_stream.last_keys >> np.uint64(4)
+    page_start = int(np.searchsorted(last_positions, global_start, side="left"))
+    pages = []
+    while page_start < len(first_positions) and first_positions[page_start] <= global_end:
+        pages.append(page_start)
+        page_start += 1
+    rows = []
+    keys = []
+    substitution_stream = context.stream("substitution")
+    for page_id in pages:
+        positions = position_stream.read_page(page_id).astype(np.uint64)
+        substitutions = substitution_stream.read_page(page_id).astype(np.uint64)
+        keep = (positions >= global_start) & (positions <= global_end)
+        if np.any(keep):
+            local = np.flatnonzero(keep)
+            rows.append(local.astype(np.int64) + position_stream.page_starts[page_id])
+            keys.append(_combine_wrapped_keys(positions[keep], substitutions[keep]))
+    if not rows:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint64)
+    return np.concatenate(rows), np.concatenate(keys)
+
+
+def _wrapped_exception_subset(exceptions, target_rows):
+    np, _, _, _ = _dependencies()
+    if not len(exceptions) or not len(target_rows):
+        return exceptions[:0]
+    exception_rows = exceptions["row"].astype(np.int64)
+    locations = np.searchsorted(exception_rows, target_rows)
+    valid = locations < len(exception_rows)
+    matched_locations = locations[valid]
+    matched = exception_rows[matched_locations] == target_rows[valid]
+    return exceptions[matched_locations[matched]]
+
+
+def _decode_wrapped_semantics(codes, target_rows, manifest, exceptions):
+    np, _, _, _ = _dependencies()
+    semantic = manifest["semantic_codec"]
+    result = {}
+    if "z" in codes:
+        z_count = 2**int(semantic["z_bits"]) - 2
+        z = np.full(len(target_rows), np.nan, dtype=np.float64)
+        ok = codes["z"] < z_count
+        z_min, z_max = semantic["z_range"]
+        z[ok] = float(z_min) + (codes["z"][ok].astype(np.float64) + 0.5) * (
+            (float(z_max) - float(z_min)) / z_count
+        )
+        result["z"] = z
+    if "eaf" in codes:
+        eaf_count = 2**int(semantic["eaf_bits"]) - 1
+        result["eaf"] = np.sin(
+            np.pi * codes["eaf"].astype(np.float64) / (2.0 * eaf_count)
+        ) ** 2
+    if "se" in codes:
+        se_count = 2**int(semantic["se_bits"]) - 2
+        se = np.full(len(target_rows), np.nan, dtype=np.float64)
+        ok = codes["se"] < se_count
+        centres = np.asarray(
+            semantic["block_centers_log2_residual"], dtype=np.float64
+        )
+        block_rows = int(semantic["se_center_block_rows"])
+        safe = np.clip(result["eaf"], 1e-12, 1.0 - 1e-12)
+        residual = -1.0 + (codes["se"].astype(np.float64) + 0.5) * (
+            2.0 / se_count
+        )
+        se[ok] = 2.0 ** (
+            residual[ok] + centres[target_rows[ok] // block_rows] -
+            0.5 * np.log2(2.0 * safe[ok] * (1.0 - safe[ok]))
+        )
+        result["se"] = se
+    selected = _wrapped_exception_subset(exceptions, target_rows)
+    if len(selected):
+        local = np.searchsorted(target_rows, selected["row"].astype(np.int64))
+        z_mask = (selected["flags"] & 1) != 0
+        se_mask = (selected["flags"] & 2) != 0
+        eaf_mask = (selected["flags"] & 4) != 0
+        if "z" in result:
+            result["z"][local[z_mask]] = selected["z"][z_mask]
+        if "se" in result:
+            result["se"][local[se_mask]] = np.exp2(
+                selected["log2se"][se_mask].astype(np.float64)
+            )
+        if "eaf" in result:
+            result["eaf"][local[eaf_mask]] = selected["eaf"][eaf_mask]
+    return result
+
+
+def read_store_v3(
+    store: Path,
+    output: Path,
+    row_start: int | None = None,
+    row_stop: int | None = None,
+    row_indices=None,
+    identity_keys=None,
+    chromosome: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    include_p: bool = True,
+    columns=None,
+    output_format: str = "tsv",
+    manifest=None,
+    context=None,
+):
+    np, _, _, _ = _dependencies()
+    manifest = load_manifest(store) if manifest is None else manifest
+    owned_context = context is None
+    context = WrappedStoreReader(store, manifest) if context is None else context
+    try:
+        default_columns = [
+            "chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "z", "beta", "standard_error", "effect_allele_frequency", "p_value",
+        ]
+        requested_columns = default_columns if columns is None else list(dict.fromkeys(columns))
+        if not include_p:
+            requested_columns = [name for name in requested_columns if name != "p_value"]
+        unknown = set(requested_columns) - set(default_columns)
+        if unknown:
+            raise ValueError("unknown output column(s): " + ", ".join(sorted(unknown)))
+        n = int(manifest["rows"])
+        if row_indices is not None and identity_keys is not None:
+            raise ValueError("row indices and canonical identity keys are mutually exclusive")
+        requested_rows = None if row_indices is None else np.asarray(
+            sorted(set(int(row) for row in row_indices)), dtype=np.int64
+        )
+        if requested_rows is not None and np.any(
+            (requested_rows < 0) | (requested_rows >= n)
+        ):
+            raise ValueError("row indices are outside the store")
+        resolved_keys = None
+        if identity_keys is not None:
+            requested_keys = parse_identity_keys(identity_keys, manifest)
+            requested_rows, resolved_keys = _wrapped_rows_for_keys(context, requested_keys)
+        global_region = None
+        if chromosome is not None or start is not None or end is not None:
+            if chromosome is None or start is None or end is None:
+                raise ValueError("chromosome, start, and end must be supplied together")
+            global_region = _region_global_bounds(
+                manifest, chromosome, int(start), int(end)
+            )
+            region_rows, region_keys = _wrapped_rows_for_region(context, *global_region)
+            if requested_rows is None:
+                requested_rows, resolved_keys = region_rows, region_keys
+            else:
+                keep = np.isin(requested_rows, region_rows)
+                requested_rows = requested_rows[keep]
+                resolved_keys = region_keys[np.isin(region_rows, requested_rows)]
+        row_start = 0 if row_start is None else max(0, int(row_start))
+        row_stop = n if row_stop is None else min(n, int(row_stop))
+        full_binary_selection = (
+            output_format == "binary" and requested_rows is None and
+            row_start == 0 and row_stop == n
+        )
+        if requested_rows is None:
+            output_rows = (
+                None if full_binary_selection else
+                np.arange(row_start, row_stop, dtype=np.int64)
+            )
+        else:
+            output_rows = requested_rows[
+                (requested_rows >= row_start) & (requested_rows < row_stop)
+            ]
+            if resolved_keys is not None and len(resolved_keys) != len(output_rows):
+                resolved_keys = None
+        identity_columns = {
+            "chromosome", "base_pair_location", "effect_allele", "other_allele"
+        }
+        need_identity = bool(identity_columns.intersection(requested_columns))
+        if need_identity:
+            if resolved_keys is None:
+                positions = context.stream("position").read_rows(output_rows).astype(np.uint64)
+                substitutions = context.stream("substitution").read_rows(output_rows).astype(np.uint64)
+                keys = _combine_wrapped_keys(positions, substitutions)
+            else:
+                keys = resolved_keys
+            chromosome_codes, positions, effect_codes, other_codes = _keys_to_columns(
+                keys, manifest
+            )
+        else:
+            chromosome_codes = np.empty(0, dtype=np.uint8)
+            positions = np.empty(0, dtype=np.int32)
+            effect_codes = np.empty(0, dtype=np.uint8)
+            other_codes = np.empty(0, dtype=np.uint8)
+        numeric_needed = set()
+        if any(name in requested_columns for name in ("z", "beta", "p_value")):
+            numeric_needed.add("z")
+        if any(name in requested_columns for name in ("standard_error", "beta")):
+            numeric_needed.add("se")
+        if "effect_allele_frequency" in requested_columns:
+            numeric_needed.add("eaf")
+        if "se" in numeric_needed:
+            numeric_needed.add("eaf")
+        codes = {
+            name: context.stream(name).read_rows(output_rows)
+            for name in numeric_needed
+        }
+        full_code_bridge = (
+            full_binary_selection and bool(numeric_needed)
+        )
+        exceptions = context.exceptions() if numeric_needed else None
+        values = {} if full_code_bridge else _decode_wrapped_semantics(
+            codes, output_rows, manifest, exceptions if exceptions is not None else []
+        )
+        output_values = {
+            "chromosome": chromosome_codes,
+            "base_pair_location": positions,
+            "effect_allele": effect_codes,
+            "other_allele": other_codes,
+        }
+        if "z" in values:
+            output_values["z"] = values["z"]
+        if "se" in values:
+            output_values["standard_error"] = values["se"]
+        if "eaf" in values:
+            output_values["effect_allele_frequency"] = values["eaf"]
+        if not full_code_bridge and "beta" in requested_columns:
+            output_values["beta"] = values["z"] * values["se"]
+        if not full_code_bridge and "p_value" in requested_columns:
+            output_values["p_value"] = np.asarray([
+                math.erfc(abs(float(value)) / math.sqrt(2.0))
+                if math.isfinite(float(value)) else float("nan")
+                for value in values["z"]
+            ])
+        if output_format == "binary":
+            _write_binary_bridge(
+                output, n if output_rows is None else output_rows,
+                requested_columns, output_values,
+                semantic_codes=codes if full_code_bridge else None,
+                exceptions=exceptions if full_code_bridge else None,
+                manifest=manifest,
+            )
+            return
+        if output_format != "tsv":
+            raise ValueError(f"unsupported output format: {output_format}")
+        chromosome_names = list(CHROM_LENGTHS)
+        bases = np.asarray(["A", "C", "G", "T"])
+        output_values["chromosome"] = [
+            chromosome_names[index - 1] for index in chromosome_codes
+        ]
+        output_values["effect_allele"] = bases[effect_codes]
+        output_values["other_allele"] = bases[other_codes]
+        with output.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(["row", *requested_columns])
+            for index, row in enumerate(output_rows):
+                writer.writerow([
+                    int(row),
+                    *[
+                        int(output_values[name][index])
+                        if name == "base_pair_location" else output_values[name][index]
+                        for name in requested_columns
+                    ],
+                ])
+    finally:
+        if owned_context:
+            context.close()
+
+
+def read_store(
+    store: Path,
+    output: Path,
+    row_start: int | None = None,
+    row_stop: int | None = None,
+    row_indices=None,
+    identity_keys=None,
+    chromosome: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    include_p: bool = True,
+    columns=None,
+    output_format: str = "tsv",
+    _manifest=None,
+    _key_index=None,
+    _value_index=None,
+):
+    manifest = load_manifest(store) if _manifest is None else _manifest
+    if manifest["format_version"] == VERSION:
+        context = _key_index if isinstance(_key_index, WrappedStoreReader) else None
+        return read_store_v3(
+            store, output, row_start=row_start, row_stop=row_stop,
+            row_indices=row_indices, identity_keys=identity_keys,
+            chromosome=chromosome, start=start, end=end, include_p=include_p,
+            columns=columns, output_format=output_format,
+            manifest=manifest, context=context,
+        )
+    return read_store_v2(
+        store, output, row_start=row_start, row_stop=row_stop,
+        row_indices=row_indices, identity_keys=identity_keys,
+        chromosome=chromosome, start=start, end=end, include_p=include_p,
+        columns=columns, output_format=output_format,
+        _manifest=manifest, _key_index=_key_index, _value_index=_value_index,
+    )
+
+
+def _load_cached_store(store: Path, cache=None):
+    """Load validated store metadata, reusing it while the manifest is unchanged."""
+    manifest_path = store / "manifest.json"
+    checksum_path = store / MANIFEST_CHECKSUM
+    fingerprint = tuple(
+        (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in (manifest_path, checksum_path)
+    )
+    cache_key = str(store)
+    if cache is not None and cache_key in cache:
+        cached_fingerprint, manifest, key_index, value_index = cache.pop(cache_key)
+        if cached_fingerprint == fingerprint:
+            cache[cache_key] = (
+                cached_fingerprint, manifest, key_index, value_index
+            )
+            return manifest, key_index, value_index
+        if isinstance(key_index, WrappedStoreReader):
+            key_index.close()
+    manifest = load_manifest(store)
+    if manifest["format_version"] == VERSION:
+        key_index = WrappedStoreReader(store, manifest)
+        value_index = key_index
+    else:
+        key_index = json.loads(
+            (store / manifest["files"]["key_index"]).read_text()
+        )
+        value_index = json.loads(
+            (store / manifest["files"]["value_index"]).read_text()
+        )
+    if cache is not None:
+        cache[cache_key] = (fingerprint, manifest, key_index, value_index)
+        while len(cache) > 32:
+            _, _, evicted, _ = cache.pop(next(iter(cache)))
+            if isinstance(evicted, WrappedStoreReader):
+                evicted.close()
+    return manifest, key_index, value_index
+
+
+def read_stores_batch_payload(
+    payload: dict[str, Any],
+    output: Path,
+    threads: int = 1,
+    cache=None,
+    write_response: bool = True,
+):
+    """Execute many sparse canonical reads in one Python runtime."""
     if threads < 1:
         raise ValueError("batch threads must be at least one")
-    payload = json.loads(request_path.read_text())
     reads = payload.get("reads") if isinstance(payload, dict) else None
     if not isinstance(reads, list) or not reads:
         raise ValueError("batch request must contain a non-empty reads list")
     output.mkdir(parents=True, exist_ok=False)
-    cache = {}
+    if cache is None:
+        cache = {}
     prepared = []
     bridge_for = {}
     seen_requests = {}
@@ -1284,22 +2241,17 @@ def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
             raise ValueError(f"batch read {index} store is not a directory")
         keys = item.get("keys")
         columns = item.get("columns")
+        if isinstance(keys, str):
+            keys = [keys]
+        if isinstance(columns, str):
+            columns = [columns]
         if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
             raise ValueError(f"batch read {index} keys must be a string list")
         if (not isinstance(columns, list) or not columns or
                 any(not isinstance(column, str) or not column for column in columns)):
             raise ValueError(f"batch read {index} columns must be non-empty strings")
         cache_key = str(store)
-        if cache_key not in cache:
-            manifest = load_manifest(store)
-            key_index = json.loads(
-                (store / manifest["files"]["key_index"]).read_text()
-            )
-            value_index = json.loads(
-                (store / manifest["files"]["value_index"]).read_text()
-            )
-            cache[cache_key] = (manifest, key_index, value_index)
-        manifest, key_index, value_index = cache[cache_key]
+        manifest, key_index, value_index = _load_cached_store(store, cache)
         signature = (cache_key, tuple(keys), tuple(columns))
         if signature in seen_requests:
             bridge_for[index] = seen_requests[signature]
@@ -1314,16 +2266,29 @@ def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
         index, store, keys, columns, manifest, key_index, value_index = item
         bridge = output / str(index)
         try:
-            read_store(
-                store,
-                bridge,
-                identity_keys=keys,
-                columns=columns,
-                output_format="binary",
-                _manifest=manifest,
-                _key_index=key_index,
-                _value_index=value_index,
-            )
+            if isinstance(key_index, WrappedStoreReader):
+                with key_index.lock:
+                    read_store(
+                        store,
+                        bridge,
+                        identity_keys=keys,
+                        columns=columns,
+                        output_format="binary",
+                        _manifest=manifest,
+                        _key_index=key_index,
+                        _value_index=value_index,
+                    )
+            else:
+                read_store(
+                    store,
+                    bridge,
+                    identity_keys=keys,
+                    columns=columns,
+                    output_format="binary",
+                    _manifest=manifest,
+                    _key_index=key_index,
+                    _value_index=value_index,
+                )
         except Exception as exc:
             raise RuntimeError(f"failed to read {store}: {exc}") from exc
         bridge_manifest = json.loads((bridge / "bridge.json").read_text())
@@ -1349,8 +2314,99 @@ def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
         "version": 1,
         "reads": results,
     }
-    (output / "batch.json").write_text(json.dumps(response, indent=2) + "\n")
+    if write_response:
+        (output / "batch.json").write_text(json.dumps(response, indent=2) + "\n")
     return response
+
+
+def read_stores_batch(request_path: Path, output: Path, threads: int = 1):
+    payload = json.loads(request_path.read_text())
+    return read_stores_batch_payload(payload, output, threads=threads)
+
+
+def _close_wrapped_cache(cache) -> None:
+    seen = set()
+    for _, _, key_index, _ in cache.values():
+        if isinstance(key_index, WrappedStoreReader) and id(key_index) not in seen:
+            key_index.close()
+            seen.add(id(key_index))
+
+
+def serve() -> None:
+    """Serve newline-delimited read requests for one R session."""
+    _dependencies()
+    cache = {}
+    print(json.dumps({
+        "format": "CompreSSoR-worker",
+        "version": 1,
+        "ready": True,
+    }), flush=True)
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        request_id = None
+        try:
+            request = json.loads(line)
+            if not isinstance(request, dict):
+                raise ValueError("worker request must be an object")
+            request_id = request.get("id")
+            command = request.get("command")
+            if command == "shutdown":
+                response = {"id": request_id, "ok": True}
+                print(json.dumps(response, separators=(",", ":")), flush=True)
+                _close_wrapped_cache(cache)
+                return
+            if command == "batch-read":
+                output = Path(request["output"]).expanduser()
+                result = read_stores_batch_payload(
+                    {"reads": request.get("reads")},
+                    output,
+                    threads=int(request.get("threads", 1)),
+                    cache=cache,
+                    write_response=False,
+                )
+            elif command == "read":
+                store = Path(request["store"]).expanduser().resolve(strict=True)
+                output = Path(request["output"]).expanduser()
+                manifest, key_index, value_index = _load_cached_store(store, cache)
+                rows = request.get("rows")
+                keys = request.get("keys")
+                columns = request.get("columns")
+                if isinstance(rows, int):
+                    rows = [rows]
+                if isinstance(keys, str):
+                    keys = [keys]
+                if isinstance(columns, str):
+                    columns = [columns]
+                read_store(
+                    store,
+                    output,
+                    row_start=request.get("row_start"),
+                    row_stop=request.get("row_stop"),
+                    row_indices=rows,
+                    identity_keys=keys,
+                    chromosome=request.get("chromosome"),
+                    start=request.get("start"),
+                    end=request.get("end"),
+                    columns=columns,
+                    output_format="binary",
+                    _manifest=manifest,
+                    _key_index=key_index,
+                    _value_index=value_index,
+                )
+                bridge_manifest = json.loads((output / "bridge.json").read_text())
+                result = {"rows": int(bridge_manifest["rows"])}
+            else:
+                raise ValueError(f"unsupported worker command: {command}")
+            response = {"id": request_id, "ok": True, "result": result}
+        except Exception as exc:
+            response = {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        print(json.dumps(response, separators=(",", ":")), flush=True)
+    _close_wrapped_cache(cache)
 
 
 def _validate_index(index, rows: int, label: str, block_rows: int):
@@ -1371,7 +2427,7 @@ def _validate_index(index, rows: int, label: str, block_rows: int):
         raise ValueError(f"{label} index ends at {expected}, expected {rows}")
 
 
-def validate_store(store: Path, full: bool = False):
+def validate_store_v2(store: Path, full: bool = False):
     np, _, _, _ = _dependencies()
     manifest = load_manifest(store)
     rows = int(manifest["rows"])
@@ -1392,7 +2448,8 @@ def validate_store(store: Path, full: bool = False):
             raise ValueError("exception row is outside the store")
         if np.any(exception_rows[1:] <= exception_rows[:-1]):
             raise ValueError("exception rows are not strictly increasing")
-        if np.any(exceptions["flags"] == 0) or np.any((exceptions["flags"] & ~7) != 0):
+        if (np.any(exceptions["flags"] == 0) or
+                np.any((exceptions["flags"].astype(np.uint16) & np.uint16(0xF8)) != 0)):
             raise ValueError("exception flags are invalid")
     if full:
         previous_key = None
@@ -1447,6 +2504,84 @@ def validate_store(store: Path, full: bool = False):
     }
 
 
+def validate_store_v3(store: Path, full: bool = False):
+    np, _, _, _ = _dependencies()
+    manifest = load_manifest(store)
+    rows = int(manifest["rows"])
+    for relative in set(manifest["files"].values()):
+        _verify_file(store, manifest, relative)
+    context = WrappedStoreReader(store, manifest)
+    try:
+        streams = [context.stream(name) for name in WRAPPED_STREAM_DTYPES]
+        page_layout = [
+            (stream.page_starts.tolist(), stream.page_stops.tolist())
+            for stream in streams
+        ]
+        if any(layout != page_layout[0] for layout in page_layout[1:]):
+            raise ValueError("wrapped stream page layouts disagree")
+        position_stream = context.stream("position")
+        if (len(position_stream.first_keys) != len(position_stream.pages) or
+                np.any(position_stream.first_keys > position_stream.last_keys) or
+                np.any(position_stream.first_keys[1:] <= position_stream.last_keys[:-1])):
+            raise ValueError("wrapped identity page bounds are invalid")
+        exceptions = context.exceptions()
+        if len(exceptions):
+            exception_rows = exceptions["row"].astype(np.int64)
+            if (np.any(exception_rows < 0) or np.any(exception_rows >= rows) or
+                    np.any(exception_rows[1:] <= exception_rows[:-1]) or
+                    np.any(exceptions["flags"] == 0) or
+                    np.any((exceptions["flags"].astype(np.uint16) & np.uint16(0xF8)) != 0)):
+                raise ValueError("wrapped exception records are invalid")
+        frames_checked = 0
+        if full:
+            decoded = {
+                name: context.stream(name).read_rows()
+                for name in WRAPPED_STREAM_DTYPES
+            }
+            frames_checked = sum(
+                len(context.stream(name).pages) for name in WRAPPED_STREAM_DTYPES
+            )
+            keys = _combine_wrapped_keys(
+                decoded["position"], decoded["substitution"]
+            )
+            substitutions = decoded["substitution"].astype(np.uint64)
+            refs = substitutions >> np.uint64(2)
+            alts = substitutions & np.uint64(3)
+            genome_length = sum(CHROM_LENGTHS.values())
+            if (len(keys) != rows or np.any(keys[1:] <= keys[:-1]) or
+                    np.any(decoded["position"] >= genome_length) or np.any(refs == alts)):
+                raise ValueError("wrapped identity stream violates the GRCh38 contract")
+            if np.any(decoded["z"] > 511) or np.any(decoded["se"] > 63):
+                raise ValueError("wrapped semantic code exceeds its bit width")
+            z_flags = np.zeros(rows, dtype=bool)
+            se_flags = np.zeros(rows, dtype=bool)
+            if len(exceptions):
+                exception_rows = exceptions["row"].astype(np.int64)
+                z_flags[exception_rows] = (exceptions["flags"] & 1) != 0
+                se_flags[exception_rows] = (exceptions["flags"] & 2) != 0
+            if (not np.array_equal(decoded["z"] == 511, z_flags) or
+                    not np.array_equal(decoded["se"] == 63, se_flags)):
+                raise ValueError("wrapped exception flags and sentinels disagree")
+        return {
+            "valid": True,
+            "errors": [],
+            "rows": rows,
+            "profile": manifest["profile"],
+            "full": bool(full),
+            "files_checked": len(set(manifest["files"].values())),
+            "frames_checked": frames_checked,
+        }
+    finally:
+        context.close()
+
+
+def validate_store(store: Path, full: bool = False):
+    manifest = load_manifest(store)
+    if manifest["format_version"] == VERSION:
+        return validate_store_v3(store, full=full)
+    return validate_store_v2(store, full=full)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1454,8 +2589,8 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--input", type=Path, required=True)
     write.add_argument("--output", type=Path, required=True)
     write.add_argument("--metadata", type=Path)
-    write.add_argument("--key-block-rows", type=int, default=KEY_BLOCK_ROWS)
-    write.add_argument("--value-block-rows", type=int, default=VALUE_BLOCK_ROWS)
+    write.add_argument("--key-block-rows", type=int, default=WRAPPED_PAGE_ROWS)
+    write.add_argument("--value-block-rows", type=int, default=WRAPPED_PAGE_ROWS)
     write.add_argument("--se-center-block-rows", type=int, default=SE_CENTER_BLOCK_ROWS)
     read = subparsers.add_parser("read")
     read.add_argument("--store", type=Path, required=True)
@@ -1474,6 +2609,7 @@ def main(argv: list[str] | None = None) -> int:
     batch_read.add_argument("--request", type=Path, required=True)
     batch_read.add_argument("--output", type=Path, required=True)
     batch_read.add_argument("--threads", type=int, default=1)
+    subparsers.add_parser("serve")
     validate = subparsers.add_parser("validate")
     validate.add_argument("--store", type=Path, required=True)
     validate.add_argument("--full", action="store_true")
@@ -1504,6 +2640,8 @@ def main(argv: list[str] | None = None) -> int:
             read_stores_batch(args.request, args.output, threads=args.threads),
             indent=2,
         ))
+    elif args.command == "serve":
+        serve()
     else:
         print(json.dumps(validate_store(args.store, full=args.full), indent=2))
     return 0

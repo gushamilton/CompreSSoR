@@ -1,3 +1,19 @@
+# CompreSSoR 0.3.0
+
+- Introduces the wrapped Pcodec v0.3 store: fixed 262,144-row chunks with
+  independently readable 4,096-row pages for position, substitution, Z9,
+  EAF8, and SE6 streams.
+- Adds an integrity-protected binary page index, CRC32 for every Pcodec header,
+  chunk metadata record and page, per-file SHA-256, strict four-bit
+  substitution validation, and full semantic validation.
+- Adds a persistent cached reader, bounded decompressed-page LRU, local binary
+  bridges, grouped sparse access, and preallocated whole-stream decoding.
+- Keeps v0.2 stores readable while writing only v0.3 stores.
+- Makes palindromic alleles fail closed, validates liftover source builds and
+  GRCh38 primary targets, and serializes same-store threaded reads.
+- Adds real 14,923,434-row FinnGen benchmarks, random sparse/region stress
+  tests, and direct compressed-input FastMR integration.
+
 # CompreSSoR 0.2.1
 
 - Moves the default identity-frame geometry to the measured 8,192-row Pareto

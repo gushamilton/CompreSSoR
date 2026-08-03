@@ -1,45 +1,45 @@
 {
   "schema_version": "1.0.0",
-  "measured_utc": "2026-08-03 22:21:02 UTC",
+  "measured_utc": "2026-08-03 23:40:54 UTC",
   "machine": ["Ferguss-Mini", "Darwin", "24.6.0", "arm64"],
   "store": {
     "rows": 14923434,
-    "bytes": 59369314,
-    "key_block_rows": 8192,
-    "value_block_rows": 32768,
+    "bytes": 58033297,
+    "key_block_rows": 4096,
+    "value_block_rows": 4096,
     "first_key": "1:14717:G:A"
   },
   "summary": [
     {
       "workload": "canonical_25_beta_se",
       "runs": 5,
-      "median_seconds": 0.127,
-      "min_seconds": 0.125,
-      "max_seconds": 0.132,
+      "median_seconds": 0.003,
+      "min_seconds": 0.002,
+      "max_seconds": 0.005,
       "rows": 25
     },
     {
       "workload": "region_chr1_1mb",
       "runs": 5,
-      "median_seconds": 0.114,
-      "min_seconds": 0.103,
-      "max_seconds": 0.122,
+      "median_seconds": 0.003,
+      "min_seconds": 0.003,
+      "max_seconds": 0.004,
       "rows": 4325
     },
     {
       "workload": "full_core",
       "runs": 5,
-      "median_seconds": 1.267,
-      "min_seconds": 1.231,
-      "max_seconds": 1.358,
+      "median_seconds": 0.729,
+      "min_seconds": 0.714,
+      "max_seconds": 0.814,
       "rows": 14923434
     },
     {
       "workload": "full_with_beta_p",
       "runs": 5,
-      "median_seconds": 1.255,
-      "min_seconds": 1.243,
-      "max_seconds": 1.309,
+      "median_seconds": 0.728,
+      "min_seconds": 0.721,
+      "max_seconds": 0.736,
       "rows": 14923434
     }
   ],
@@ -47,140 +47,140 @@
     {
       "workload": "canonical_25_beta_se",
       "run": 1,
-      "seconds": 0.132,
+      "seconds": 0.005,
       "rows": 25,
       "checksum": 1877680958.7118
     },
     {
       "workload": "canonical_25_beta_se",
       "run": 2,
-      "seconds": 0.125,
+      "seconds": 0.003,
       "rows": 25,
       "checksum": 1877680958.7118
     },
     {
       "workload": "canonical_25_beta_se",
       "run": 3,
-      "seconds": 0.125,
+      "seconds": 0.002,
       "rows": 25,
       "checksum": 1877680958.7118
     },
     {
       "workload": "canonical_25_beta_se",
       "run": 4,
-      "seconds": 0.127,
+      "seconds": 0.002,
       "rows": 25,
       "checksum": 1877680958.7118
     },
     {
       "workload": "canonical_25_beta_se",
       "run": 5,
-      "seconds": 0.13,
+      "seconds": 0.003,
       "rows": 25,
       "checksum": 1877680958.7118
     },
     {
       "workload": "region_chr1_1mb",
       "run": 1,
-      "seconds": 0.113,
+      "seconds": 0.004,
       "rows": 4325,
       "checksum": 434645372151.3044
     },
     {
       "workload": "region_chr1_1mb",
       "run": 2,
-      "seconds": 0.121,
+      "seconds": 0.003,
       "rows": 4325,
       "checksum": 434645372151.3044
     },
     {
       "workload": "region_chr1_1mb",
       "run": 3,
-      "seconds": 0.103,
+      "seconds": 0.003,
       "rows": 4325,
       "checksum": 434645372151.3044
     },
     {
       "workload": "region_chr1_1mb",
       "run": 4,
-      "seconds": 0.122,
+      "seconds": 0.004,
       "rows": 4325,
       "checksum": 434645372151.3044
     },
     {
       "workload": "region_chr1_1mb",
       "run": 5,
-      "seconds": 0.114,
+      "seconds": 0.003,
       "rows": 4325,
       "checksum": 434645372151.3044
     },
     {
       "workload": "full_core",
       "run": 1,
-      "seconds": 1.338,
+      "seconds": 0.814,
       "rows": 14923434,
       "checksum": 1171929090002924.2
     },
     {
       "workload": "full_core",
       "run": 2,
-      "seconds": 1.358,
+      "seconds": 0.805,
       "rows": 14923434,
       "checksum": 1171929090002924.2
     },
     {
       "workload": "full_core",
       "run": 3,
-      "seconds": 1.267,
+      "seconds": 0.714,
       "rows": 14923434,
       "checksum": 1171929090002924.2
     },
     {
       "workload": "full_core",
       "run": 4,
-      "seconds": 1.246,
+      "seconds": 0.724,
       "rows": 14923434,
       "checksum": 1171929090002924.2
     },
     {
       "workload": "full_core",
       "run": 5,
-      "seconds": 1.231,
+      "seconds": 0.729,
       "rows": 14923434,
       "checksum": 1171929090002924.2
     },
     {
       "workload": "full_with_beta_p",
       "run": 1,
-      "seconds": 1.255,
+      "seconds": 0.728,
       "rows": 14923434,
       "checksum": 1171929097316302
     },
     {
       "workload": "full_with_beta_p",
       "run": 2,
-      "seconds": 1.262,
+      "seconds": 0.721,
       "rows": 14923434,
       "checksum": 1171929097316302
     },
     {
       "workload": "full_with_beta_p",
       "run": 3,
-      "seconds": 1.243,
+      "seconds": 0.73,
       "rows": 14923434,
       "checksum": 1171929097316302
     },
     {
       "workload": "full_with_beta_p",
       "run": 4,
-      "seconds": 1.248,
+      "seconds": 0.721,
       "rows": 14923434,
       "checksum": 1171929097316302
     },
     {
       "workload": "full_with_beta_p",
       "run": 5,
-      "seconds": 1.309,
+      "seconds": 0.736,
       "rows": 14923434,
       "checksum": 1171929097316302
     }

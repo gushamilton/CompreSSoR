@@ -20,14 +20,16 @@ benchmark_metadata <- function() {
 #'   reference-cache compression-time benchmark, "modes" for the
 #'   chromosome/QC/panel edge benchmark, "release_gate" for the repeated
 #'   real-GWAS release-gate run, or "release_gate_followup" for its real
-#'   chromosome-parallel slice follow-up, "storage_size" for the measured
+#'   chromosome-parallel slice follow-up, "pcodec_access" for the current
+#'   v0.3 full-FinnGen exported-API runs, "storage_size" for the historical
 #'   on-disk size comparison on the real release-gate GWAS, or
-#'   "storage_amortization" for shared-spine costs across multiple studies.
+#'   "storage_amortization" for the historical shared-spine experiment.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
 benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimization",
                                     "modes", "release_gate", "release_gate_followup",
-                                    "storage_size", "storage_amortization")) {
+                                    "pcodec_access", "storage_size",
+                                    "storage_amortization")) {
   kind <- match.arg(kind)
   filename <- switch(kind,
                      pareto = "first-pareto.csv",
@@ -37,6 +39,7 @@ benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimi
                      modes = "modes-edge.csv",
                      release_gate = "release-gate-benchmark.csv",
                      release_gate_followup = "release-gate-followup.csv",
+                     pcodec_access = "pcodec-canonical-access-runs.csv",
                      storage_size = "storage-size-benchmark.csv",
                      storage_amortization = "storage-amortization.csv")
   path <- system.file("benchmarks", filename, package = "CompreSSoR")

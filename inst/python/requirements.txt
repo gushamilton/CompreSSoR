@@ -1,0 +1,4 @@
+# Reproducible runtime used for the v0.3 release benchmarks (Python 3.12).
+numpy==1.26.4
+pcodec==1.0.3
+zstandard==0.25.0

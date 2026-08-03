@@ -114,6 +114,35 @@ test_that("reverse-chain liftover reverse-complements alleles", {
   expect_equal(got$source_variant_id, "source-id")
 })
 
+test_that("liftover rejects unsupported or misspelled source builds", {
+  input <- make_fixture(1L)
+  expect_error(
+    liftover_sumstats(input, input_build = "GRCh36", chain = tempfile()),
+    "GRCh37/hg19 or GRCh38/hg38"
+  )
+  expect_error(
+    liftover_sumstats(input, input_build = "GRCh73", chain = tempfile()),
+    "GRCh37/hg19 or GRCh38/hg38"
+  )
+})
+
+test_that("palindromic alleles remain ambiguous despite divergent EAF", {
+  input <- data.frame(
+    chromosome = "1", base_pair_location = 100L,
+    effect_allele = "A", other_allele = "T",
+    beta = 0.4, standard_error = 0.1,
+    effect_allele_frequency = 0.9
+  )
+  reference <- data.frame(
+    chromosome = "1", base_pair_location = 100L,
+    reference_allele = "A", alternate_allele = "T",
+    effect_allele_frequency = 0.1
+  )
+  got <- harmonise_sumstats(input, reference, strict = FALSE)
+  expect_equal(nrow(got), 0L)
+  expect_equal(attr(got, "alignment_stats")$ambiguous_rows, 1L)
+})
+
 test_that("parallel and serial harmonisation account for unresolved coordinates equally", {
   aligned <- make_fixture(1L)
   missing <- aligned

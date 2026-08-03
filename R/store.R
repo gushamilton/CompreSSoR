@@ -340,7 +340,7 @@ open_compressor <- function(path) {
     verify_pcodec_manifest(file.path(path, "manifest.json"))
   }
   if (identical(manifest$backend, "pcodec") &&
-      !identical(manifest$format_version, "0.2.0-pcodec")) {
+      !manifest$format_version %in% c("0.2.0-pcodec", "0.3.0-pcodec")) {
     stop("unsupported Pcodec format version: ", manifest$format_version %||% "missing", call. = FALSE)
   }
   structure(list(path = path, manifest = manifest), class = "compressor_store")
@@ -543,7 +543,7 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #' }
 #' @export
 read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL, use_cache = FALSE) {
-  store <- if (inherits(store, "compressor_store")) store else open_compressor(store)
+  store <- if (inherits(store, "compressor_store")) store else pcodec_open_store_cached(store)
   if (identical(store$manifest$backend, "pcodec")) {
     if (isTRUE(use_cache)) warning("use_cache is ignored for the block-framed Pcodec backend", call. = FALSE)
     return(pcodec_read_store(store, region = region, variants = variants, columns = columns))

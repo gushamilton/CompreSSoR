@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "measured_utc": "2026-08-03 23:41:11 UTC",
+  "machine": ["Ferguss-Mini", "Darwin", "24.6.0", "arm64"],
+  "store": {
+    "rows": 14923434,
+    "format_version": "0.3.0-pcodec"
+  },
+  "parity": {
+    "sampled_rows": 2500,
+    "exact_row_vs_key": true
+  },
+  "sparse_25_random": {
+    "runs": 100,
+    "median_seconds": 0.003,
+    "p95_seconds": 0.004,
+    "max_seconds": 0.016
+  },
+  "random_1mb_regions": {
+    "runs": 50,
+    "median_seconds": 0.003,
+    "p95_seconds": 0.004,
+    "max_seconds": 0.011
+  },
+  "missing_key_rows": 0,
+  "duplicate_key_rows": 1
+}

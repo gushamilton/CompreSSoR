@@ -4,7 +4,7 @@ CompreSSoR imports GWAS summary statistics, optionally lifts them to GRCh38,
 harmonises their alleles, and writes a compact store with fast whole-genome,
 regional, and sparse-row reads.
 
-The default format is a self-contained, block-framed Pcodec store. It does not
+The default format is a self-contained, page-indexed Pcodec store. It does not
 write rsIDs, textual variant IDs, chromosome strings, beta, or p-values for
 every row. Instead it stores a lossless GRCh38 SNV identity key and three
 independent quantised streams: Z9, EAF8, and SE6. Beta and p are reconstructed
@@ -22,16 +22,22 @@ remotes::install_github("gushamilton/CompreSSoR")
 ```
 
 The default backend calls a small Python environment containing `numpy`,
-`pcodec`, and `zstandard`:
+`pcodec`, and `zstandard`. Python 3.12 is recommended; the release runtime is
+pinned in `inst/python/requirements.txt` in the source repository:
 
 ```bash
-python3 -m pip install numpy pcodec zstandard
+python3.12 -m venv ~/.virtualenvs/compressor
+~/.virtualenvs/compressor/bin/python -m pip install \
+  numpy==1.26.4 pcodec==1.0.3 zstandard==0.25.0
 ```
+
+From a source checkout, `pip install -r inst/python/requirements.txt` installs
+the same pins.
 
 Point R at that interpreter if it is not the first `python3` on `PATH`:
 
 ```r
-options(CompreSSoR.python = "/path/to/python")
+options(CompreSSoR.python = "~/.virtualenvs/compressor/bin/python")
 # or set COMPRESSOR_PYTHON before starting R
 ```
 
@@ -115,11 +121,12 @@ Unknown columns remain available in memory.
 
 The normal `mode = "qc"` path follows the BP pipeline's conservative rules:
 
-- liftover to GRCh38 when `input_build` is not GRCh38;
+- liftover only from an explicitly declared GRCh37/hg19 build to GRCh38;
 - resolve rsID aliases against the fixed reference when coordinates are absent;
 - match the canonical `chrom:pos:REF:ALT` allele identity;
 - flip beta, Z, and EAF when the effect allele is reversed;
-- allow unambiguous strand complements;
+- allow unambiguous strand complements, while always dropping palindromic
+  A/T and C/G matches rather than treating population EAF as strand proof;
 - drop unmatched, incompatible, ambiguous, duplicate, zero-mapped, and
   multi-mapped rows by default; and
 - record every count and the reference identity/hash in `manifest.json`.
@@ -157,7 +164,7 @@ Rows are sorted by the identity key before encoding. `A=0`, `C=1`, `G=2`, and
 
 | Logical field | Physical representation | Read-time result |
 |---|---|---|
-| chromosome, position, REF, ALT | `key = (global_GRCh38_position << 4) \| (REF << 2) \| ALT`; recursive escaped position gaps plus a 4-bit substitution stream, all block-compressed with Pcodec | Decoded exactly; no external reference |
+| chromosome, position, REF, ALT | `key = (global_GRCh38_position << 4) \| (REF << 2) \| ALT`; global position is stored as a Pcodec `uint32` stream and the complete substitution as a Pcodec `uint8` stream constrained to four bits | Decoded exactly; no external reference |
 | Z | 9-bit semantic codes over `[-3.5, 3.5)`; one missing code and one float32 exception code | Central maximum absolute quantisation error about 0.00687; tails retained as float32 |
 | EAF | 8-bit `asin(sqrt(EAF))` quantisation; invalid/missing values use float32 exceptions | Absolute error bounded by 0.004 in the standard profile |
 | SE | 6-bit block-centred residual of `log2(SE)` after conditioning on decoded EAF; missing and float32 exception codes | Positive SE reconstructed on the original scale; relative precision is data-dependent and recorded by profile |
@@ -166,14 +173,16 @@ Rows are sorted by the identity key before encoding. `A=0`, `C=1`, `G=2`, and
 | rsID / textual variant ID | Not stored | Not reconstructed; identity is chromosome, position, REF, ALT |
 | arbitrary extra columns | Not in the default Pcodec payload | Use `backend = "parquet", keep_extras = TRUE` when required |
 
-New stores use 8,192-row identity frames and 32,768-row value frames; older
-0.2 stores remain readable because physical frame sizes are declared and
-validated in the manifest. SE centre blocks remain 65,536 rows independently
-of physical frame geometry. Z, EAF, and SE are independent streams. Sparse
-exceptional values are held in value-frame-aligned Zstandard-compressed
-float32 frames. Frame offsets and genomic bounds support
+New v0.3 stores use 262,144-row Pcodec chunks divided into independently
+readable 4,096-row pages for every stream. Older v0.2 frame stores remain
+readable. SE centre blocks remain 65,536 rows independently of physical page
+geometry. Z, EAF, and SE are independent streams. Sparse exceptional values
+are held in one Zstandard-compressed float32 sidecar. Page offsets and genomic
+bounds support
 regional, sparse-row, and canonical `chromosome:position:REF:ALT` lookups
-without scanning the whole file. The complete
+without scanning the whole file. Each header, chunk-metadata record and page
+has an index-protected CRC32; the manifest and every durable file also have
+SHA-256 records. The complete
 layout is specified in [inst/doc/pcodec-format.md](inst/doc/pcodec-format.md).
 
 For a numerically lossless Z/SE/EAF representation, use
@@ -200,33 +209,37 @@ The current exported R API was measured on the Mac mini against a real
 14,923,434-row FinnGen SNP GWAS. Its eight-column gzip contains
 `chrom/pos/ALT/REF/beta/se/eaf/p`; the canonical Pcodec store was rebuilt with
 the same REF/ALT identity as the indexed VCF and passed full validation across
-all 2,278 key and value frames. Source, store, and temporary bridges remained
-on the same external SSD. Access timings are medians of five complete runs.
-The retained [full-FinnGen frame-geometry results](inst/benchmarks/pcodec-geometry-full.csv)
-show why 8,192-row key frames are the default.
+all 18,220 pages. Durable inputs and stores remained on the external SSD;
+temporary decoded bridges used the machine's ordinary temporary directory and
+were removed after every call. Access timings are medians of five complete
+exported-API runs after one warm-up.
 
 | Storage/write measure | Result |
 |---|---:|
 | Source TSV.gz | 201,658,018 B |
-| Self-contained CompreSSoR store | 59,369,314 B |
-| Compression ratio | 3.40x |
-| Observed canonical rebuild | 63.564 s |
+| Self-contained CompreSSoR store | 58,033,297 B |
+| Compression ratio | 3.47x |
+| Observed canonical rebuild | 62.982 s |
 
 | Access workload | Median |
 |---|---:|
-| 25 canonical keys, identity + beta/SE | 0.127 s |
-| chr1 1 Mb region, 4,325 rows | 0.114 s |
-| Full identity + Z/SE/EAF | 1.267 s |
-| Full identity + Z/SE/EAF + reconstructed beta/p | 1.255 s |
+| 25 canonical keys, identity + beta/SE | 0.003 s |
+| chr1 1 Mb region, 4,325 rows | 0.003 s |
+| Full identity + Z/SE/EAF | 0.729 s |
+| Full identity + Z/SE/EAF + reconstructed beta/p | 0.728 s |
 
-The single-call timings include Python startup. Analyses spanning several GWAS
-should use `read_sumstats_batch()`, which starts the codec once, verifies and
-indexes each store once, and coalesces repeated identical reads. In a five
-exposure by five outcome IVW benchmark using 25 exact REF/ALT keys, ten logical
-reads plus all 25 MR estimates took a median 0.140 s. The same work took 0.196 s
-from VCF.gz plus Tabix and 18.175 s from ten full TSV.gz scans: 1.40x faster
-than Tabix and 129.8x faster than gzip scanning. All three paths returned 25
-keys per pair and an expected self-comparison estimate of one.
+The persistent reader starts Python once per R session, caches validated store
+metadata and a bounded set of decoded pages, and uses a compact binary bridge.
+Across 100 random 25-key sets and 50 random 1-Mb regions, both medians were
+0.003 s and both p95 values were 0.004 s. Analyses spanning several GWAS should
+use `read_sumstats_batch()`, which also coalesces requests that are literally
+identical within a batch. Optimized same-file deduplication and independent-read
+comparisons are reported separately so codec I/O is not confused with a faster
+MR estimator path. In the controlled 5-exposure x 5-outcome IVW benchmark,
+ten explicit Pcodec reads plus the same native grid estimator used by every
+format took 0.027 s, versus 0.175 s for ten Tabix queries and 18.651 s for ten
+TSV.gz scans. The separately labelled optimized same-store batch took 0.006 s
+because its ten identical requests were decoded once.
 
 The timings include Pcodec decompression, compact binary bridges, compiled
 reconstruction, R data frames, and—for the grid benchmark—the FastMR estimate.
@@ -236,7 +249,8 @@ Machine-readable records:
 
 - [five-run canonical access benchmark](inst/benchmarks/pcodec-canonical-access.json)
 - [individual canonical access runs](inst/benchmarks/pcodec-canonical-access-runs.csv)
-- [earlier full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
+- [random sparse/region stress record](inst/benchmarks/pcodec-v03-stress.json)
+- [historical v0.2 full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
 - [earlier real-data numerical audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
 - `benchmark_table()` for the shipped historical benchmark tables
 
