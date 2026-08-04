@@ -27,7 +27,8 @@ gzip -dc "$source_sumstats" |
     print $2, $3, $1, $5, $4, ".", "PASS",
       "BETA=" $6 ";SE=" $7 ";P=" $8
   }' |
-  bcftools sort -T "$output_dir/sorttmp" -m 4G -Oz +    -o "$output_dir/sumstats.vcf.gz"
+  bcftools sort -T "$output_dir/sorttmp" -m 4G -Oz \
+    -o "$output_dir/sumstats.vcf.gz"
 
 tabix -f -p vcf "$output_dir/sumstats.vcf.gz"
 echo "Wrote $output_dir/sumstats.vcf.gz and .tbi"

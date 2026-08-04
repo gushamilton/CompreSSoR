@@ -21,7 +21,7 @@ Imports:
     digest,
     jsonlite
 Suggests:
-    arrow (>= 23.0.0),
+    arrow (>= 22.0.0),
     dplyr,
     testthat (>= 3.0.0),
     rtracklayer,

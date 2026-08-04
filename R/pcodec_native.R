@@ -419,8 +419,10 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     }), unname(unlist(files)))
   )
   manifest$created_utc <- now_utc()
-  manifest$tolerances <- list(
+manifest$tolerances <- list(
     eaf_abs_max = 0.004, z_abs_max_central = 7 / (2 * (2^9 - 2)),
+    se_relative_max = 2^(4 / PCODEC_NATIVE_SE_COUNT) - 1,
+    beta_error_bound = "1.02 * (abs(SE) * z_abs_max_central + abs(Z) * abs(SE) * se_relative_max)",
     z_central_range = c(-3.5, 3.5),
     se_profile = "block-centred log2 residual quantisation",
     exception_precision = "float32", exact_values_in_exception_sidecar = FALSE

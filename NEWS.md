@@ -1,5 +1,14 @@
 # CompreSSoR 0.4.0
 
+- Adds the final same-data BP FinnGen chr1 Pareto record: nine formats, five
+  access repetitions, explicit self-contained/reference-anchored contracts,
+  package round-trip validation, and a README plot generated from the checked
+  CSV record.
+- Records theoretical validation bounds for the standard lossy Z9/EAF8/SE8
+  profile in the manifest, including the SE-relative and beta reconstruction
+  tolerances.
+- Lowers the Arrow compatibility floor to the Arrow 22 API available on the
+  supported BluePebble R environment.
 - New stores use the native Pcodec backend when Rust/Cargo is available at
   installation time. The 0.4 block-indexed format keeps the self-contained
   GRCh38 identity key and semantic Z/EAF/SE profile while avoiding the Python

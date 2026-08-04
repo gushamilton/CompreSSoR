@@ -24,6 +24,8 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
   expect_equal(store$manifest$key_block_rows, 131072L)
   expect_equal(store$manifest$value_block_rows, 65536L)
   expect_equal(store$manifest$codec$page_rows, 131072L)
+  expect_equal(store$manifest$tolerances$eaf_abs_max, 0.004)
+  expect_true(is.finite(store$manifest$tolerances$se_relative_max))
   expect_false(file.exists(file.path(path, "variants.parquet")))
   expect_true(validate_compressor(store, full = TRUE)$valid)
 

@@ -1,0 +1,8 @@
+metric,value
+rows,1124344
+max_abs_z_error,0.00686274509803964
+max_abs_se_error,0.0458287408341827
+max_abs_eaf_error,0.00307997331906917
+max_se_relative_error,0.0110041435356829
+max_abs_beta_error,0.0647695895145652
+max_beta_error_over_quantisation_bound,0.989830554895656

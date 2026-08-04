@@ -25,6 +25,13 @@ REF/ALT code; Z is a 9-bit semantic code; EAF is an 8-bit arcsine code; and SE
 is an 8-bit block-centred log2 residual. Rare out-of-range or missing values
 are stored as float32 exceptions. Beta and p-values are derived when read.
 
+The standard profile is bounded-lossy by design: central Z has a 9-bit bin
+bound, EAF has a documented absolute bound of 0.004, and SE is encoded as an
+8-bit log2 residual with a documented relative bound of `2^(4/254)-1`. The
+manifest records these tolerances so validation can check the representation
+against its actual quantisation contract. Use the exact Parquet path when
+bit-for-bit preservation of every numeric input is required.
+
 The identity key is self-contained: readers do not need an rsID table, shared
 variant spine, or GRCh38 reference file. The reference is still used by the
 ingestion and harmonisation pipeline when a source GWAS needs to be aligned.

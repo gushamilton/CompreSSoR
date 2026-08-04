@@ -22,7 +22,7 @@
 #' @param chain Optional GRCh37-to-GRCh38 chain file.
 #' @param chrom_threads Number of chromosome workers for harmonisation. Values
 #'   above one use chromosome-parallel harmonisation and share the reference.
-#' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
+#' @param profile `"standard"` uses semantic Z9/EAF8/SE8 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
 #' @param backend Storage backend. The default, `"pcodec"`, is the compact

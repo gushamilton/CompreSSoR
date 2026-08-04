@@ -1,0 +1,5 @@
+format,write_seconds
+TSV uncompressed,0.336
+Parquet self-contained exact,0.611
+VCF bgzip + Tabix,9.562
+CompreSSoR native Pcodec,10.389

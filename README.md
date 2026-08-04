@@ -27,23 +27,29 @@ The store keeps the variant identity in every file, without repeating rsIDs or
 requiring a study-specific external spine. It stores the core numerical streams
 in Pcodec and derives beta and p-value when requested.
 
-The repository keeps the original full-FinnGen Pareto plot because it records
-the benchmark that motivated the format. Its reference-anchored points exclude
-the shared identity payload; the current package is self-contained and therefore
-must include the identity key in its headline size.
+The current headline plot below is a clean, same-data BP benchmark on 1,124,344
+FinnGen chr1 SNVs. It measures five formats, each carrying its variant identity
+in the file, with five access runs per format. Storage is relative to the same
+source TSV.gz; higher is smaller and left is faster.
 
-| Measure | Historical record |
-|---|---:|
-| Source TSV.gz | 198,128,448 bytes |
-| Reference-anchored Pcodec payload | 34,485,522 bytes |
-| Payload versus TSV.gz | **5.75×** |
+![Compression/access Pareto frontier](inst/figures/compressor-pareto.png)
 
-The headline Pareto result below preserves the measured historical frontier
-that motivated the Pcodec representation. The legacy native overlay is kept as
-a diagnostic record; the current native implementation benchmark is recorded
-separately while the final full-FinnGen comparison is regenerated.
+| Format | Access median | Storage relative to TSV.gz |
+|---|---:|---:|
+| TSV gzip | 0.363 s | 1.00× |
+| TSV uncompressed | 0.105 s | 0.30× |
+| Parquet self-contained exact | 0.132 s | 0.74× |
+| VCF + Tabix | 0.794 s | 0.94× |
+| CompreSSoR Pcodec self-contained (default) | **0.116 s** | **3.53×** |
 
-![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
+The 3.53× point is what users actually get from the portable default: the exact
+position/REF→ALT identity is inside every `.cpr` store, so it does not depend on
+a separately counted spine. Older reference-anchored experiments are retained
+as historical records, but are deliberately not part of this comparison.
+The full measured table, write timings, validation bounds, and access repeats
+are in [`inst/benchmarks/pareto-chr1-summary.csv`](inst/benchmarks/pareto-chr1-summary.csv),
+[`inst/benchmarks/pareto-chr1-write.csv`](inst/benchmarks/pareto-chr1-write.csv),
+and [`inst/benchmarks/pareto-chr1-validation.csv`](inst/benchmarks/pareto-chr1-validation.csv).
 
 The old one-million-row Mac mini fixture remains available as a historical
 engineering record; the current real-data check is run on BP below.
@@ -61,29 +67,26 @@ rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
 
 Each access number is the median of five runs; the canonical-key test requests
 100 keys. The store passed full validation and all checksums. This is a
-reproducible engineering check for the installed native backend;
-the historical real-GWAS table above predates the native-only format.
+reproducible engineering check for the installed native backend; the older
+real-GWAS records predate the native-only format.
 
-The current BP chr1 benchmark uses 1,124,344 biallelic SNVs and five repetitions
-per workload. The source is an eight-column TSV.gz (`chrom`, `pos`, `REF`,
-`ALT`, `beta`, `SE`, `EAF`, `p`):
+The current BP chr1 package check uses the same 1,124,344 biallelic SNVs and
+five repetitions per workload. The source is an eight-column TSV.gz (`chrom`,
+`pos`, `REF`, `ALT`, `beta`, `SE`, `EAF`, `p`):
 
 | Workload | Best self-contained Pcodec |
 |---|---:|
-| Store size | **4,297,931 bytes** |
-| Write time, median of 5 | **10.258 s** |
-| Full numeric read | **0.060 s** |
-| Full numeric read with beta/p | **0.060 s** |
-| Full identity + numeric read | **0.121 s** |
+| Store size | **4,298,204 bytes** |
+| Write time, single measured conversion | **10.389 s** |
+| Full numeric read | **0.057 s** |
+| Full identity + numeric read | **0.116 s** |
 | 1 Mb identity + numeric region | **0.021 s** |
 
-The source TSV.gz is 15,186,281 bytes, so the best self-contained store is
-**3.53× smaller**. The BP sweep reduced the old 4,371,286-byte store by 1.68%
-using 131,072-row identity frames and 131,072-row Pcodec pages. The
-reference-anchored numeric payload plus native index is 5.92× smaller than the source;
-that is the correct comparison to the old 5.75× historical point. See the
+The source TSV.gz is 15,186,281 bytes, so the self-contained store is
+**3.53× smaller**. The selected geometry uses 131,072-row identity frames and
+Pcodec pages, and 65,536-row value frames. See the [same-data summary](inst/benchmarks/pareto-chr1-summary.csv),
 [BP optimization record](inst/benchmarks/bp-finngen-chr1-optimization.csv),
-[reproducible script](scripts/benchmark-finngen-chr1.R).
+and [reproducible benchmark script](scripts/benchmark-pareto-chr1.R).
 
 See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)
 for all runs and [the technical guide](docs/README-technical.md) for protocol,

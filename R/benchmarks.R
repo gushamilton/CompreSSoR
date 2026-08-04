@@ -1,14 +1,16 @@
 benchmark_metadata <- function() {
   list(
-    benchmark_id = "first_pareto_10m_full_read",
-    description = "Measured five-run full-read benchmark on a real 10-million-row GWAS",
-    rows = 10000000L,
+    benchmark_id = "compressor_chr1_pareto_same_data_v1",
+    description = "Five-run same-data Pareto benchmark on five real FinnGen chr1 variant-key formats",
+    rows = 1124344L,
     runs = 5L,
     metric = "median_full_read_seconds",
     compression_metric = "compression_ratio_vs_source_gzip",
-    data = "inst/benchmarks/first-pareto.csv",
-    plot = "inst/figures/compressor-pareto.svg",
-    comparison = "inst/benchmarks/vcf-tabix.csv"
+    data = "inst/benchmarks/pareto-chr1-summary.csv",
+    plot = "inst/figures/compressor-pareto.png",
+    access = "inst/benchmarks/pareto-chr1-access-runs.csv",
+    write = "inst/benchmarks/pareto-chr1-write.csv",
+    validation = "inst/benchmarks/pareto-chr1-validation.csv"
   )
 }
 
@@ -24,13 +26,15 @@ benchmark_metadata <- function() {
 #'   v0.3 full-FinnGen exported-API runs, "storage_size" for the historical
 #'   on-disk size comparison on the real release-gate GWAS, or
 #'   "storage_amortization" for the historical shared-spine experiment, or
-#'   "native_se8" for the current native implementation smoke benchmark.
+#'   "native_se8" for the current native implementation smoke benchmark, or
+#'   "pareto_chr1" for the current same-data FinnGen chr1 Pareto benchmark.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
 benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimization",
                                     "modes", "release_gate", "release_gate_followup",
                                     "pcodec_access", "storage_size",
-                                    "storage_amortization", "native_se8")) {
+                                    "storage_amortization", "native_se8",
+                                    "pareto_chr1")) {
   kind <- match.arg(kind)
   filename <- switch(kind,
                      pareto = "first-pareto.csv",
@@ -43,7 +47,8 @@ benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimi
                      pcodec_access = "pcodec-canonical-access-runs.csv",
                      storage_size = "storage-size-benchmark.csv",
                      storage_amortization = "storage-amortization.csv",
-                     native_se8 = "native-pcodec-se8-frame.csv")
+                     native_se8 = "native-pcodec-se8-frame.csv",
+                     pareto_chr1 = "pareto-chr1-summary.csv")
   path <- system.file("benchmarks", filename, package = "CompreSSoR")
   if (!nzchar(path)) path <- file.path("inst", "benchmarks", filename)
   utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)

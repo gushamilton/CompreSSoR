@@ -37,6 +37,9 @@ The standard profile stores Z, EAF, and SE in separate numerical streams:
 This is a bounded-lossy representation. The variant key remains exact, and the
 manifest records the numeric profile and tolerances. A Parquet exact store is
 available when an analysis needs exact doubles or exact original p-values.
+For the standard profile, the manifest records the EAF absolute bound, the
+central Z bin bound, the SE relative quantisation bound, and the derived-beta
+error formula; the exact Parquet backend is the lossless route.
 
 ## Ingestion and GRCh38
 
@@ -120,19 +123,19 @@ as slow as the selected 131,072-row frame.
 
 ## Benchmark reconciliation
 
-The historical Pareto plot and the current self-contained store measure
-different byte contracts. The historical reference-anchored Pcodec point
-omits the shared identity stream because the canonical reference was counted
-once outside every study. The current `.cpr` store intentionally includes its
-exact global-position plus REF→ALT key, so it can be moved and read without an
-external spine.
+The current headline comparison uses one contract only: every point carries
+variant identity in the file. The `.cpr` store intentionally includes its exact
+global-position plus REF→ALT key, so it can be moved and read without an
+external spine. Earlier reference-anchored experiments remain archived for
+historical context but are not presented as competing formats.
 
 On the BP FinnGen chr1 fixture (1,124,344 SNVs; source TSV.gz 15,186,281
-bytes), the numeric streams plus native index are 2,564,910 bytes, or 5.92× smaller
-than the source. The best self-contained store is 4,297,931 bytes, or 3.53×
-smaller. The difference is the identity key, not a missing or malformed
-Parquet/Pcodec numeric payload. The five-run records and candidate sweep are
-in `inst/benchmarks/bp-finngen-chr1-optimization.csv`.
+bytes), the measured self-contained `.cpr` store is 4,298,204 bytes, or 3.53×
+smaller. The complete same-data comparison is in
+`inst/benchmarks/pareto-chr1-summary.csv`; its five-run access table, write
+timings, validation bounds, and plot frontier are stored alongside it. Every
+row in that headline record carries variant identity, so the storage numbers
+are directly comparable without a separately counted spine.
 
 The native R-facing decoder precomputes the block-centre factors once per
 frame, rather than evaluating `exp2()` for every row. A separate direct-file

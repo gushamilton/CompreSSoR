@@ -5,11 +5,22 @@
 `bp-finngen-chr1-optimization.csv` is the current five-run Linux evidence
 from BluePebble compute nodes, using the real 1,124,344-row FinnGen chr1 core
 SNV file. It records the identity-frame and Pcodec-page sweep, the selected
-131,072-row identity/page geometry, and the explicit reference-anchored versus
-self-contained byte contracts. The selected store is 4,297,931 bytes versus
-15,186,281 bytes for the source TSV.gz (3.53x smaller). The numeric-only
-payload plus native index is 2,564,910 bytes (5.92x smaller) because it excludes the
-self-contained identity streams.
+131,072-row identity/page geometry. The final key-bearing store is 4,298,204 bytes
+versus 15,186,281 bytes for the source TSV.gz (3.53x smaller).
+
+The final same-data Pareto record is split into:
+
+- `pareto-chr1-summary.csv`: all five measured variant-key formats and five access runs;
+- `pareto-chr1-access-runs.csv`: individual access timings;
+- `pareto-chr1-write.csv`: conversion/write timings;
+- `pareto-chr1-validation.csv`: package round-trip and quantisation-bound checks;
+- `pareto-chr1-frontier.csv`: the plotted, contract-specific frontier.
+
+The corresponding plot is `inst/figures/compressor-pareto.png`. The standard
+CompreSSoR result is the self-contained Pcodec point (4,298,204 bytes and
+0.116 seconds on this fixture). Every format in the plotted record carries
+variant identity. Reference-anchored numeric projections are retained only in
+older engineering records and are not used for the headline comparison.
 
 ## Earlier release evidence
 
@@ -81,7 +92,8 @@ workers are useful for sparse and batch access.
 
 ## Pareto design record
 
-`first-pareto.csv` is the data behind `inst/figures/compressor-pareto.svg`.
+`first-pareto.csv` is the historical data behind the old Pareto design plot;
+the current key-bearing plot is `inst/figures/compressor-pareto.png`.
 It records the original five-repeat representation sweep that selected the
 independent quantised streams. It is a historical design benchmark rather than
 the current exported-package timing. Only its median summary survives here: raw
