@@ -114,16 +114,19 @@ lookups to identify candidate pages without a whole-file scan.
 
 - `manifest.sha256` authenticates `manifest.json` before metadata are trusted.
 - The manifest records byte length and SHA-256 for every durable file.
-- Index files are SHA-verified before ordinary reads.
+- Ordinary reads SHA-verify the binary indexes before trusting page offsets,
+  and SHA-verify the exception sidecar before applying any exception value.
 - Every Pcodec header, chunk-metadata record, and page has an index-protected
-  CRC32 checked when used.
-- The exception sidecar is SHA-verified when first loaded by a reader.
+  CRC32 checked when that payload is read. Ordinary sparse and projected reads
+  therefore authenticate metadata and every byte they actually consume, but
+  deliberately do not hash unrelated multi-megabyte stream payloads.
 
-`validate_compressor()` SHA-verifies every file and checks every index and
-exception record. `validate_compressor(full=TRUE)` additionally decodes every
-page, verifies strict identity order and GRCh38 bounds, enforces the four-bit
-substitution contract and numeric widths, and checks exception flags against
-Z/SE sentinel codes.
+`validate_compressor()` is the complete durable-file integrity operation: it
+SHA-verifies every file and checks every index and exception record.
+`validate_compressor(full=TRUE)` additionally decodes every page, verifies
+strict identity order and GRCh38 bounds, enforces the four-bit substitution
+contract and numeric widths, and checks exception flags against Z/SE sentinel
+codes.
 
 ## Reader path
 
@@ -141,8 +144,11 @@ page so each page is decoded once. The bridge is deleted after each call and is
 not part of the durable format.
 
 `read_sumstats_batch()` submits several canonical-key requests through the same
-worker. Requests with exactly the same normalized store path, key vector, and
-projection share one decoded bridge within that batch.
+worker. By default, requests with exactly the same normalized store path, key
+vector, and projection may share one decoded bridge within that batch. The
+release benchmark disables coalescing and page caching and requests a fresh
+reader context for every logical study, so its 1x1, 5x5, and 25x25 results do
+not rely on same-store request deduplication.
 
 ## v0.2 compatibility
 

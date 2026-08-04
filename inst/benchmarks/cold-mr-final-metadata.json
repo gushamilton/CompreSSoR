@@ -1,0 +1,271 @@
+{
+  "schema_version": "1.0.0",
+  "complete": true,
+  "measured_utc": "2026-08-04T04:04:17Z",
+  "seed": 20260804,
+  "repetitions": 5,
+  "pcodec_io_threads": 20,
+  "instrument_panel": {
+    "path": "/Users/fergushamilton/projects/fastMR/benchmarks/finngen_relaxed_instruments.tsv",
+    "sha256": "bd8f020d9a4cf9cb60c26f1c46a20482f1e2e871a900feb41d9f67e2867a56a4",
+    "variants": 25,
+    "selection": "FinnGen p<1e-5; PLINK2 clump against GRCh38 1KG EUR, r2<0.001, 10000 kb; first 25 index variants by p"
+  },
+  "source_revisions": {
+    "CompreSSoR": "6890d2fb93f6de81108b0114af27f9b72a647727",
+    "fastMR": "03a770e118147bf1f6ffe37aafbe98aef43d61f5"
+  },
+  "source_bytes": {
+    "pcodec": 58033297,
+    "tsv_gz": 201658018,
+    "vcf_gz_plus_tbi": 228634485
+  },
+  "cache_protocol": "fresh R process and a distinct fresh F_NOCACHE-staged copy for every logical study and every format; Pcodec request coalescing/page cache disabled, fresh reader contexts, exceptions reloaded, and F_NOCACHE on read descriptors (a symmetric cache-controlled cold approximation)",
+  "parity": [
+    {
+      "workload": "full_load",
+      "identity_exact_all_formats": true,
+      "tsv_vcf_numeric_exact": true,
+      "missing_counts_exact_all_formats": true
+    },
+    {
+      "workload": "mr_1x1",
+      "pcodec_direct_explicit_exact": true,
+      "tsv_vcf_exact": true,
+      "tsv_vcf_input_exact": true,
+      "pcodec_raw_numeric_within_profile": true,
+      "pcodec_raw_max_delta": {
+        "max_abs_beta": 0.00826687278078897,
+        "max_abs_standard_error": 0.001857973528038015,
+        "max_abs_z": 2.2338315996961455E-7
+      }
+    },
+    {
+      "workload": "mr_25x25",
+      "pcodec_direct_explicit_exact": true,
+      "tsv_vcf_exact": true,
+      "tsv_vcf_input_exact": true,
+      "pcodec_raw_numeric_within_profile": true,
+      "pcodec_raw_max_delta": {
+        "max_abs_beta": 0.00826687278078897,
+        "max_abs_standard_error": 0.001857973528038015,
+        "max_abs_z": 2.2338315996961455E-7
+      }
+    },
+    {
+      "workload": "mr_5x5",
+      "pcodec_direct_explicit_exact": true,
+      "tsv_vcf_exact": true,
+      "tsv_vcf_input_exact": true,
+      "pcodec_raw_numeric_within_profile": true,
+      "pcodec_raw_max_delta": {
+        "max_abs_beta": 0.00826687278078897,
+        "max_abs_standard_error": 0.001857973528038015,
+        "max_abs_z": 2.2338315996961455E-7
+      }
+    }
+  ],
+  "summary": [
+    {
+      "workload": "full_load",
+      "format": "pcodec_full",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 3.182,
+      "min_total_seconds": 3.139,
+      "max_total_seconds": 3.2,
+      "median_io_seconds": 0.845,
+      "median_estimator_seconds": 0.0,
+      "median_peak_rss_bytes": 2168586240,
+      "median_pcodec_source_bytes_read": 58020839.0
+    },
+    {
+      "workload": "full_load",
+      "format": "tsv_full",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 3.954,
+      "min_total_seconds": 3.938,
+      "max_total_seconds": 4.036,
+      "median_io_seconds": 1.69,
+      "median_estimator_seconds": 0.0,
+      "median_peak_rss_bytes": 2086371328,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "full_load",
+      "format": "vcf_full",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 10.163,
+      "min_total_seconds": 9.834,
+      "max_total_seconds": 10.356,
+      "median_io_seconds": 7.623,
+      "median_estimator_seconds": 0.0,
+      "median_peak_rss_bytes": 2013642752,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_1x1",
+      "format": "pcodec_direct",
+      "runs": 5,
+      "io_threads": 2,
+      "median_total_seconds": 0.264,
+      "min_total_seconds": 0.255,
+      "max_total_seconds": 0.309,
+      "median_io_seconds": 0.254,
+      "median_estimator_seconds": 0.002,
+      "median_peak_rss_bytes": 95059968,
+      "median_pcodec_source_bytes_read": 3912390.0
+    },
+    {
+      "workload": "mr_1x1",
+      "format": "pcodec_explicit",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 0.387,
+      "min_total_seconds": 0.379,
+      "max_total_seconds": 0.389,
+      "median_io_seconds": 0.374,
+      "median_estimator_seconds": 0.005,
+      "median_peak_rss_bytes": 106053632,
+      "median_pcodec_source_bytes_read": 3912390.0
+    },
+    {
+      "workload": "mr_1x1",
+      "format": "tsv_gz",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 6.747,
+      "min_total_seconds": 6.692,
+      "max_total_seconds": 6.777,
+      "median_io_seconds": 6.735,
+      "median_estimator_seconds": 0.00499999999999989,
+      "median_peak_rss_bytes": 1655177216,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_1x1",
+      "format": "vcf_tabix",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 0.085,
+      "min_total_seconds": 0.084,
+      "max_total_seconds": 0.097,
+      "median_io_seconds": 0.074,
+      "median_estimator_seconds": 0.005,
+      "median_peak_rss_bytes": 114868224,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_25x25",
+      "format": "pcodec_direct",
+      "runs": 5,
+      "io_threads": 20,
+      "median_total_seconds": 1.274,
+      "min_total_seconds": 1.249,
+      "max_total_seconds": 1.378,
+      "median_io_seconds": 1.261,
+      "median_estimator_seconds": 0.00299999999999989,
+      "median_peak_rss_bytes": 269942784,
+      "median_pcodec_source_bytes_read": 97809750.0
+    },
+    {
+      "workload": "mr_25x25",
+      "format": "pcodec_explicit",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 7.624,
+      "min_total_seconds": 7.535,
+      "max_total_seconds": 7.653,
+      "median_io_seconds": 7.61,
+      "median_estimator_seconds": 0.00599999999999934,
+      "median_peak_rss_bytes": 119914496,
+      "median_pcodec_source_bytes_read": 97809750.0
+    },
+    {
+      "workload": "mr_25x25",
+      "format": "tsv_gz",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 165.266,
+      "min_total_seconds": 163.466,
+      "max_total_seconds": 173.13,
+      "median_io_seconds": 165.25,
+      "median_estimator_seconds": 0.00800000000000978,
+      "median_peak_rss_bytes": 1790377984,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_25x25",
+      "format": "vcf_tabix",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 1.537,
+      "min_total_seconds": 1.518,
+      "max_total_seconds": 1.544,
+      "median_io_seconds": 1.523,
+      "median_estimator_seconds": 0.00600000000000001,
+      "median_peak_rss_bytes": 128417792,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_5x5",
+      "format": "pcodec_direct",
+      "runs": 5,
+      "io_threads": 10,
+      "median_total_seconds": 0.479,
+      "min_total_seconds": 0.461,
+      "max_total_seconds": 0.626,
+      "median_io_seconds": 0.468,
+      "median_estimator_seconds": 0.002,
+      "median_peak_rss_bytes": 146227200,
+      "median_pcodec_source_bytes_read": 19561950.0
+    },
+    {
+      "workload": "mr_5x5",
+      "format": "pcodec_explicit",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 1.581,
+      "min_total_seconds": 1.535,
+      "max_total_seconds": 1.612,
+      "median_io_seconds": 1.569,
+      "median_estimator_seconds": 0.00499999999999989,
+      "median_peak_rss_bytes": 115163136,
+      "median_pcodec_source_bytes_read": 19561950.0
+    },
+    {
+      "workload": "mr_5x5",
+      "format": "tsv_gz",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 32.83,
+      "min_total_seconds": 32.412,
+      "max_total_seconds": 33.883,
+      "median_io_seconds": 32.817,
+      "median_estimator_seconds": 0.00500000000000256,
+      "median_peak_rss_bytes": 1671217152,
+      "median_pcodec_source_bytes_read": null
+    },
+    {
+      "workload": "mr_5x5",
+      "format": "vcf_tabix",
+      "runs": 5,
+      "io_threads": 1,
+      "median_total_seconds": 0.33,
+      "min_total_seconds": 0.326,
+      "max_total_seconds": 0.332,
+      "median_io_seconds": 0.316,
+      "median_estimator_seconds": 0.00600000000000001,
+      "median_peak_rss_bytes": 122109952,
+      "median_pcodec_source_bytes_read": null
+    }
+  ],
+  "system_isolation": {
+    "mediaanalysisd": "paused during the 75 timed trials and resumed after completion",
+    "root_services_changed": false,
+    "spotlight_indexing_configuration_changed": false,
+    "scratch_suffix": ".noindex"
+  }
+}

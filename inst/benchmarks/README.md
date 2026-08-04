@@ -1,25 +1,34 @@
 # CompreSSoR benchmark records
 
-## Current release benchmark
+## Current v0.3 release evidence
 
-`pcodec-full-api-benchmark.json`, `pcodec-full-api-runs.csv`, and
-`pcodec-full-api-roundtrip.json` are the authoritative 0.2.0 release records.
-They measure the exported R API on the Mac mini against a real 14,923,434-row
-FinnGen SNP GWAS. The source and all temporary data were held on the same
-external SSD. Every timing workload has five complete repetitions; byte sizes
-are direct measurements and the round-trip file records one deterministic
-10,000-row audit.
+The authoritative format/access evidence is split by the question it answers:
 
-The source gzip is 198,128,448 bytes and the self-contained Pcodec store is
-57,582,268 bytes (3.44x compression). Median end-to-end compression is 63.210
-seconds. Median full-core read time is 1.487 seconds versus 1.730 seconds for
-TSV.gz; including reconstructed beta and p takes 1.476 versus 1.790 seconds.
-A 1 Mb region takes 0.114 versus 1.694 seconds, and 1,000 sparse rows take
-0.387 versus 1.617 seconds.
+- `cold-mr-final-summary.csv`, `cold-mr-final-runs.csv`, and
+  `cold-mr-final-metadata.json`: five randomized, fresh-R-process repetitions
+  of one-exposure/one-outcome MR, 5x5 MR, 25x25 MR, and complete loads from a
+  real 14,923,434-row FinnGen GWAS. They compare direct CompreSSoR/FastMR,
+  explicit CompreSSoR reads, TSV.gz, and indexed VCF.gz. Same-request
+  coalescing and the software page cache are disabled. Every logical study in
+  every format is a distinct fresh `.noindex` scratch copy written through
+  `F_NOCACHE`; Pcodec read descriptors also use `F_NOCACHE`. This is described
+  as a symmetric cache-controlled cold approximation, not as proof that macOS
+  has no filesystem state. The user-owned `mediaanalysisd` process was paused
+  during timed trials and resumed afterwards; no root service or Spotlight
+  configuration was changed.
+- `reader-profile-r.json`, `reader-profile-python.json`, and
+  `reader-runtime-profile.csv`: five-run operating-system-warm component
+  profiles. These distinguish analysis-ready R/NumPy data from Python's much
+  smaller but still encoded bridge representation.
+- `pcodec-canonical-access.json`, `pcodec-canonical-access-runs.csv`, and
+  `pcodec-v03-stress.json`: earlier v0.3 warm sparse, regional, and full-reader
+  latency checks.
+- `pcodec-full-api-roundtrip.json`: the deterministic real-data numeric audit.
 
-The round-trip record checks 10,000 rows spread across the genome. Full
-position/REF/ALT identity is exact. Its observed numeric errors fall within
-the declared Z9/EAF8/SE6 profile, and p is derived from decoded Z.
+The measured release fixture occupies 58,033,297 bytes as a self-contained
+Pcodec store, versus 201,658,018 bytes for the eight-column TSV.gz and
+228,634,485 bytes for indexed VCF.gz plus `.tbi`. Exact REF/ALT identity is
+included in the Pcodec size; there is no uncounted variant spine.
 
 ## Pareto design record
 
@@ -33,8 +42,9 @@ reproducible comparison with the release benchmark.
 
 ## Earlier engineering records
 
-The remaining CSV files document earlier Parquet, q8, VCF/Tabix, storage,
-conversion-mode, and release-gate experiments. They are retained for
-reproducibility and are not the headline benchmark for the current Pcodec
-format. Results depend on hardware, filesystem, software versions, dataset,
-and the exact access path.
+`pcodec-full-api-benchmark.json` and `pcodec-full-api-runs.csv` are the old
+0.2.0 release records. The remaining CSV files document earlier Parquet, q8,
+VCF/Tabix, storage, conversion-mode, and release-gate experiments. They are
+retained for reproducibility and are not the headline benchmark for the
+current Pcodec format. Results depend on hardware, filesystem, software
+versions, dataset, and the exact access path.

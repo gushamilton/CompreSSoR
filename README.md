@@ -27,16 +27,21 @@ Measured on a real 14,923,434-variant FinnGen GWAS on the Mac mini:
 | Eight-column source TSV.gz | 201,658,018 bytes |
 | Self-contained `.cpr` store | 58,033,297 bytes |
 | Compression versus TSV.gz | **3.47×** |
+| Compression versus indexed VCF.gz + `.tbi` | **3.94×** |
 | Compression time | 62.982 s |
-| Whole-GWAS read, core fields | 0.732 s |
-| Whole-GWAS read, including derived beta/p | 0.730 s |
-| 1 Mb region, 4,325 variants | 0.003 s |
-| Random 25-variant request, 100-run median | 0.003 s |
-| Ten sparse reads plus 25 IVW estimates | 0.026 s |
-| Equivalent TSV.gz workflow | 17.120 s |
+| Warm R load, Z/beta/SE/EAF | 0.162 s |
+| Warm R load, identity + Z/beta/SE/EAF | 0.463 s |
+| Equivalent fully decoded Python/NumPy load | 1.539 s |
+| Cache-controlled full load + traversal | **3.182 s** |
+| Cache-controlled direct 25x25 MR | **1.274 s** |
+| Same 25x25 workflow from TSV.gz | 165.266 s |
 
-These are measured engineering results, not universal guarantees. Full
-provenance and individual runs are committed under [`inst/benchmarks`](inst/benchmarks).
+The reader figures are medians of five exported-API runs with the operating-
+system cache warm; they answer where R/Python materialisation time is spent.
+The cache-controlled 1x1, 5x5, 25x25 MR and complete-load benchmark below is
+the end-to-end comparison. These are measured engineering results, not
+universal guarantees. Full provenance and individual runs are committed under
+[`inst/benchmarks`](inst/benchmarks).
 
 ## Contents
 
@@ -549,9 +554,11 @@ panels <- read_sumstats_batch(
 ```
 
 The batch API starts the codec runtime once, reuses validated indexes and page
-caches, and coalesces requests with exactly the same normalized path, key
-vector, and projection. Requests to one store are serialized for decoder
-safety; different stores may decode concurrently.
+caches, and can coalesce requests with exactly the same normalized path, key
+vector, and projection. Different stores decode concurrently. For a deliberately
+strict reload benchmark, `options(CompreSSoR.coalesce_batch_reads = FALSE,
+CompreSSoR.reload_batch_contexts = TRUE)` disables that reuse; ordinary users
+normally want the defaults.
 
 ## Exactly what is stored
 
@@ -683,6 +690,12 @@ validate_compressor("gwas.cpr", full = TRUE)
 
 The 14.9-million-row release store passed full validation across 18,220 pages.
 
+Ordinary reads use a cheaper fail-closed path: the manifest and indexes are
+SHA-verified, the exception sidecar is SHA-verified when needed, and each
+accessed Pcodec payload is checked by CRC32. They do not hash unrelated stream
+payloads on every sparse request. Run `validate_compressor()` when complete
+store-level SHA verification is required.
+
 ## Benchmarks
 
 ### Why Pcodec was selected
@@ -706,7 +719,21 @@ measurements below are the release evidence.
 - rows: 14,923,434;
 - source fields: chromosome, position, ALT, REF, beta, SE, EAF, p;
 - store: self-contained `0.3.0-pcodec`, 4,096-row pages;
-- timings: five complete exported-R-API runs after warm-up;
+- reader profile: five complete exported-R-API runs with the operating-system
+  cache warm, used to isolate decoding and R materialisation;
+- end-to-end suite: five randomized fresh-R-process repetitions of 1x1, 5x5,
+  25x25 MR and complete loads, with same-request coalescing and the Pcodec page
+  cache disabled;
+- cold-state control: every logical study in every format is a distinct fresh
+  `.noindex` scratch copy written through `F_NOCACHE`; Pcodec read descriptors
+  also use `F_NOCACHE` and fresh reader contexts;
+- MR panel: 25 real FinnGen index variants selected at p < 1e-5 and clumped
+  against GRCh38 1000 Genomes EUR at r2 < 0.001 within 10 Mb;
+- Pcodec direct I/O: 20 workers, selected by a fresh-copy 12/16/18/20-worker
+  five-run plateau sweep;
+- system isolation: the user-owned macOS media-analysis daemon was paused for
+  timed trials and resumed afterwards; no root service or Spotlight setting
+  was changed;
 - durable data: external SSD;
 - temporary binary bridges: local temporary storage; and
 - validation: all 18,220 pages plus deterministic cross-version parity.
@@ -724,43 +751,97 @@ measurements below are the release evidence.
 The compressed identity is included in the CompreSSoR size. No external
 variant spine is being hidden from this comparison.
 
-### Access time
+### Warm reader profile
 
 | Exported API workload | Median | Range |
 |---|---:|---:|
-| 25 canonical keys, identity + beta/SE | 0.007 s | 0.003–0.008 s |
-| chr1 1 Mb region, 4,325 rows | 0.003 s | 0.003–0.004 s |
-| Full identity + Z/SE/EAF | 0.732 s | 0.710–0.805 s |
-| Full identity + Z/SE/EAF + beta/p | 0.730 s | 0.723–0.756 s |
+| R: full Z/beta/SE/EAF | 0.162 s | 0.161–0.330 s |
+| R: full identity + Z/beta/SE/EAF | 0.463 s | 0.462–0.673 s |
+| Python/NumPy: full identity + Z/beta/SE/EAF | 1.539 s | 1.535–1.624 s |
+| Python: compact identity/numeric bridge only | 0.141 s | 0.140–0.142 s |
 
-The broader stress run used 100 random 25-key requests and 50 random 1-Mb
-regions. Both medians were 0.003 s and both p95 values were 0.004 s.
+The Python bridge row is deliberately separated: it stops at packed identity
+and semantic codes and is not an analysis-ready table. For comparable fully
+decoded data, the public R API is 3.3x faster than the NumPy path because the
+native C++ bridge reconstructs directly into final R vectors. The analysis-only
+projection avoids opening identity streams and materialises a 478 MB R object;
+the full public projection materialises 895 MB.
+
+Earlier sparse-access stress testing used 100 random 25-key requests and 50
+random 1-Mb regions. Both warm medians were 0.003 s and both p95 values were
+0.004 s; these are latency microbenchmarks, not substitutes for the
+cache-controlled MR suite.
 
 ### End-to-end sparse MR access
 
-The controlled benchmark used 25 deterministic genome-wide variants, five
-logical exposures, five logical outcomes, and 25 IVW estimates. The same
-physical FinnGen study was reused for each logical study to isolate access
-cost. Every fair path performed ten explicit reads and then called the same
-FastMR grid estimator.
+The controlled benchmark reuses the association values from one FinnGen GWAS,
+but stages each logical exposure/outcome as a distinct file or store. This
+models different studies without allowing same-inode cache warmth or identical
+request coalescing to flatter a format.
 
-| Input path | Median | Range | Speedup versus TSV.gz |
+| Workload | Exposure reads | Outcome reads | IVW estimates | Variants per read |
+|---|---:|---:|---:|---:|
+| 1x1 MR | 1 | 1 | 1 | 25 |
+| 5x5 MR | 5 | 5 | 25 | 25 |
+| 25x25 MR | 25 | 25 | 625 | 25 |
+| Complete load | 0 | 0 | 0 | all 14,923,434 |
+
+Staging is outside the timer; reading, key matching, R materialisation, and the
+common FastMR IVW estimator are inside it. The protocol is a symmetric
+cache-controlled cold approximation: it is deliberately stronger than an
+ordinary warm production loop, but does not claim the operating system has no
+other state.
+
+| Input path | 1x1 MR | 5x5 MR | 25x25 MR |
 |---|---:|---:|---:|
-| CompreSSoR Pcodec, ten explicit reads | 0.026 s | 0.025–0.027 s | **658.5×** |
-| Optimized identical same-store batch | 0.013 s | 0.006–0.018 s | **1,316.9×** |
-| VCF.gz + Tabix, ten queries | 0.176 s | 0.175–0.185 s | **97.3×** |
-| TSV.gz, ten full scans | 17.120 s | 16.966–17.884 s | 1.0× |
+| **CompreSSoR + FastMR direct** | **0.264 s** (0.255–0.309) | **0.479 s** (0.461–0.626) | **1.274 s** (1.249–1.378) |
+| CompreSSoR, explicit sequential reads | 0.387 s (0.379–0.389) | 1.581 s (1.535–1.612) | 7.624 s (7.535–7.653) |
+| VCF.gz + Tabix | 0.085 s (0.084–0.097) | 0.330 s (0.326–0.332) | 1.537 s (1.518–1.544) |
+| TSV.gz full scans | 6.747 s (6.692–6.777) | 32.830 s (32.412–33.883) | 165.266 s (163.466–173.130) |
 
-The optimized same-store batch is labelled separately because it is allowed
-to coalesce ten literally identical requests. It is not presented as ten
-independent physical reads. Cross-format canonical keys were exact; numeric
-differences were bounded by the declared lossy profile.
+Values are five-run median seconds with the complete range in parentheses.
+Direct Pcodec is 25.6x, 68.5x, and 129.7x faster than TSV.gz as the grid grows.
+Tabix is still the right answer for one or a handful of sparse queries: it is
+3.1x faster at 1x1 and 1.45x faster at 5x5. At 25x25, direct Pcodec crosses
+over and is 1.21x faster than Tabix. The direct path is 6.0x faster than
+explicit sequential Pcodec at 25x25.
+
+### Cache-controlled complete loads
+
+Every returned vector was traversed to compute an identity/numeric checksum;
+the total therefore includes more than merely opening a handle.
+
+| Format | Median total | Range | Median read/materialise | Median peak RSS |
+|---|---:|---:|---:|---:|
+| **CompreSSoR Pcodec** | **3.182 s** | 3.139–3.200 | **0.845 s** | 2.17 GB |
+| TSV.gz | 3.954 s | 3.938–4.036 | 1.690 s | 2.09 GB |
+| VCF.gz | 10.163 s | 9.834–10.356 | 7.623 s | 2.01 GB |
+
+Pcodec is 1.24x faster than TSV.gz and 3.19x faster than VCF.gz for the full
+load-and-traverse endpoint. Its full-load peak memory is about 4% above TSV
+because the compact bridge and final R vectors briefly coexist.
+
+The 12/16/18/20-worker 25x25 plateau medians were 1.265, 1.270, 1.266, and
+1.258 s. Twenty workers was nominally fastest, but only 0.55% ahead of 12;
+12 workers reduced median peak RSS from 270 MB to 219 MB and is the sensible
+lower-memory setting.
+
+All 75 trials passed exact cross-format identity/full-load missingness checks,
+exact TSV/VCF numeric checks, exact direct/explicit Pcodec MR checks, and the
+declared lossy-profile comparison against raw beta/SE/Z. The observed panel
+maxima were 0.00827 for absolute beta error, 0.00186 for absolute SE error, and
+2.24e-7 for absolute Z error.
 
 ### Machine-readable evidence
 
-- [five-run v0.3 access summary](inst/benchmarks/pcodec-canonical-access.json)
-- [individual v0.3 access repetitions](inst/benchmarks/pcodec-canonical-access-runs.csv)
-- [100-request sparse and 50-region stress test](inst/benchmarks/pcodec-v03-stress.json)
+- [authoritative cold-suite summary](inst/benchmarks/cold-mr-final-summary.csv)
+- [all 75 randomized repetitions](inst/benchmarks/cold-mr-final-runs.csv)
+- [protocol, revisions, parity gates, and source sizes](inst/benchmarks/cold-mr-final-metadata.json)
+- [current Pcodec I/O-worker plateau](inst/benchmarks/pcodec-io-thread-sweep.csv)
+- [R/Python reader profile summary](inst/benchmarks/reader-runtime-profile.csv)
+- [R reader component runs](inst/benchmarks/reader-profile-r.json)
+- [Python reader component runs](inst/benchmarks/reader-profile-python.json)
+- [100-request sparse and 50-region warm stress test](inst/benchmarks/pcodec-v03-stress.json)
 - [real-data numeric audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
 - [historical v0.2 full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
 - `benchmark_table("pcodec_access")` for the shipped current access table
