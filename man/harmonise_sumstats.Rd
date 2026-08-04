@@ -26,8 +26,10 @@
   \item{chain}{Optional GRCh37-to-GRCh38 chain file for liftover.}
   \item{mode}{One of \code{"qc"} (default), \code{"convert"}, \code{"all"},
     \code{"core"}, or \code{"hm3"}.}
-  \item{variant_set}{A panel data frame or file for \code{mode = "core"} or
-    \code{mode = "hm3"}. PLINK \code{.bim}, Parquet and delimited files are
+  \item{variant_set}{An optional panel data frame or file used to subset the
+    result. Named \code{"common"} and \code{"tag"} values resolve through
+    \code{COMPRESSOR_COMMON_VARIANTS} and \code{COMPRESSOR_TAG_VARIANTS}.
+    PLINK \code{.bim}, Parquet, delimited files, and native Pcodec stores are
     supported.}
   \item{chrom_threads}{Number of chromosome workers for harmonisation.}
 }
