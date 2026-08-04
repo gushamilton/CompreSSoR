@@ -89,6 +89,11 @@ summarise <- function(seconds) list(
 write_json(list(
   schema_version = "1.0.0",
   measured_utc = format(Sys.time(), tz = "UTC", usetz = TRUE),
+  package_version = as.character(utils::packageVersion("CompreSSoR")),
+  source_revision = Sys.getenv(
+    "COMPRESSOR_BENCH_COMMIT",
+    system2("git", c("rev-parse", "HEAD"), stdout = TRUE, stderr = FALSE)
+  ),
   machine = Sys.info()[c("nodename", "sysname", "release", "machine")],
   store = list(rows = n, format_version = store$manifest$format_version),
   parity = list(

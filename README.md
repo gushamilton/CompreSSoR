@@ -223,10 +223,10 @@ exported-API runs after one warm-up.
 
 | Access workload | Median |
 |---|---:|
-| 25 canonical keys, identity + beta/SE | 0.003 s |
+| 25 canonical keys, identity + beta/SE | 0.007 s |
 | chr1 1 Mb region, 4,325 rows | 0.003 s |
-| Full identity + Z/SE/EAF | 0.729 s |
-| Full identity + Z/SE/EAF + reconstructed beta/p | 0.728 s |
+| Full identity + Z/SE/EAF | 0.732 s |
+| Full identity + Z/SE/EAF + reconstructed beta/p | 0.730 s |
 
 The persistent reader starts Python once per R session, caches validated store
 metadata and a bounded set of decoded pages, and uses a compact binary bridge.
@@ -237,9 +237,11 @@ identical within a batch. Optimized same-file deduplication and independent-read
 comparisons are reported separately so codec I/O is not confused with a faster
 MR estimator path. In the controlled 5-exposure x 5-outcome IVW benchmark,
 ten explicit Pcodec reads plus the same native grid estimator used by every
-format took 0.027 s, versus 0.175 s for ten Tabix queries and 18.651 s for ten
-TSV.gz scans. The separately labelled optimized same-store batch took 0.006 s
-because its ten identical requests were decoded once.
+format took 0.026 s, versus 0.176 s for ten Tabix queries and 17.120 s for ten
+TSV.gz scans. The separately labelled optimized same-store batch took 0.013 s
+because its ten identical requests were decoded once. Its individual runs
+ranged from 0.006 to 0.018 s, which is retained rather than hidden at this
+millisecond scale.
 
 The timings include Pcodec decompression, compact binary bridges, compiled
 reconstruction, R data frames, and—for the grid benchmark—the FastMR estimate.
