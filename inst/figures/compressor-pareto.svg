@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="540" viewBox="0 0 900 540" role="img" aria-labelledby="title desc">
-  <title id="title">Measured speed versus compression</title>
-  <desc id="desc">Five-run full-read medians for a real ten-million-row GWAS. Lower time and higher compression ratio are better.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="570" viewBox="0 0 900 570" role="img" aria-labelledby="title desc">
+  <title id="title">Measured speed versus compression, including native Pcodec</title>
+  <desc id="desc">Historical five-run full-read medians for a real ten-million-row GWAS, with the shipped native CompreSSoR Pcodec implementation overlaid as a separately labelled one-million-row five-run measurement. Lower time and higher compression ratio are better.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #263238; }
     .grid { stroke: #cfd8dc; stroke-width: 1; }
@@ -23,9 +23,11 @@
     <circle cx="118" cy="255" r="6" fill="#43a047" class="point"/><circle cx="481" cy="156" r="5" fill="#43a047" class="point"/>
     <circle cx="337" cy="381" r="5" fill="#8e24aa" class="point"/><circle cx="353" cy="390" r="5" fill="#8e24aa" class="point"/>
     <circle cx="471" cy="131" r="5" fill="#fb8c00" class="point"/><circle cx="257" cy="148" r="6" fill="#8e24aa" class="point"/><circle cx="267" cy="100" r="6" fill="#8e24aa" class="point"/><circle cx="418" cy="88" r="6" fill="#fb8c00" class="point"/>
-    <g class="label"><text x="128" y="242" fill="#43a047">Legacy f16/u8 binary</text><text x="246" y="165" text-anchor="end" fill="#6a1b9a">q9/SE10 Parquet</text><text x="278" y="91" fill="#6a1b9a">q8/SE8 Parquet</text><text x="430" y="78" fill="#6a1b9a">q8/SE8 framed binary</text><text x="489" y="151">Legacy f16/u8 zstd</text><text x="480" y="125">q9/SE10 framed binary</text><text x="328" y="374">Float32 Parquet</text><text x="359" y="405">Precise Parquet</text><text x="306" y="421">Raw float32 binary</text><text x="610" y="371">Raw float32 + zstd</text><text x="846" y="442" text-anchor="end">Source gzip</text></g>
+    <circle cx="489" cy="285" r="7" fill="#d81b60" class="point"/>
+    <g class="label"><text x="128" y="242" fill="#43a047">Legacy f16/u8 binary</text><text x="246" y="165" text-anchor="end" fill="#6a1b9a">q9/SE10 Parquet</text><text x="278" y="91" fill="#6a1b9a">q8/SE8 Parquet</text><text x="430" y="78" fill="#6a1b9a">q8/SE8 framed binary</text><text x="489" y="151">Legacy f16/u8 zstd</text><text x="480" y="125">q9/SE10 framed binary</text><text x="328" y="374">Float32 Parquet</text><text x="359" y="405">Precise Parquet</text><text x="306" y="421">Raw float32 binary</text><text x="610" y="371">Raw float32 + zstd</text><text x="846" y="442" text-anchor="end">Source gzip</text><text x="500" y="278" fill="#d81b60">Native Pcodec 0.4*</text></g>
     <text class="axislabel" x="474" y="510" text-anchor="middle">Full-read median time (seconds; lower is faster, log scale)</text>
     <text class="axislabel" transform="translate(22 254) rotate(-90)" text-anchor="middle">Compression ratio versus source gzip (higher is better)</text>
-    <g class="tick"><circle cx="115" cy="535" r="4" fill="#1e88e5"/><text x="125" y="539">raw binary</text><circle cx="235" cy="535" r="4" fill="#43a047"/><text x="245" y="539">legacy format</text><circle cx="365" cy="535" r="4" fill="#fb8c00"/><text x="375" y="539">framed binary</text><circle cx="500" cy="535" r="4" fill="#8e24aa"/><text x="510" y="539">Parquet</text><line class="frontier" x1="620" x2="645" y1="535" y2="535"/><text x="655" y="539">Pareto frontier</text></g>
+    <g class="tick"><circle cx="115" cy="535" r="4" fill="#1e88e5"/><text x="125" y="539">raw binary</text><circle cx="235" cy="535" r="4" fill="#43a047"/><text x="245" y="539">legacy format</text><circle cx="365" cy="535" r="4" fill="#fb8c00"/><text x="375" y="539">framed binary</text><circle cx="500" cy="535" r="4" fill="#8e24aa"/><text x="510" y="539">Parquet</text><line class="frontier" x1="620" x2="645" y1="535" y2="535"/><text x="655" y="539">Pareto frontier</text><circle cx="785" cy="535" r="4" fill="#d81b60"/><text x="795" y="539">native Pcodec 0.4*</text></g>
+    <text class="tick" x="88" y="563">* Native Pcodec 0.4: 1M-row Mac mini implementation benchmark; historical points are the original 10M-row GWAS sweep.</text>
   </g>
 </svg>

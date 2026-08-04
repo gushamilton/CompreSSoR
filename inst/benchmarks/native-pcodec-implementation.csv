@@ -1,0 +1,2 @@
+benchmark_id,package_version,host,rows,runs,source_gzip_bytes,native_store_bytes,compression_ratio_vs_source_gzip,source_gzip_full_read_median_seconds,native_full_read_median_seconds,write_seconds,native_format,fixture
+native_pcodec_1m_coherent_vs_tsv_gz,0.4.0,Ferguss-Mini,1000000,5,41306032,8691591,4.7524,0.193,0.079,3.911,0.4.0-pcodec-native,"1M-row generated fixture; beta = z * SE; rsID and p-value present in source TSV.gz"

@@ -37,10 +37,18 @@ On a real 14,923,434-variant FinnGen GWAS:
 | Direct 25×25 MR | **1.274 s** |
 | Same 25×25 workflow from TSV.gz | 165.266 s |
 
-The headline Pareto result is below. It is the measured historical frontier
-that motivated the current Pcodec representation.
+The headline Pareto result is below. It preserves the measured historical
+frontier that motivated the Pcodec representation and now overlays the shipped
+native Pcodec implementation as `Native Pcodec 0.4*`.
 
 ![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
+
+The native point is measured separately on the Mac mini because the historical
+frontier used a 10-million-row real GWAS, while the native implementation check
+used a 1-million-row fixture. On that fixture, TSV.gz was 41,306,032 bytes and
+the native `.cpr` was 8,691,591 bytes (4.752×), with five-run full-read medians
+of 0.193 s and 0.079 s respectively. See the [native benchmark summary](inst/benchmarks/native-pcodec-implementation.csv)
+and [per-run timings](inst/benchmarks/native-pcodec-implementation-runs.csv).
 
 The native-only smoke benchmark on the Mac mini used one million coherent
 rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:

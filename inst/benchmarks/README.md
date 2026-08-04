@@ -40,6 +40,14 @@ run logs, source byte accounting, exact projection schema, and complete runtime
 metadata were not retained, so it must not be used as an independently
 reproducible comparison with the release benchmark.
 
+The plot also overlays the shipped native implementation as `Native Pcodec
+0.4*`. Its exact five-run evidence is in `native-pcodec-implementation.csv`
+and `native-pcodec-implementation-runs.csv`: a 1,000,000-row Mac mini smoke
+fixture, with the same source written as TSV.gz and read through `fread` versus
+the native `.cpr` reader. The point is deliberately annotated because it is a
+different fixture size from the historical 10M-row sweep; it is an implementation
+check, not a claim that unlike datasets share one Pareto frontier.
+
 ## Earlier engineering records
 
 `pcodec-full-api-benchmark.json` and `pcodec-full-api-runs.csv` are the old
