@@ -1,3 +1,9 @@
+# These tests exercise the maintained 0.2/0.3 Python format. The native 0.4
+# format has its own tests in test-pcodec-native.R; keeping the legacy suite
+# explicitly on the Python path prevents a native installation from changing
+# the expected on-disk contract of these compatibility tests.
+withr::local_options(CompreSSoR.native_pcodec = FALSE)
+
 pcodec_test_python <- function() {
   candidates <- c(
     getOption("CompreSSoR.python", NULL),

@@ -55,8 +55,13 @@ install.packages("remotes")
 remotes::install_github("gushamilton/CompreSSoR")
 ```
 
-The standard Pcodec backend currently uses the pinned Python bindings. Install
-the small runtime once in a dedicated environment:
+The standard Pcodec backend is native when Rust/Cargo is available at install
+time. The package builds a small Rust-to-R C ABI around Pcodec, so ordinary
+reads and writes do not start Python. If Rust is not available, installation
+still succeeds and the package uses the pinned Python bindings as a compatible
+fallback. The fallback is also useful for reading older 0.2/0.3 stores.
+
+For the fallback, install the small runtime once in a dedicated environment:
 
 ```bash
 python3 -m venv ~/.virtualenvs/compressor
@@ -71,13 +76,12 @@ options(CompreSSoR.python = "~/.virtualenvs/compressor/bin/python")
 # or set COMPRESSOR_PYTHON before starting R
 ```
 
-The Python dependency is not because the compression algorithm is written in
-Python: Pcodec's implementation is Rust, and the current stable package
-integration uses its maintained Python API. Pcodec also has Rust and Java APIs;
-its C bindings are currently marked incomplete, so a native C++/R backend is a
-future packaging task rather than the default installation path. See
-[the technical guide](docs/README-technical.md#can-this-be-all-c) for the
-decision and options.
+To force the fallback, set `COMPRESSOR_DISABLE_NATIVE=1` before installation
+or use `options(CompreSSoR.native_pcodec = FALSE)`. To require the native
+backend during installation, set `COMPRESSOR_REQUIRE_NATIVE=1`; this is useful
+in reproducible deployment checks. See
+[the technical guide](docs/README-technical.md#native-pcodec-backend) for the
+format and build details.
 
 ## Quick start
 
@@ -161,25 +165,25 @@ uses the shared matrix-grid estimator where possible.
 
 ![CompreSSoR store layout](docs/figures/compressor-store.svg)
 
-Every `.cpr` is a directory with a manifest, checksums, independently paged
-Pcodec streams, and a compressed exception stream:
+Every native 0.4 `.cpr` is a directory with a manifest, checksums,
+independently framed Pcodec streams, and a compact exception stream:
 
 ```text
 gwas.cpr/
 ├── manifest.json          format, identity, codec, source, and QC metadata
 ├── manifest.sha256        detached manifest checksum
 ├── position.pco           global GRCh38 positions
-├── position.index         page/chunk index
+├── native.index.json      block offsets and row counts
 ├── substitution.pco       four-bit REF→ALT substitution code
-├── substitution.index
 ├── z.pco                   quantised Z stream
-├── z.index
 ├── eaf.pco                 arcsine-quantised effect-allele frequency
-├── eaf.index
 ├── se.pco                  block-centred log2-quantised SE stream
-├── se.index
-└── exceptions.zst          sparse higher-precision numeric exceptions
+└── exceptions.bin          sparse higher-precision numeric exceptions
 ```
+
+The native 0.4 store uses 32,768-row blocks. Older 0.2/0.3 stores have a
+different wrapped-Pcodec layout but remain readable through the Python
+fallback.
 
 | Logical field | Standard storage | Read-time result |
 |---|---|---|

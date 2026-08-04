@@ -1,9 +1,8 @@
-## Optional Python/Pcodec backend.
+## Pcodec compatibility backend.
 ##
-## The durable format is written by inst/python/compressor_pcodec.py.  Keeping
-## the subprocess boundary here means that the package remains installable on
-## systems which use the Parquet backend, while Pcodec remains the primary
-## format for users who configure its small Python environment.
+## New stores use R/pcodec_native.R when the native Rust/C ABI was built at
+## installation time. This file retains the Python worker for legacy 0.2/0.3
+## stores and for installations that deliberately disable the native path.
 
 .pcodec_state <- new.env(parent = emptyenv())
 
@@ -309,6 +308,10 @@ pcodec_write_store <- function(data, output, metadata = list()) {
   if (length(missing)) stop("Pcodec input is missing: ", paste(missing, collapse = ", "), call. = FALSE)
   if (!nrow(data)) stop("cannot write an empty Pcodec store", call. = FALSE)
 
+  if (pcodec_native_enabled()) {
+    return(pcodec_native_write_store(data, output, metadata = metadata))
+  }
+
   bridge_tmp <- pcodec_tempdir(dirname(output))
   input_path <- tempfile("compressor-pcodec-input-", tmpdir = bridge_tmp, fileext = ".tsv")
   metadata_path <- tempfile("compressor-pcodec-metadata-", tmpdir = bridge_tmp, fileext = ".json")
@@ -506,6 +509,21 @@ read_pcodec_binary_bridge <- function(path) {
 pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = NULL) {
   store <- if (inherits(store, "compressor_store")) store else open_compressor(store)
   m <- store$manifest
+  if (identical(m$format_version, PCODEC_NATIVE_FORMAT)) {
+    out <- pcodec_native_read_store(store, region = region, variants = variants,
+                                    columns = columns)
+    source_bytes_read <- attr(out, "source_bytes_read", exact = TRUE)
+    if ("row" %in% names(out)) out$row <- NULL
+    if (is.null(columns)) {
+      attr(out, "source_bytes_read") <- source_bytes_read
+      return(out)
+    }
+    missing <- setdiff(columns, names(out))
+    if (length(missing)) stop("requested columns are not present: ", paste(missing, collapse = ", "), call. = FALSE)
+    out <- out[columns]
+    attr(out, "source_bytes_read") <- source_bytes_read
+    return(out)
+  }
   if (!is.null(columns) && !length(columns)) {
     stop("columns must contain at least one column name", call. = FALSE)
   }
@@ -624,6 +642,20 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     }
     unique(trimws(keys))
   })
+  if (all(vapply(stores, function(store) {
+    identical(store$manifest$format_version, PCODEC_NATIVE_FORMAT)
+  }, logical(1)))) {
+    decoded <- Map(function(store, keys) {
+      pcodec_read_store(store, variants = keys, columns = columns)
+    }, stores, variants)
+    names(decoded) <- names(stores)
+    return(decoded)
+  }
+  if (any(vapply(stores, function(store) {
+    identical(store$manifest$format_version, PCODEC_NATIVE_FORMAT)
+  }, logical(1)))) {
+    stop("batched reads cannot mix native and Python Pcodec store formats", call. = FALSE)
+  }
   bridge_tmp <- pcodec_tempdir()
   output_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
                           fileext = ".bridge")

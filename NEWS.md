@@ -1,3 +1,12 @@
+# CompreSSoR 0.4.0
+
+- New stores use the native Pcodec backend when Rust/Cargo is available at
+  installation time. The 0.4 block-indexed format keeps the self-contained
+  GRCh38 identity key and semantic Z/EAF/SE profile while avoiding the Python
+  process for ordinary reads and writes.
+- The Python Pcodec backend remains available for older stores, fallback
+  installations, and explicit compatibility testing.
+
 # CompreSSoR 0.3.0
 
 - Introduces the wrapped Pcodec v0.3 store: fixed 262,144-row chunks with

@@ -74,6 +74,8 @@ encoded as SNVs.
 The standard store is a directory rather than an opaque monolithic file so
 that the reader can seek to independent streams and pages:
 
+The legacy 0.3 layout is:
+
 ```text
 gwas.cpr/
 ├── manifest.json
@@ -85,6 +87,23 @@ gwas.cpr/
 ├── se.pco + se.index
 └── exceptions.zst
 ```
+
+New native 0.4 stores instead use:
+
+```text
+gwas.cpr/
+├── manifest.json + manifest.sha256
+├── native.index.json
+├── position.pco
+├── substitution.pco
+├── z.pco
+├── eaf.pco
+├── se.pco
+└── exceptions.bin
+```
+
+`native.index.json` is the only index file: it contains the byte offset and
+length of each independently decodable block in every stream.
 
 Each Pcodec stream is column-specific. Pcodec's own documentation warns that
 semantically different sequences should not be concatenated into one stream;
@@ -140,30 +159,44 @@ standard profile therefore rejects `keep_extras = TRUE` for Pcodec rather than
 silently falling back to a less obvious layout. This is the next sensible
 extension if routine numeric extras become important.
 
-## Can this be all C++ in R?
+## Native Pcodec backend
 
-Not cleanly with the current official Pcodec interfaces.
+New stores use a native backend whenever Rust/Cargo is available during
+installation. Pcodec itself is Rust; CompreSSoR builds a small static library
+with a narrow C ABI and calls it from the package's C++/R bridge. The native
+ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
+the package independent of the incomplete upstream wrapped C API while
+retaining Pcodec's numerical codec.
 
-Pcodec's compression implementation is Rust. The official project exposes a
-Rust API and Python bindings, while its C bindings are explicitly described by
-the project as incomplete and potentially difficult to use. CompreSSoR's C++
-code already handles the fast binary bridge into R, but the current Pcodec
-compression/decompression call still goes through the pinned Python API.
+The native format is `0.4.0-pcodec-native`. Each logical column is a separate
+stream, split into 32,768-row blocks. The five streams are `uint32` global
+position, `uint8` substitution code, `uint16` Z code, `uint8` EAF code, and
+`uint8` SE code. SE centres are shared across 65,536 rows. Exceptions are a
+small float32 sidecar with row, Z, log2(SE), EAF, and flags. The index records
+the byte offset and row count of every block, so regional and sparse reads do
+not decode the complete file.
 
-There are three possible future routes:
+The native path is the default for writes and whole-store reads. The existing
+Python worker remains as a compatibility backend for 0.2/0.3 stores and as a
+fallback on systems without Cargo. Set `COMPRESSOR_DISABLE_NATIVE=1` while
+installing, or `options(CompreSSoR.native_pcodec = FALSE)`, to select it.
+Set `COMPRESSOR_REQUIRE_NATIVE=1` during installation to fail if the native
+library cannot be built.
 
-| Route | Assessment |
-|---|---|
-| Keep Python bridge | Current default; stable, tested, easiest to install on the mini |
-| Bind the official C interface from C++ | Possible, but the upstream C interface is currently incomplete and needs its own portability tests |
-| Build a Rust static/shared library with a narrow C ABI | Technically attractive, but adds Rust toolchain, linking, and CRAN/binary-distribution complexity |
+The upstream Pcodec project documents its standalone C bindings as incomplete;
+the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
+and round-trip tests rather than exposing that upstream API directly.
 
-The right engineering target is not “C++ at any cost.” It is a native optional
-backend only after it reproduces the existing Pcodec bytes/semantics, passes
-macOS and Linux tests, and improves installation or measured access enough to
-justify another compiled dependency. The current C++ bridge already removes
-the expensive R object-construction overhead on reads; the Python process is
-kept persistent and is not relaunched for every sparse request.
+On the Mac mini, a coherent one-million-row synthetic stream (`Z ~ N(0, 1)`,
+`beta = Z × SE`) at the selected 32,768-row block size measured 1,679,354
+bytes for native 0.4 versus 1,688,390 bytes for the Python-backed store.
+Native write time was 3.55 s versus 4.13 s. Five warm reads of the three core
+numeric columns had medians of 0.020 s and 0.013 s respectively. This is an
+engineering smoke benchmark, not a claim about every GWAS or sparse workload:
+the native path's main advantages are a self-contained install and no Python
+process boundary, while the legacy Python reader remains competitive for some
+small projections. Real-GWAS benchmark results should be regenerated after
+the format is merged.
 
 ## Benchmark interpretation
 

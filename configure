@@ -1,0 +1,53 @@
+#!/bin/sh
+
+set -u
+
+package_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+makevars="$package_root/src/Makevars"
+native_enabled=0
+native_library=""
+
+if [ -d /opt/homebrew/opt/rust/bin ]; then
+  PATH=/opt/homebrew/opt/rust/bin:$PATH
+  export PATH
+fi
+
+if [ "${COMPRESSOR_DISABLE_NATIVE:-}" != "1" ] &&
+   [ "${COMPRESSOR_DISABLE_NATIVE:-}" != "true" ]; then
+  cargo_bin="$(command -v cargo 2>/dev/null || true)"
+  if [ -z "$cargo_bin" ] && [ -x /opt/homebrew/bin/cargo ]; then
+    cargo_bin=/opt/homebrew/bin/cargo
+  fi
+  if [ -n "$cargo_bin" ]; then
+    target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
+    mkdir -p "$target_dir"
+    if "$cargo_bin" build --manifest-path "$package_root/src/pcodec_native/Cargo.toml" \
+         --release --target-dir "$target_dir" >/dev/null 2>&1; then
+      candidate="$target_dir/release/libcompressor_pcodec_native.a"
+      if [ -f "$candidate" ]; then
+        native_enabled=1
+        native_library="$candidate"
+      fi
+    fi
+  fi
+fi
+
+if [ "$native_enabled" -eq 1 ]; then
+  printf '%s\n' \
+    'CXX_STD = CXX17' \
+    'PKG_CPPFLAGS = -DCOMPRESSOR_NATIVE_PCODEC' \
+    "PKG_LIBS = $native_library -lm -ldl -lpthread" > "$makevars"
+  printf '%s\n' "Native Pcodec backend enabled ($native_library)"
+else
+  printf '%s\n' \
+    'CXX_STD = CXX17' \
+    'PKG_CPPFLAGS =' \
+    'PKG_LIBS =' > "$makevars"
+  if [ "${COMPRESSOR_REQUIRE_NATIVE:-}" = "1" ]; then
+    printf '%s\n' 'Native Pcodec was required but could not be built.' >&2
+    exit 1
+  fi
+  printf '%s\n' 'Native Pcodec unavailable; Python fallback will be used.' >&2
+fi
+
+exit 0

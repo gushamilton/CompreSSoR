@@ -8,3 +8,5 @@
 ^\.github$
 ^README_files$
 \.syncthing\.
+^src/Makevars$
+^src/pcodec_native/target$

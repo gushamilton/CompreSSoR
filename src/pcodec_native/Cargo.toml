@@ -1,0 +1,15 @@
+[package]
+name = "compressor-pcodec-native"
+version = "1.0.3"
+edition = "2021"
+rust-version = "1.87.0"
+license = "Apache-2.0"
+
+[lib]
+name = "compressor_pcodec_native"
+crate-type = ["staticlib"]
+
+[dependencies]
+half = { version = "2.7.1", features = ["std"] }
+libc = "0.2.179"
+pco = "1.0.3"
