@@ -1,7 +1,7 @@
 Package: CompreSSoR
 Type: Package
 Title: Compressed GWAS Summary Statistics
-Version: 0.3.0
+Version: 0.4.0
 Authors@R: person("Fergus", "Hamilton", role = c("aut", "cre"),
     email = "fh6520@users.noreply.github.com")
 Author: Fergus Hamilton [aut, cre]
@@ -19,18 +19,16 @@ Encoding: UTF-8
 Imports:
     data.table (>= 1.15.0),
     digest,
-    jsonlite,
-    processx
+    jsonlite
 Suggests:
-    arrow (>= 23.0.0),
+    arrow (>= 22.0.0),
     dplyr,
     testthat (>= 3.0.0),
     rtracklayer,
     GenomicRanges,
     IRanges
 Config/testthat/edition: 3
-SystemRequirements: Python (>= 3.10; Python 3.12 recommended) with the
-    inst/python/requirements.txt runtime for the default Pcodec backend
+SystemRequirements: Rust/Cargo (required to build the native Pcodec backend)
 NeedsCompilation: yes
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

@@ -32,11 +32,14 @@ The standard profile stores Z, EAF, and SE in separate numerical streams:
 
 - Z: 9-bit central quantisation, with sparse float32 exceptions;
 - EAF: 8-bit arcsine/square-root quantisation;
-- SE: 6-bit block-centred log2 residual, with sparse exceptions.
+- SE: 8-bit block-centred log2 residual, with sparse exceptions.
 
 This is a bounded-lossy representation. The variant key remains exact, and the
 manifest records the numeric profile and tolerances. A Parquet exact store is
 available when an analysis needs exact doubles or exact original p-values.
+For the standard profile, the manifest records the EAF absolute bound, the
+central Z bin bound, the SE relative quantisation bound, and the derived-beta
+error formula; the exact Parquet backend is the lossless route.
 
 ## Ingestion and GRCh38
 
@@ -74,6 +77,8 @@ encoded as SNVs.
 The standard store is a directory rather than an opaque monolithic file so
 that the reader can seek to independent streams and pages:
 
+For historical reference, the archived legacy 0.3 layout was:
+
 ```text
 gwas.cpr/
 ├── manifest.json
@@ -86,11 +91,57 @@ gwas.cpr/
 └── exceptions.zst
 ```
 
+New native 0.4 stores instead use:
+
+```text
+gwas.cpr/
+├── manifest.json + manifest.sha256
+├── native.index.json
+├── position.pco
+├── substitution.pco
+├── z.pco
+├── eaf.pco
+├── se.pco
+└── exceptions.bin
+```
+
+`native.index.json` is the only index file: it contains the byte offset and
+length of each independently decodable block in every stream.
+
 Each Pcodec stream is column-specific. Pcodec's own documentation warns that
 semantically different sequences should not be concatenated into one stream;
 CompreSSoR follows that rule. Pages are independently decodable and carry
 checksums; the manifest records file checksums, codec constants, identity
 constants, source columns, reference metadata, and harmonisation counts.
+
+The current measured geometry is 131,072-row identity frames, 131,072-row
+Pcodec pages, and 65,536-row value frames. The identity-frame change was tested
+on real FinnGen chr1 rather than inferred from a synthetic estimate: larger
+frames reduced the self-contained store until the gain fell below one percent,
+while 1,048,576-row identity frames made a 1 Mb regional read more than twice
+as slow as the selected 131,072-row frame.
+
+## Benchmark reconciliation
+
+The current headline comparison uses one contract only: every point carries
+variant identity in the file. The `.cpr` store intentionally includes its exact
+global-position plus REF→ALT key, so it can be moved and read without an
+external spine. Earlier reference-anchored experiments remain archived for
+historical context but are not presented as competing formats.
+
+On the BP FinnGen chr1 fixture (1,124,344 SNVs; source TSV.gz 15,186,281
+bytes), the measured self-contained `.cpr` store is 4,298,204 bytes, or 3.53×
+smaller. The complete same-data comparison is in
+`inst/benchmarks/archive/legacy-20260804/pareto-chr1-summary.csv`; its five-run access table, write
+timings, validation bounds, and plot frontier are stored alongside it. Every
+row in that headline record carries variant identity, so the storage numbers
+are directly comparable without a separately counted spine.
+
+The native R-facing decoder precomputes the block-centre factors once per
+frame, rather than evaluating `exp2()` for every row. A separate direct-file
+C++ prototype was benchmarked on BP but was slower than the existing Pcodec
+stream path, so it is not enabled in the package; issue #7 remains open for a
+proper end-to-end native reader.
 
 ## Optional extra columns
 
@@ -98,6 +149,23 @@ The common use case is to keep the store minimal: identity, Z, EAF, and SE are
 enough for the main MR and association-serving workflows. N, INFO, case/control
 counts, study labels, QC flags, and other fields are useful in some projects,
 but they should not enlarge every routine store by default.
+
+### Optional variant-set membership
+
+`variant_set` is an independent, opt-in membership filter. A panel can be a
+Parquet or delimited table, a PLINK `.bim`, or a CompreSSoR Pcodec store. Its
+canonical identity is the same self-contained `chrom:pos:REF:ALT` key as the
+GWAS store. Named panels resolve from `COMPRESSOR_COMMON_VARIANTS`,
+`COMPRESSOR_TAG_VARIANTS`, `COMPRESSOR_CORE_VARIANTS`, or
+`COMPRESSOR_HM3_VARIANTS` (or from `COMPRESSOR_VARIANT_SET_DIR` using the
+corresponding conventional filename).
+
+The default `variant_set = NULL` retains all variants. With
+`mode = "convert"`, the panel is matched to the input's existing REF/ALT
+identity and no reference table, harmonisation, or shared spine is introduced.
+With the QC path, harmonisation happens first and the same identity filter is
+then applied. The selected panel is recorded in alignment statistics; its
+bytes are external to the per-GWAS store.
 
 ### What works today
 
@@ -140,30 +208,46 @@ standard profile therefore rejects `keep_extras = TRUE` for Pcodec rather than
 silently falling back to a less obvious layout. This is the next sensible
 extension if routine numeric extras become important.
 
-## Can this be all C++ in R?
+## Native Pcodec backend
 
-Not cleanly with the current official Pcodec interfaces.
+New stores use a native backend whenever Rust/Cargo is available during
+installation. Pcodec itself is Rust; CompreSSoR builds a small static library
+with a narrow C ABI and calls it from the package's C++/R bridge. The native
+ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
+the package independent of the incomplete upstream wrapped C API while
+retaining Pcodec's numerical codec.
 
-Pcodec's compression implementation is Rust. The official project exposes a
-Rust API and Python bindings, while its C bindings are explicitly described by
-the project as incomplete and potentially difficult to use. CompreSSoR's C++
-code already handles the fast binary bridge into R, but the current Pcodec
-compression/decompression call still goes through the pinned Python API.
+The native format is `0.4.4-pcodec-native`. Identity streams use 131,072-row
+frames, Pcodec pages use 131,072 rows, and numeric streams use 65,536-row
+frames by default (`block_rows` changes the numeric frame size). The five streams are `uint32` global position,
+`uint8` substitution code, `uint16` Z code, `uint8` EAF code, and `uint8` SE
+code. SE centres are shared across 65,536 rows, while the SE code now uses all
+eight physical bits: 254 central bins plus missing and exact-exception
+sentinels. Exceptions are a small Zstandard-compressed float32 sidecar with
+row, Z, log2(SE), EAF, and flags. The index records the byte offset and row
+count of every block, so regional and sparse reads do not decode the complete
+file.
 
-There are three possible future routes:
+The native path is the only write and read backend in the current package.
+Cargo is required during installation; if the native library cannot be built,
+installation stops with the build error. The historical Python-backed 0.2/0.3
+implementation remains under `archive/python-backend/` for reference but is
+not installed or called.
 
-| Route | Assessment |
-|---|---|
-| Keep Python bridge | Current default; stable, tested, easiest to install on the mini |
-| Bind the official C interface from C++ | Possible, but the upstream C interface is currently incomplete and needs its own portability tests |
-| Build a Rust static/shared library with a narrow C ABI | Technically attractive, but adds Rust toolchain, linking, and CRAN/binary-distribution complexity |
+The upstream Pcodec project documents its standalone C bindings as incomplete;
+the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
+and round-trip tests rather than exposing that upstream API directly.
 
-The right engineering target is not “C++ at any cost.” It is a native optional
-backend only after it reproduces the existing Pcodec bytes/semantics, passes
-macOS and Linux tests, and improves installation or measured access enough to
-justify another compiled dependency. The current C++ bridge already removes
-the expensive R object-construction overhead on reads; the Python process is
-kept persistent and is not relaunched for every sparse request.
+On the Mac mini, the current native-only smoke benchmark uses a deterministic
+one-million-row SNV fixture and the self-contained identity key. The 0.4.4
+store is 3,067,151 bytes versus 53,154,119 bytes for source TSV.gz and takes
+4.347 s to write. Five-run warm medians are 0.058 s for all-column full load,
+0.008 s for a 10 kb region, and 0.204 s for 25 canonical-key reads. Full
+validation passed. This historical smoke store used 8K identity frames and 65K
+value frames; the current defaults are documented above. This is an engineering
+benchmark, not a claim about
+every GWAS or sparse workload; the real-GWAS suite should be regenerated for
+the native format before making a new production headline.
 
 ## Benchmark interpretation
 
@@ -222,7 +306,6 @@ store itself, so reading does not require the external reference.
 On the Mac mini:
 
 ```bash
-python3 scripts/test_pcodec_backend.py
 Rscript -e 'testthat::test_local(".")'
 R CMD check . --no-manual --as-cran
 ```

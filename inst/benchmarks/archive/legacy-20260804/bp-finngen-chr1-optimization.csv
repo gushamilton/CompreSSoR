@@ -1,0 +1,10 @@
+candidate,key_block_rows,page_rows,source_bytes,store_bytes,compression_ratio,full_numeric_t1_seconds,full_identity_numeric_t1_seconds,region_identity_numeric_t1_seconds,notes
+reference_anchored_numeric_only,,,15186281,2564910,5.921,0.060,,,identity streams excluded; numeric streams plus native index
+self_contained_key8192,8192,32768,15186281,4371286,3.474,0.065,0.142,0.027,baseline self-contained store
+self_contained_key32768,32768,32768,15186281,4311036,3.523,0.064,0.134,,five-run BP median
+self_contained_key65536,65536,32768,15186281,4302813,3.529,0.064,0.133,,five-run BP median
+self_contained_key131072,131072,32768,15186281,4298480,3.533,0.064,0.133,0.032,selected identity-frame candidate
+self_contained_key262144,262144,32768,15186281,4296548,3.535,0.064,0.131,0.038,additional size gain below one percent
+self_contained_key524288,524288,32768,15186281,4295570,3.535,0.064,0.131,,additional size gain below one percent
+self_contained_key1048576,1048576,32768,15186281,4295086,3.536,0.064,0.132,0.069,regional access penalty
+selected_key131072_page131072,131072,131072,15186281,4297931,3.533,0.060,0.121,0.021,final BP package build; five runs per workload

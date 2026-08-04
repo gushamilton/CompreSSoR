@@ -9,88 +9,105 @@
 [![R-CMD-check](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-CompreSSoR converts a GWAS summary-statistics table into a self-contained,
-indexed `.cpr` store. The standard store is designed for compact storage and
-fast whole-genome, regional, and sparse-variant access from R and `fastMR`.
-
-The normal path is:
+CompreSSoR converts GWAS summary statistics into a self-contained, indexed
+`.cpr` store for compact storage and fast whole-file, regional, and
+variant-level access from R. The normal path is:
 
 ```text
-sumstats → import → optional GRCh38 liftover/QC → Pcodec .cpr store → read/MR
+sumstats → import/QC → optional GRCh38 liftover → native Pcodec .cpr store
 ```
 
 ![CompreSSoR workflow](docs/figures/compressor-workflow.svg)
 
-## Why this format?
+## Main result
 
-The store keeps the variant identity in every file, without repeating rsIDs or
-requiring a study-specific external spine. It stores the core numerical streams
-in Pcodec and derives beta and p-value when requested.
+The current headline comparison is the latest five-run BluePebble benchmark
+on 10 million real FinnGen SNPs. Every candidate stores its own exact variant
+identity key; the shared reference is excluded from storage accounting.
 
-On a real 14,923,434-variant FinnGen GWAS:
+The locked storage contract is documented in
+[`docs/pcodec-final-spec.md`](docs/pcodec-final-spec.md).
 
-| Measure | Result |
-|---|---:|
-| Source TSV.gz | 201,658,018 bytes |
-| Self-contained `.cpr` | 58,033,297 bytes |
-| Smaller than TSV.gz | **3.47×** |
-| Direct 25×25 MR | **1.274 s** |
-| Same 25×25 workflow from TSV.gz | 165.266 s |
+| Format | Size | Whole-file read |
+|---|---:|---:|
+| **CompreSSoR native Pcodec, 4 threads** | **38.06 MB** | **0.451 s** |
+| Parquet q9 | 69.48 MB | 1.410 s |
+| TSV.gz | 135.39 MB | 4.955 s |
 
-The headline Pareto result is below. It is the measured historical frontier
-that motivated the current Pcodec representation.
+The Pcodec store is 3.56× smaller than TSV.gz. The authoritative records and
+the archive policy are in [`benchmarks/`](benchmarks/README.md); older plots
+and benchmark families are under
+[`inst/benchmarks/archive/legacy-20260804/`](inst/benchmarks/archive/legacy-20260804/).
 
-![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
+![10m FinnGen keyed-format Pareto frontier](inst/benchmarks/finngen-10m-bp-20260804/format-screen/pareto-10m-bp.png)
 
-See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)
-for all runs and [the technical guide](docs/README-technical.md) for protocol,
-limitations, and historical comparisons.
+## What is stored?
 
-## Installation
+![CompreSSoR store layout](docs/figures/compressor-store.svg)
 
-Install the R package from GitHub:
+The standard `.cpr` directory contains a manifest, checksums, an exact
+variant-identity stream, independently framed numerical streams, and sparse
+exceptions:
+
+```text
+gwas.cpr/
+├── manifest.json          format, identity, codec, source, and QC metadata
+├── manifest.sha256        detached manifest checksum
+├── position.pco           compact global GRCh38 position stream
+├── native.index.json      block offsets and row counts
+├── substitution.pco      four-bit REF→ALT identity code
+├── z.pco                  quantised Z stream
+├── eaf.pco                arcsine-quantised EAF stream
+├── se.pco                 block-centred log2-quantised SE stream
+└── exceptions.bin         sparse higher-precision numeric exceptions
+```
+
+The identity key is stored in every GWAS, so an external variant spine is not
+required for access or comparison. The standard numerical representation is:
+
+| Logical field | Stored representation | Read-time result |
+|---|---|---|
+| Chromosome + position | GRCh38 global position | Exact chromosome and position |
+| REF + ALT | Four-bit directed substitution code | Exact alleles |
+| Z | 9-bit semantic code plus exceptions | Quantised Z |
+| EAF | 8-bit arcsine code | Quantised EAF |
+| SE | 8-bit block-centred log2 residual | Quantised SE |
+| Beta | Not stored per row | Derived as `Z × SE` |
+| p-value | Not stored | Derived from Z |
+| rsID/text ID | Not stored | Use `chrom:pos:REF:ALT` |
+
+This is intentionally a core numerical format. Exact or arbitrary extra
+columns can use the Parquet backend; see
+[the technical guide](docs/README-technical.md).
+
+## Install
+
+The native backend builds Pcodec through a small Rust-to-R C ABI. Install Rust
+once, then install the package:
+
+```bash
+# macOS with Homebrew
+brew install rust
+```
 
 ```r
 install.packages("remotes")
 remotes::install_github("gushamilton/CompreSSoR")
 ```
 
-The standard Pcodec backend currently uses the pinned Python bindings. Install
-the small runtime once in a dedicated environment:
-
-```bash
-python3 -m venv ~/.virtualenvs/compressor
-~/.virtualenvs/compressor/bin/python -m pip install \
-  numpy==1.26.4 pcodec==1.0.3 zstandard==0.25.0
-```
-
-Then point CompreSSoR at it:
-
-```r
-options(CompreSSoR.python = "~/.virtualenvs/compressor/bin/python")
-# or set COMPRESSOR_PYTHON before starting R
-```
-
-The Python dependency is not because the compression algorithm is written in
-Python: Pcodec's implementation is Rust, and the current stable package
-integration uses its maintained Python API. Pcodec also has Rust and Java APIs;
-its C bindings are currently marked incomplete, so a native C++/R backend is a
-future packaging task rather than the default installation path. See
-[the technical guide](docs/README-technical.md#can-this-be-all-c) for the
-decision and options.
+The historical Python backend is archived and is not part of the installed
+package.
 
 ## Quick start
 
-For an already verified GRCh38 REF/ALT table:
+For a GRCh38-aligned, verified table:
 
 ```r
 library(CompreSSoR)
 
 store <- compress_sumstats(
-  "gwas.tsv.gz",
-  "gwas.cpr",
+  "gwas.tsv.gz", "gwas.cpr",
   mode = "convert",
-  reference = NULL,
   assume_grch38_ref_alt = TRUE,
   overwrite = TRUE
 )
@@ -102,13 +119,12 @@ read_sumstats(
 )
 ```
 
-For an ordinary third-party GWAS, use the QC path and a configured GRCh38
-reference. A GRCh37 input also needs a liftover chain:
+For an ordinary third-party GWAS, use the harmonisation/QC path and provide a
+GRCh38 reference or a GRCh37-to-GRCh38 chain:
 
 ```r
 store <- compress_sumstats(
-  "gwas.tsv.gz",
-  "gwas.cpr",
+  "gwas.tsv.gz", "gwas.cpr",
   input_build = "GRCh37",
   chain = "/data/reference/hg19ToHg38.over.chain.gz",
   reference = "GRCh38",
@@ -118,142 +134,44 @@ store <- compress_sumstats(
 )
 ```
 
-The reference is used during ingestion to establish GRCh38 identity and
-allele orientation. The completed standard `.cpr` store carries its own
-identity and does not need the reference beside it for reading.
+The reference is an ingestion dependency. The completed `.cpr` store carries
+its own identity and does not need the reference beside it for reading.
 
 ## Reading and FastMR
 
 ```r
 region <- read_sumstats(
-  store,
+  "gwas.cpr",
   region = "chr1:100000000-101000000",
   columns = c("chromosome", "base_pair_location", "beta", "standard_error")
 )
 
 instruments <- c("1:109274968:A:G", "6:160589086:C:T")
 sparse <- read_sumstats(
-  store,
-  variants = instruments,
-  columns = c("beta", "standard_error")
+  "gwas.cpr", variants = instruments,
+  columns = c("beta", "standard_error"), threads = 4
 )
 ```
 
-`fastMR` can read the requested canonical keys directly from `.cpr` stores and
-send the matched beta/SE matrices into its compiled estimator:
-
-```r
-remotes::install_github("gushamilton/fastMR")
-
-result <- fastMR::fast_mr_compressed(
-  exposure_files = c(exposure = "exposure.cpr"),
-  outcome_files = c(outcome = "outcome.cpr"),
-  instruments = instruments,
-  methods = "ivw"
-)
-```
-
-The direct path does not load a whole GWAS or reconstruct p-values. It reads
-each exposure for its own instruments, reads each outcome for the union, and
-uses the shared matrix-grid estimator where possible.
-
-## What is stored?
-
-![CompreSSoR store layout](docs/figures/compressor-store.svg)
-
-Every `.cpr` is a directory with a manifest, checksums, independently paged
-Pcodec streams, and a compressed exception stream:
-
-```text
-gwas.cpr/
-├── manifest.json          format, identity, codec, source, and QC metadata
-├── manifest.sha256        detached manifest checksum
-├── position.pco           global GRCh38 positions
-├── position.index         page/chunk index
-├── substitution.pco       four-bit REF→ALT substitution code
-├── substitution.index
-├── z.pco                   quantised Z stream
-├── z.index
-├── eaf.pco                 arcsine-quantised effect-allele frequency
-├── eaf.index
-├── se.pco                  block-centred log2-quantised SE stream
-├── se.index
-└── exceptions.zst          sparse higher-precision numeric exceptions
-```
-
-| Logical field | Standard storage | Read-time result |
-|---|---|---|
-| Chromosome + position | GRCh38 global position, Pcodec `uint32` | Exact chromosome and position |
-| REF + ALT | Complete four-bit substitution code | Exact alleles |
-| Z | 9-bit semantic code, Pcodec stream | Quantised Z, with exceptions |
-| EAF | 8-bit arcsine code, Pcodec stream | Quantised EAF |
-| SE | 6-bit block-centred log2 residual | Quantised SE, with exceptions |
-| Beta | Not stored per row | Derived as `Z × SE` |
-| p-value | Not stored | Derived from Z |
-| rsID/text variant ID | Not stored | Use `chrom:pos:REF:ALT` |
-
-Identity is lossless. Standard numeric values are deliberately bounded-lossy;
-the manifest records the profile and tolerances. Use the exact Parquet backend
-when bitwise-exact doubles or arbitrary non-core fields are required.
-
-### Optional extra columns
-
-The standard Pcodec payload intentionally contains only the core fields above.
-This keeps routine MR stores small and predictable. The current released
-fallback for retaining arbitrary row-wise columns is:
-
-```r
-compress_sumstats(
-  input, output,
-  backend = "parquet",
-  keep_extras = TRUE,
-  profile = "exact"
-)
-```
-
-Those extras are stored as an interoperable Parquet sidecar keyed by the
-canonical row number. Pcodec itself can losslessly compress separate numeric
-streams, so a typed Pcodec extras layer is feasible; it is not yet part of the
-standard `.cpr` contract. We keep that distinction explicit rather than
-silently putting arbitrary strings or mixed R columns into a numerical codec.
-The design and next implementation step are documented in
-[the technical guide](docs/README-technical.md#optional-extra-columns).
-
-## Benchmarks at a glance
-
-Five randomized cold-cache repetitions on the Mac mini, with fresh R
-processes and distinct fresh copies for each logical study:
-
-| Input path | 1×1 MR | 5×5 MR | 25×25 MR |
-|---|---:|---:|---:|
-| **CompreSSoR + FastMR direct** | **0.264 s** | **0.479 s** | **1.274 s** |
-| CompreSSoR, explicit reads | 0.387 s | 1.581 s | 7.624 s |
-| VCF.gz + Tabix | 0.085 s | 0.330 s | 1.537 s |
-| TSV.gz full scans | 6.747 s | 32.830 s | 165.266 s |
-
-Tabix is best for one or a few sparse queries. Direct Pcodec crosses over at
-the 25×25 workload. Full-load medians were 3.182 s for Pcodec, 3.954 s for
-TSV.gz, and 10.163 s for VCF.gz.
+The companion [fastMR](https://github.com/gushamilton/fastMR) package can use
+the same canonical keys to read only the required exposure/outcome values.
 
 ## Further documentation
 
-- [Technical guide, design questions, and full benchmark protocol](docs/README-technical.md)
-- [Machine-readable benchmark summary](inst/benchmarks/cold-mr-final-summary.csv)
-- [All 75 benchmark repetitions](inst/benchmarks/cold-mr-final-runs.csv)
-- [Benchmark metadata and parity gates](inst/benchmarks/cold-mr-final-metadata.json)
-- [FastMR direct compressed-MR package](https://github.com/gushamilton/fastMR)
+- [Benchmark write-up and reproducible records](benchmarks/README.md)
+- [Technical guide and format details](docs/README-technical.md)
+- [R package reference](https://gushamilton.github.io/CompreSSoR/)
 
 ## Verification
 
 ```bash
-python3 scripts/test_pcodec_backend.py
 Rscript -e 'testthat::test_local(".")'
 R CMD check . --no-manual --as-cran
 ```
 
 Large GWAS files, reference tables, benchmark stores, and temporary bridges
-remain outside the repository. The committed benchmark CSV/JSON/Markdown
-files are the durable evidence.
+remain outside the repository. The committed CSV/JSON/Markdown records are
+the durable evidence.
 
 ## License
 

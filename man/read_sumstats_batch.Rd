@@ -20,16 +20,16 @@ every store, or one such vector per store in a list.}
 
 \item{columns}{Output columns requested from every store.}
 
-\item{threads}{Number of stores to decode concurrently inside the shared
-Pcodec process.}
+\item{threads}{Number of independent Pcodec store readers to run in parallel
+on Unix-like systems. Windows uses serial reads.}
 }
 \value{
 A list of decoded data frames in the same order as \code{stores}.
 }
 \description{
-Starts the Pcodec runtime once for the complete batch. This is substantially
-faster than repeated \code{\link[=read_sumstats]{read_sumstats()}} calls when an analysis extracts a
-small instrument set from several GWAS files.
+Reads the requested canonical keys from several GWAS files. With
+\code{threads > 1} on Unix-like systems, independent stores are decoded in
+parallel.
 }
 \examples{
 \dontrun{

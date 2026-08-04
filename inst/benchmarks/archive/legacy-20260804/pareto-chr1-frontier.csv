@@ -1,0 +1,7 @@
+benchmark_id,format,contract,storage_bytes,source_bytes,compression_ratio,median_seconds,min_seconds,max_seconds,runs,rows,checksum_median,family,frontier,label
+compressor_chr1_pareto_same_data_v1,TSV gzip,self-contained text,15186281,15186281,1,0.363,0.359999999999999,0.367000000000001,5,1124344,306106.821400466,Text,FALSE,TSV gzip
+compressor_chr1_pareto_same_data_v1,TSV uncompressed,self-contained text,50599421,15186281,0.30012756470079,0.105000000000004,0.0739999999999981,0.165999999999997,5,1124344,306106.821400466,Text,TRUE,TSV uncompressed
+compressor_chr1_pareto_same_data_v1,Parquet self-contained exact,self-contained,20424622,15186281,0.743528129920838,0.131999999999998,0.127000000000002,0.186,5,1124344,306106.821400466,Parquet,FALSE,
+compressor_chr1_pareto_same_data_v1,VCF bgzip + Tabix,self-contained,16151925,15186281,0.940214927942025,0.794000000000004,0.788999999999994,0.813000000000002,5,1124344,306106.821400466,VCF + Tabix,FALSE,
+compressor_chr1_pareto_same_data_v1,CompreSSoR Pcodec self-contained,self-contained,4298204,15186281,3.53316897010938,0.116,0.116,0.118000000000002,5,1124344,141519510196581,CompreSSoR,TRUE,"CompreSSoR Pcodec self-contained
+(identity included)"

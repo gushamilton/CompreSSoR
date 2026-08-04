@@ -1,0 +1,5 @@
+access_seconds,storage_ratio,label,label_group,pareto_frontier
+0.207,3.53316897010938,,Thread policy,FALSE
+0.197,3.53316897010938,Public read; 2 threads,Thread policy,TRUE
+0.2,3.53316897010938,,Thread policy,FALSE
+0.208,3.53316897010938,,Thread policy,FALSE

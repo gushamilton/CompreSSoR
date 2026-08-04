@@ -8,9 +8,12 @@
 #' @param mode One of `"qc"` (default, harmonise and drop unresolved rows),
 #'   `"convert"` (minimal conversion without reference QC), `"all"` (alias
 #'   for `"qc"`), `"core"`, or `"hm3"`.
-#' @param variant_set Panel data.frame or file used by `mode = "core"` or
-#'   `mode = "hm3"`. PLINK `.bim`, Parquet and delimited panel files are
-#'   supported.
+#' @param variant_set Optional panel data.frame or file. It can be used with
+#'   any mode: in `mode = "convert"` it filters by the input's existing
+#'   GRCh38 identity without invoking reference harmonisation. Named values
+#'   `"common"` and `"tag"` resolve to `COMPRESSOR_COMMON_VARIANTS` and
+#'   `COMPRESSOR_TAG_VARIANTS`; PLINK `.bim`, compressed Parquet and native
+#'   Pcodec variant stores are supported.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, duplicated, or unsupported by the selected backend.
 #' @param drop_unresolved Whether unmatched, incompatible, ambiguous and
@@ -19,7 +22,7 @@
 #' @param chain Optional GRCh37-to-GRCh38 chain file.
 #' @param chrom_threads Number of chromosome workers for harmonisation. Values
 #'   above one use chromosome-parallel harmonisation and share the reference.
-#' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
+#' @param profile `"standard"` uses semantic Z9/EAF8/SE8 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
 #' @param backend Storage backend. The default, `"pcodec"`, is the compact
@@ -156,6 +159,7 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
     reference_metadata$sha256 <- alignment$reference_hash
     reference_metadata$rows <- alignment$reference_rows
     pcodec_metadata <- list(
+      block_rows = as.integer(block_rows),
       genome_build = "GRCh38",
       reference = reference_metadata,
       harmonisation = list(
@@ -340,8 +344,10 @@ open_compressor <- function(path) {
     verify_pcodec_manifest(file.path(path, "manifest.json"))
   }
   if (identical(manifest$backend, "pcodec") &&
-      !manifest$format_version %in% c("0.2.0-pcodec", "0.3.0-pcodec")) {
-    stop("unsupported Pcodec format version: ", manifest$format_version %||% "missing", call. = FALSE)
+      !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {
+    stop("unsupported or archived Pcodec format version: ",
+         manifest$format_version %||% "missing",
+         "; this build reads native 0.4 stores only", call. = FALSE)
   }
   structure(list(path = path, manifest = manifest), class = "compressor_store")
 }
@@ -532,7 +538,15 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #' @param region Optional genomic region.
 #' @param variants Optional variant IDs, zero-based row IDs, or—for Pcodec
 #'   stores—canonical `chromosome:position:REF:ALT` keys.
-#' @param columns Optional output columns.
+#' @param columns Optional output columns. Pcodec stores additionally expose
+#'   `global_position` and `substitution`, the compact identity fields used by
+#'   native analytical readers; requesting these avoids chromosome/REF/ALT
+#'   reconstruction.
+#' @param threads Number of workers for Pcodec reads. The native full-store
+#'   reader performs indexed stream scans and block decompression in C++; the
+#'   regional, canonical-key and fallback paths use Unix worker processes.
+#'   Set `threads` explicitly, or use `options(CompreSSoR.pcodec.threads = n)`
+#'   for the non-native paths. On Windows, reads remain serial.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.
 #' @examples
@@ -542,11 +556,13 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #'               columns = c("beta", "standard_error", "p_value"))
 #' }
 #' @export
-read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL, use_cache = FALSE) {
+read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
+                          use_cache = FALSE, threads = NULL) {
   store <- if (inherits(store, "compressor_store")) store else pcodec_open_store_cached(store)
   if (identical(store$manifest$backend, "pcodec")) {
     if (isTRUE(use_cache)) warning("use_cache is ignored for the block-framed Pcodec backend", call. = FALSE)
-    return(pcodec_read_store(store, region = region, variants = variants, columns = columns))
+    return(pcodec_read_store(store, region = region, variants = variants,
+                             columns = columns, threads = threads))
   }
   require_parquet_backend("reading a Parquet CompreSSoR store", dplyr = TRUE)
   cache_columns <- c("chromosome", "base_pair_location", "effect_allele", "other_allele",
@@ -607,16 +623,18 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 
 #' Read canonical variants from several compressed GWAS files
 #'
-#' Starts the Pcodec runtime once for the complete batch. This is substantially
-#' faster than repeated [read_sumstats()] calls when an analysis extracts a
-#' small instrument set from several GWAS files.
+#' Reads the requested canonical keys from several GWAS files. With
+#' `threads > 1` on Unix-like systems, independent stores are decoded in
+#' parallel; this is substantially faster than repeated [read_sumstats()]
+#' calls when an analysis extracts a small instrument set from several files.
 #'
 #' @param stores A non-empty list or character vector of Pcodec stores.
 #' @param variants A canonical `chromosome:position:REF:ALT` vector shared by
 #'   every store, or one such vector per store in a list.
 #' @param columns Output columns requested from every store.
-#' @param threads Number of stores to decode concurrently inside the shared
-#'   Pcodec process.
+#' @param threads Number of independent Pcodec store readers to run in
+#'   parallel on Unix-like systems. The default is one. Windows uses serial
+#'   reads for portability.
 #' @return A list of decoded data frames in the same order as `stores`.
 #' @examples
 #' \dontrun{
@@ -661,8 +679,10 @@ read_sumstats_batch <- function(
 #' decoded <- decompress_sumstats("gwas.cpr")
 #' }
 #' @export
-decompress_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL, use_cache = FALSE) {
-  read_sumstats(store, region = region, variants = variants, columns = columns, use_cache = use_cache)
+decompress_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
+                                use_cache = FALSE, threads = NULL) {
+  read_sumstats(store, region = region, variants = variants, columns = columns,
+                threads = threads, use_cache = use_cache)
 }
 
 #' Validate a CompreSSoR store

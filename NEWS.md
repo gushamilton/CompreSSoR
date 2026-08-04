@@ -1,3 +1,24 @@
+# CompreSSoR 0.4.0
+
+- Adds the final same-data BP FinnGen chr1 Pareto record: nine formats, five
+  access repetitions, explicit self-contained/reference-anchored contracts,
+  package round-trip validation, and a README plot generated from the checked
+  CSV record.
+- Records theoretical validation bounds for the standard lossy Z9/EAF8/SE8
+  profile in the manifest, including the SE-relative and beta reconstruction
+  tolerances.
+- Lowers the Arrow compatibility floor to the Arrow 22 API available on the
+  supported BluePebble R environment.
+- New stores use the native Pcodec backend when Rust/Cargo is available at
+  installation time. The 0.4 block-indexed format keeps the self-contained
+  GRCh38 identity key and semantic Z/EAF/SE profile while avoiding the Python
+  process entirely for ordinary reads and writes.
+- The historical Python Pcodec backend is archived outside the installed
+  package; Rust/Cargo is now the sole Pcodec build requirement.
+- BP FinnGen chr1 benchmarks selected 131,072-row identity frames and
+  131,072-row Pcodec pages: 4,297,931 bytes self-contained versus 15,186,281
+  bytes for the source TSV.gz.
+
 # CompreSSoR 0.3.0
 
 - Introduces the wrapped Pcodec v0.3 store: fixed 262,144-row chunks with

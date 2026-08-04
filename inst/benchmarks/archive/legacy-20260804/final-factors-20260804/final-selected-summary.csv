@@ -1,0 +1,2 @@
+format_id,format,family,identity_included,rows,source_bytes,storage_bytes,compression_ratio,write_median_seconds,full_read_median_seconds,max_abs_z_error,max_abs_se_error,max_abs_eaf_error,checksum_consistent
+pcodec_native,CompreSSoR native Pcodec,CompreSSoR,TRUE,1124344,15186281,4298204,3.53316897010938,11.491,0.507000000000001,0.00686274509803964,0.0458287408341827,0.00307997331906917,TRUE

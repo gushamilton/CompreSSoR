@@ -1,0 +1,2 @@
+format_id,format,family,runs,source_bytes,storage_bytes,compression_ratio,write_median_seconds,read_median_seconds,rows,status,pareto_frontier
+pcodec_native,CompreSSoR native Pcodec (4 threads),CompreSSoR,5,135388867,38060022,3.5572461571357,,0.450999999999993,10000000,OK,TRUE

@@ -1,0 +1,4 @@
+mode,access_seconds,storage_ratio,label,label_group,pareto_frontier
+alloc_then_copy_current,0.022394629,3.5641201179663,,Buffer path,FALSE
+direct_destination_fresh,0.022407681,3.5641201179663,,Buffer path,FALSE
+direct_destination_reused,0.022213748,3.5641201179663,Direct destination; reused,Buffer path,TRUE

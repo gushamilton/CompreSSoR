@@ -1,0 +1,11 @@
+benchmark_id,access,run,seconds
+native_pcodec_1m_coherent_vs_tsv_gz,source_gzip_full_read,1,0.193
+native_pcodec_1m_coherent_vs_tsv_gz,source_gzip_full_read,2,0.192
+native_pcodec_1m_coherent_vs_tsv_gz,source_gzip_full_read,3,0.188
+native_pcodec_1m_coherent_vs_tsv_gz,source_gzip_full_read,4,0.246
+native_pcodec_1m_coherent_vs_tsv_gz,source_gzip_full_read,5,0.225
+native_pcodec_1m_coherent_vs_tsv_gz,native_full_read,1,0.079
+native_pcodec_1m_coherent_vs_tsv_gz,native_full_read,2,0.079
+native_pcodec_1m_coherent_vs_tsv_gz,native_full_read,3,0.081
+native_pcodec_1m_coherent_vs_tsv_gz,native_full_read,4,0.078
+native_pcodec_1m_coherent_vs_tsv_gz,native_full_read,5,0.079

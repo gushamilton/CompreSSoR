@@ -4,14 +4,36 @@
 
 extern SEXP compressor_decode_native(
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+    SEXP, SEXP);
 extern SEXP compressor_read_pcodec_bridge(
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
     SEXP);
+extern SEXP compressor_read_pcodec_native_codes(
+    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_native_available(void);
+extern SEXP compressor_pcodec_compress_u8(SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_compress_u16(SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_compress_u32(SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_decompress_u8(SEXP, SEXP);
+extern SEXP compressor_pcodec_decompress_u16(SEXP, SEXP);
+extern SEXP compressor_pcodec_decompress_u32(SEXP, SEXP);
+extern SEXP compressor_zstd_compress(SEXP, SEXP);
+extern SEXP compressor_zstd_decompress(SEXP, SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
-    {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 20},
+    {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 22},
+    {"compressor_read_pcodec_native_codes", (DL_FUNC) &compressor_read_pcodec_native_codes, 11},
     {"compressor_read_pcodec_bridge", (DL_FUNC) &compressor_read_pcodec_bridge, 11},
+    {"compressor_pcodec_native_available", (DL_FUNC) &compressor_pcodec_native_available, 0},
+    {"compressor_pcodec_compress_u8", (DL_FUNC) &compressor_pcodec_compress_u8, 3},
+    {"compressor_pcodec_compress_u16", (DL_FUNC) &compressor_pcodec_compress_u16, 3},
+    {"compressor_pcodec_compress_u32", (DL_FUNC) &compressor_pcodec_compress_u32, 3},
+    {"compressor_pcodec_decompress_u8", (DL_FUNC) &compressor_pcodec_decompress_u8, 2},
+    {"compressor_pcodec_decompress_u16", (DL_FUNC) &compressor_pcodec_decompress_u16, 2},
+    {"compressor_pcodec_decompress_u32", (DL_FUNC) &compressor_pcodec_decompress_u32, 2},
+    {"compressor_zstd_compress", (DL_FUNC) &compressor_zstd_compress, 2},
+    {"compressor_zstd_decompress", (DL_FUNC) &compressor_zstd_decompress, 2},
     {NULL, NULL, 0}
 };
 

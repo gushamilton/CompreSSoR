@@ -1,0 +1,9 @@
+flag,rustflags,threads,store,workload,runs,median_seconds,min_seconds,max_seconds,rows,checksum_min,checksum_max,key_sha256_values
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",1,finngen_chr1,full_numeric,3,0.0630000000000002,0.0590000000000002,0.069,1124344,306124.485591751,306124.485591751,""
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",1,finngen_chr1,key_32_numeric,3,0.873,0.809,0.886,32,4026001707.95223,4026001707.95223,26a2b8c7d9a8cbfef8df3f3683755ae7941ced14cc68f6aa616c566016835dec
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",1,finngen_chr1_final,full_numeric,3,0.0579999999999998,0.0579999999999998,0.0590000000000002,1124344,306124.485591751,306124.485591751,""
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",1,finngen_chr1_final,key_32_numeric,3,2.914,2.903,2.934,32,4026001707.95223,4026001707.95223,26a2b8c7d9a8cbfef8df3f3683755ae7941ced14cc68f6aa616c566016835dec
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",4,finngen_chr1,full_numeric,3,0.0960000000000001,0.0939999999999976,0.0960000000000001,1124344,306124.485591751,306124.485591751,""
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",4,finngen_chr1,key_32_numeric,3,0.343,0.343,0.344000000000001,32,4026001707.95223,4026001707.95223,26a2b8c7d9a8cbfef8df3f3683755ae7941ced14cc68f6aa616c566016835dec
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",4,finngen_chr1_final,full_numeric,3,0.0939999999999976,0.093,0.0940000000000012,1124344,306124.485591751,306124.485591751,""
+avx2-bmi1-bmi2,"-C target-feature=+avx2,+bmi1,+bmi2",4,finngen_chr1_final,key_32_numeric,3,1.063,1.057,1.076,32,4026001707.95223,4026001707.95223,26a2b8c7d9a8cbfef8df3f3683755ae7941ced14cc68f6aa616c566016835dec

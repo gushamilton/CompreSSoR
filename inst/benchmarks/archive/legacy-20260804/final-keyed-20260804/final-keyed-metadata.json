@@ -1,0 +1,21 @@
+{
+  "benchmark_id": "compressor_final_keyed_chr1_v1",
+  "host": "University of Bristol BluePebble",
+  "slurm_job_id": "18265204",
+  "compute_node": "bp1-compute053",
+  "r_version": "4.5.1",
+  "source": "finngen_chr1_core_snvs.tsv.gz",
+  "rows": 1124344,
+  "source_columns": ["chrom", "pos", "ref", "alt", "beta", "se", "eaf", "p"],
+  "source_bytes": 15186281,
+  "runs_per_format": 5,
+  "measured_formats": 34,
+  "identity_contract": "exact position plus directed REF->ALT substitution stored in every candidate",
+  "external_reference_counted": false,
+  "access_measure": "wall-clock time to read and decode the complete candidate into an R data.table",
+  "quantised_fields": "Z, EAF and SE; beta and p are not stored by the standard Pcodec profile",
+  "validation": "all 170 observations passed identity and numeric round-trip checks",
+  "unavailable_not_guessed": ["Zarr + Pcodec", "Zarr + Blosc2", "Blosc2 frame", "Vortex", "Python Pcodec"],
+  "slurm_script": "scripts/benchmark-final-keyed.sbatch",
+  "analysis_script": "scripts/aggregate-final-keyed.R"
+}
