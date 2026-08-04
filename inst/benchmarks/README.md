@@ -32,9 +32,11 @@ included in the Pcodec size; there is no uncounted variant spine.
 
 The current native implementation check is recorded in
 `native-pcodec-se8-frame.csv` and `native-pcodec-se8-frame-runs.csv`. On a
-deterministic 1,000,000-row Mac mini fixture, the 0.4.3 native store is
-3,008,525 bytes versus 53,154,119 bytes for the source TSV.gz (17.67x), with
-five-run warm medians of 55 ms for a full read and 7 ms for a 10 kb region.
+deterministic 1,000,000-row Mac mini fixture, the 0.4.4 native store is
+3,067,151 bytes versus 53,154,119 bytes for the source TSV.gz (17.33x), with
+five-run warm medians of 58 ms for a full read, 8 ms for a 10 kb region, and
+204 ms for 25 canonical-key reads. It uses 8K identity frames and 65K value
+frames.
 This is an implementation benchmark, not a replacement for the final
 full-FinnGen comparison.
 
@@ -52,7 +54,7 @@ The plot retains an older diagnostic overlay labelled `Native Pcodec 0.4*`.
 That point is not the current implementation result. The current native
 evidence is in `native-pcodec-se8-frame.csv` and its companion run table: a
 1,000,000-row Mac mini smoke fixture, with the same source written as TSV.gz
-and read through `fread` versus the 0.4.3 native `.cpr` reader. It is an
+and read through `fread` versus the 0.4.4 native `.cpr` reader. It is an
 implementation check, not a claim that unlike datasets share one Pareto
 frontier.
 

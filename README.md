@@ -46,20 +46,20 @@ separately while the final full-FinnGen comparison is regenerated.
 
 The current native check uses a deterministic 1-million-row fixture on the Mac
 mini. TSV.gz is 53,154,119 bytes and the self-contained native `.cpr` is
-3,008,525 bytes (17.67× smaller), with five-run warm medians of 0.392 s and
-0.055 s for full reads. A 10 kb region read is 0.007 s. See the [native SE8
-benchmark](inst/benchmarks/native-pcodec-se8-frame.csv).
+3,067,151 bytes (17.33× smaller), with five-run warm medians of 0.387 s and
+0.058 s for full reads. A 10 kb region read is 0.008 s and 25 canonical-key
+access is 0.204 s. See the [native SE8 benchmark](inst/benchmarks/native-pcodec-se8-frame.csv).
 
 The native-only smoke benchmark on the Mac mini used one million coherent
 rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
 
-| Native 0.4.3 measure | Result |
+| Native 0.4.4 measure | Result |
 |---|---:|
-| Store size | **3,008,525 bytes** |
-| Write time | **4.429 s** |
-| Full read, all columns | **0.055 s** |
-| 10 kb region read | **0.007 s** |
-| 25 canonical-key read | **0.846 s** |
+| Store size | **3,067,151 bytes** |
+| Write time | **4.347 s** |
+| Full read, all columns | **0.058 s** |
+| 10 kb region read | **0.008 s** |
+| 25 canonical-key read | **0.204 s** |
 
 Each access number is the median of five runs; the canonical-key test requests
 100 keys. The store passed full validation and all checksums. This is a
@@ -190,8 +190,9 @@ gwas.cpr/
 └── exceptions.bin          sparse higher-precision numeric exceptions
 ```
 
-The native 0.4.3 store uses 65,536-row blocks by default; `block_rows` can be
-changed when a smaller random-access frame is preferable. Older 0.2/0.3 stores belong to
+The native 0.4.4 store uses 8,192-row identity frames and 65,536-row numeric
+frames by default; `block_rows` changes the numeric frame size when a smaller
+random-access frame is preferable. Older 0.2/0.3 stores belong to
 the archived pre-native implementation and are not read by this release.
 
 | Logical field | Standard storage | Read-time result |
