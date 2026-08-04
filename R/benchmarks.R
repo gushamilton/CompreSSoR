@@ -1,22 +1,38 @@
 benchmark_metadata <- function() {
   list(
-    benchmark_id = "compressor_chr1_pareto_same_data_v1",
-    description = "Five-run same-data Pareto benchmark on five real FinnGen chr1 variant-key formats",
-    rows = 1124344L,
+    benchmark_id = "compressor_finngen_10m_keyed_final_20260804",
+    description = "Five-run same-data keyed format benchmark on 10 million FinnGen SNPs from BluePebble",
+    rows = 10000000L,
     runs = 5L,
     metric = "median_full_read_seconds",
     compression_metric = "compression_ratio_vs_source_gzip",
-    data = "inst/benchmarks/pareto-chr1-summary.csv",
-    plot = "inst/figures/compressor-pareto.png",
-    access = "inst/benchmarks/pareto-chr1-access-runs.csv",
-    write = "inst/benchmarks/pareto-chr1-write.csv",
-    validation = "inst/benchmarks/pareto-chr1-validation.csv"
+    data = "inst/benchmarks/finngen-10m-bp-20260804/format-screen/whole-file-10m-summary.csv",
+    frontier = "inst/benchmarks/finngen-10m-bp-20260804/format-screen/whole-file-10m-frontier.csv",
+    threads = "inst/benchmarks/finngen-10m-bp-20260804/pcodec-thread-compare/pcodec-10m-thread-compare-18268241-summary.csv"
   )
+}
+
+benchmark_record_path <- function(relative_path, archived = FALSE) {
+  relative_path <- if (archived) {
+    file.path("archive", "legacy-20260804", relative_path)
+  } else {
+    relative_path
+  }
+  package_root <- system.file(package = "CompreSSoR")
+  path <- if (nzchar(package_root)) {
+    file.path(package_root, "benchmarks", relative_path)
+  } else {
+    file.path("inst", "benchmarks", relative_path)
+  }
+  if (!file.exists(path)) stop("benchmark record is missing: ", path, call. = FALSE)
+  path
 }
 
 #' Read the benchmark table shipped with CompreSSoR
 #'
-#' @param kind Either "pareto" for the first Pareto benchmark, "vcf"
+#' @param kind Either "finngen_10m" for the current keyed 10m FinnGen
+#'   benchmark, "pcodec_10m_threads" for its native reader comparison, or
+#'   "pareto" for the archived first Pareto benchmark, "vcf"
 #'   for the VCF.bgz plus Tabix comparison, "finngen" for the real
 #'   non-EBI end-to-end conversion, or "finngen_optimization" for the
 #'   reference-cache compression-time benchmark, "modes" for the
@@ -30,27 +46,34 @@ benchmark_metadata <- function() {
 #'   "pareto_chr1" for the current same-data FinnGen chr1 Pareto benchmark.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
-benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimization",
+benchmark_table <- function(kind = c("finngen_10m", "pcodec_10m_threads", "pareto", "vcf", "finngen", "finngen_optimization",
                                     "modes", "release_gate", "release_gate_followup",
                                     "pcodec_access", "storage_size",
                                     "storage_amortization", "native_se8",
-                                    "pareto_chr1")) {
+                                    "pareto_chr1", "finngen_10m",
+                                    "pcodec_10m_threads")) {
   kind <- match.arg(kind)
-  filename <- switch(kind,
-                     pareto = "first-pareto.csv",
-                     vcf = "vcf-tabix.csv",
-                     finngen = "finngen-end-to-end.csv",
-                     finngen_optimization = "finngen-end-to-end-optimization.csv",
-                     modes = "modes-edge.csv",
-                     release_gate = "release-gate-benchmark.csv",
-                     release_gate_followup = "release-gate-followup.csv",
-                     pcodec_access = "pcodec-canonical-access-runs.csv",
-                     storage_size = "storage-size-benchmark.csv",
-                     storage_amortization = "storage-amortization.csv",
-                     native_se8 = "native-pcodec-se8-frame.csv",
-                     pareto_chr1 = "pareto-chr1-summary.csv")
-  path <- system.file("benchmarks", filename, package = "CompreSSoR")
-  if (!nzchar(path)) path <- file.path("inst", "benchmarks", filename)
+  current <- kind %in% c("finngen_10m", "pcodec_10m_threads")
+  relative_path <- switch(kind,
+                          finngen_10m = file.path(
+                            "finngen-10m-bp-20260804", "format-screen",
+                            "whole-file-10m-summary.csv"),
+                          pcodec_10m_threads = file.path(
+                            "finngen-10m-bp-20260804", "pcodec-thread-compare",
+                            "pcodec-10m-thread-compare-18268241-summary.csv"),
+                          pareto = "first-pareto.csv",
+                          vcf = "vcf-tabix.csv",
+                          finngen = "finngen-end-to-end.csv",
+                          finngen_optimization = "finngen-end-to-end-optimization.csv",
+                          modes = "modes-edge.csv",
+                          release_gate = "release-gate-benchmark.csv",
+                          release_gate_followup = "release-gate-followup.csv",
+                          pcodec_access = "pcodec-canonical-access-runs.csv",
+                          storage_size = "storage-size-benchmark.csv",
+                          storage_amortization = "storage-amortization.csv",
+                          native_se8 = "native-pcodec-se8-frame.csv",
+                          pareto_chr1 = "pareto-chr1-summary.csv")
+  path <- benchmark_record_path(relative_path, archived = !current)
   utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
 }
 
@@ -60,7 +83,7 @@ vcf_benchmark_metadata <- function() {
     description = "Five-run VCF.bgz plus Tabix full-read and regional-access comparison",
     rows = 11106737L,
     source_build = "GRCh37",
-    data = "inst/benchmarks/vcf-tabix.csv",
+    data = "inst/benchmarks/archive/legacy-20260804/vcf-tabix.csv",
     runs = 5L
   )
 }
@@ -74,7 +97,7 @@ finngen_benchmark_metadata <- function() {
     output_rows = 3294606L,
     elapsed_seconds = 68.679,
     output_bytes = 132687271L,
-    data = "inst/benchmarks/finngen-end-to-end.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/finngen-end-to-end.csv"
   )
 }
 
@@ -92,7 +115,7 @@ finngen_optimization_metadata <- function() {
     output_rows = 3294606L,
     output_bytes = 132687915L,
     normalized_reference_cache_bytes = 142797914L,
-    data = "inst/benchmarks/finngen-end-to-end-optimization.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/finngen-end-to-end-optimization.csv"
   )
 }
 
@@ -103,7 +126,7 @@ mode_benchmark_metadata <- function() {
     input_rows = 550000L,
     chromosomes = 22L,
     runs = 3L,
-    data = "inst/benchmarks/modes-edge.csv",
+    data = "inst/benchmarks/archive/legacy-20260804/modes-edge.csv",
     qc_serial_median_seconds = 0.374,
     qc_chrom_parallel_median_seconds = 0.956,
     core_chrom_parallel_median_seconds = 1.130
@@ -122,7 +145,7 @@ release_gate_benchmark_metadata <- function() {
     qc_decompress_median_seconds = 31.353,
     convert_output_bytes = 892353845L,
     qc_output_bytes = 899137039L,
-    data = "inst/benchmarks/release-gate-benchmark.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/release-gate-benchmark.csv"
   )
 }
 
@@ -135,7 +158,7 @@ release_gate_followup_metadata <- function() {
     qc_chrom4_median_seconds = 18.985,
     direct_region_median_seconds = 0.048,
     q8_region_median_seconds = 0.018,
-    data = "inst/benchmarks/release-gate-followup.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/release-gate-followup.csv"
   )
 }
 
@@ -148,7 +171,7 @@ storage_size_benchmark_metadata <- function() {
     canonical_spine_bytes = 142797914L,
     q9_numeric_payload_bytes = 156092361L,
     q9_unmatched_bytes = 302472945L,
-    data = "inst/benchmarks/storage-size-benchmark.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/storage-size-benchmark.csv"
   )
 }
 
@@ -157,6 +180,6 @@ storage_amortization_benchmark_metadata <- function() {
     benchmark_id = "compressor_storage_amortization_finngen_16111549",
     description = "Shared BP canonical-spine storage amortized across one, five and one hundred studies",
     studies = c(1L, 5L, 100L),
-    data = "inst/benchmarks/storage-amortization.csv"
+    data = "inst/benchmarks/archive/legacy-20260804/storage-amortization.csv"
   )
 }

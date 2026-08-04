@@ -25,9 +25,11 @@ lib="$project/r-lib-final-$SLURM_ARRAY_TASK_ID"
 mkdir -p "$lib"
 export R_LIBS_USER="$lib"
 R CMD INSTALL --library="$lib" --no-multiarch repo
-export COMPRESSOR_FINAL_SOURCE="$project/data/finngen_chr1_core_snvs.tsv.gz"
-: "${COMPRESSOR_FINAL_ROOT:=$project/results/final-keyed-20260804}"
+export COMPRESSOR_FINAL_SOURCE="$project/external/benchmark-10m/finngen_10m_snps.tsv.gz"
+export COMPRESSOR_FINAL_EXPECTED_ROWS="${COMPRESSOR_FINAL_EXPECTED_ROWS:-10000000}"
+: "${COMPRESSOR_FINAL_CONTRACT:=compact}"
+: "${COMPRESSOR_FINAL_ROOT:=$project/results/final-keyed-10m-${COMPRESSOR_FINAL_CONTRACT}-20260804}"
 : "${COMPRESSOR_FINAL_RUN:=$SLURM_ARRAY_TASK_ID}"
-export COMPRESSOR_FINAL_ROOT COMPRESSOR_FINAL_RUN
+export COMPRESSOR_FINAL_CONTRACT COMPRESSOR_FINAL_ROOT COMPRESSOR_FINAL_RUN
 export COMPRESSOR_FINAL_KEEP_FORMATS=0
 Rscript --vanilla repo/scripts/benchmark-final-keyed.R

@@ -1,16 +1,27 @@
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <exception>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <R.h>
 #include <Rinternals.h>
+
+#ifdef COMPRESSOR_NATIVE_PCODEC
+#include "pcodec_native.h"
+#endif
 
 // Rinternals.h defines `length` as a macro, which collides with libc++'s
 // locale headers when they are included after it. This translation unit uses
@@ -85,6 +96,286 @@ bool requested_has(SEXP requested, const char* target) {
   }
   return false;
 }
+
+#ifdef COMPRESSOR_NATIVE_PCODEC
+
+constexpr unsigned char kPcoTypeU8 = 10;
+constexpr unsigned char kPcoTypeU16 = 7;
+constexpr unsigned char kPcoTypeU32 = 1;
+
+struct NativePcodecBlock {
+  std::uint64_t offset;
+  std::uint64_t length;
+  std::uint64_t values;
+  std::uint64_t row_start;
+  std::uint64_t row_stop;
+  std::uint64_t first_position;
+};
+
+struct NativePcodecExceptionBlock {
+  std::uint64_t offset;
+  std::uint64_t length;
+  std::uint64_t count;
+  std::uint64_t raw_length;
+};
+
+std::uint64_t matrix_uint64(SEXP matrix, R_xlen_t row, int column,
+                            const char* label) {
+  if (TYPEOF(matrix) != REALSXP || !Rf_isMatrix(matrix)) {
+    throw std::runtime_error(std::string(label) + " must be a numeric matrix");
+  }
+  const SEXP dimensions = Rf_getAttrib(matrix, R_DimSymbol);
+  if (XLENGTH(dimensions) != 2 || INTEGER(dimensions)[1] <= column) {
+    throw std::runtime_error(std::string(label) + " has too few columns");
+  }
+  const R_xlen_t rows = INTEGER(dimensions)[0];
+  if (row < 0 || row >= rows) throw std::runtime_error("native Pcodec block row is invalid");
+  const double value = REAL(matrix)[row + rows * column];
+  if (!R_FINITE(value) || value < 0.0 || value != std::floor(value) ||
+      value > static_cast<double>(std::numeric_limits<std::uint64_t>::max())) {
+    throw std::runtime_error(std::string(label) + " contains an invalid integer");
+  }
+  return static_cast<std::uint64_t>(value);
+}
+
+std::vector<NativePcodecBlock> read_native_blocks(SEXP matrix,
+                                                  R_xlen_t n,
+                                                  bool has_first_position) {
+  if (TYPEOF(matrix) != REALSXP || !Rf_isMatrix(matrix)) {
+    throw std::runtime_error("native Pcodec blocks must be a numeric matrix");
+  }
+  const SEXP dimensions = Rf_getAttrib(matrix, R_DimSymbol);
+  if (XLENGTH(dimensions) != 2 || INTEGER(dimensions)[1] < (has_first_position ? 6 : 5)) {
+    throw std::runtime_error("native Pcodec block matrix has the wrong shape");
+  }
+  const R_xlen_t rows = INTEGER(dimensions)[0];
+  std::vector<NativePcodecBlock> blocks;
+  blocks.reserve(static_cast<std::size_t>(rows));
+  std::uint64_t expected_row = 0;
+  for (R_xlen_t row = 0; row < rows; ++row) {
+    NativePcodecBlock block{
+      matrix_uint64(matrix, row, 0, "native Pcodec block offset"),
+      matrix_uint64(matrix, row, 1, "native Pcodec block length"),
+      matrix_uint64(matrix, row, 2, "native Pcodec block value count"),
+      matrix_uint64(matrix, row, 3, "native Pcodec block row start"),
+      matrix_uint64(matrix, row, 4, "native Pcodec block row stop"),
+      has_first_position ? matrix_uint64(matrix, row, 5,
+                                         "native Pcodec block first position") : 0
+    };
+    if (block.row_start != expected_row || block.row_stop < block.row_start ||
+        block.row_stop - block.row_start != block.values || block.row_stop > n) {
+      throw std::runtime_error("native Pcodec blocks do not form a contiguous row index");
+    }
+    expected_row = block.row_stop;
+    blocks.push_back(block);
+  }
+  if (expected_row != n) {
+    throw std::runtime_error("native Pcodec blocks do not cover the declared row count");
+  }
+  return blocks;
+}
+
+std::vector<NativePcodecExceptionBlock> read_native_exception_blocks(SEXP matrix) {
+  if (TYPEOF(matrix) != REALSXP || !Rf_isMatrix(matrix)) {
+    throw std::runtime_error("native Pcodec exception blocks must be a numeric matrix");
+  }
+  const SEXP dimensions = Rf_getAttrib(matrix, R_DimSymbol);
+  if (XLENGTH(dimensions) != 2 || INTEGER(dimensions)[1] < 4) {
+    throw std::runtime_error("native Pcodec exception block matrix has the wrong shape");
+  }
+  const R_xlen_t rows = INTEGER(dimensions)[0];
+  std::vector<NativePcodecExceptionBlock> blocks;
+  blocks.reserve(static_cast<std::size_t>(rows));
+  for (R_xlen_t row = 0; row < rows; ++row) {
+    blocks.push_back({
+      matrix_uint64(matrix, row, 0, "native Pcodec exception offset"),
+      matrix_uint64(matrix, row, 1, "native Pcodec exception length"),
+      matrix_uint64(matrix, row, 2, "native Pcodec exception count"),
+      matrix_uint64(matrix, row, 3, "native Pcodec exception raw length")
+    });
+  }
+  return blocks;
+}
+
+std::string native_path(SEXP files, int index, const char* label) {
+  if (TYPEOF(files) != STRSXP || XLENGTH(files) <= index ||
+      STRING_ELT(files, index) == NA_STRING) {
+    throw std::runtime_error(std::string("native Pcodec ") + label + " path is invalid");
+  }
+  return CHAR(STRING_ELT(files, index));
+}
+
+class NativePcodecFile {
+ public:
+  explicit NativePcodecFile(std::string path) : path_(std::move(path)) {
+    stream_.open(path_, std::ios::binary);
+    if (!stream_) throw std::runtime_error("cannot open native Pcodec stream: " + path_);
+    stream_.seekg(0, std::ios::end);
+    const std::streamoff file_size = stream_.tellg();
+    if (file_size < 0) throw std::runtime_error("cannot determine native Pcodec stream size: " + path_);
+    file_size_ = static_cast<std::uint64_t>(file_size);
+  }
+
+  std::vector<std::uint8_t> read(std::uint64_t offset, std::uint64_t length) {
+    if (length > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        offset > file_size_ || length > file_size_ - offset) {
+      throw std::runtime_error("native Pcodec stream block is outside the file: " + path_);
+    }
+    std::vector<std::uint8_t> blob(static_cast<std::size_t>(length));
+    stream_.clear();
+    stream_.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (length > 0 && !stream_.read(reinterpret_cast<char*>(blob.data()),
+                                    static_cast<std::streamsize>(length))) {
+      throw std::runtime_error("native Pcodec stream block is truncated: " + path_);
+    }
+    return blob;
+  }
+
+  const std::string& path() const { return path_; }
+
+ private:
+  std::string path_;
+  std::ifstream stream_;
+  std::uint64_t file_size_ = 0;
+};
+
+template <typename T>
+std::vector<T> native_decompress_block(NativePcodecFile& file,
+                                       const NativePcodecBlock& block,
+                                       unsigned char dtype) {
+  if (block.values > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    throw std::runtime_error("native Pcodec block has too many values");
+  }
+  std::vector<std::uint8_t> blob = file.read(block.offset, block.length);
+  std::vector<T> values(static_cast<std::size_t>(block.values));
+  std::size_t written = 0;
+  const CompressorPcoError status = compressor_pco_decompress_into(
+    blob.data(), blob.size(), dtype, values.data(), values.size(), &written);
+  if (status != COMPRESSOR_PCO_SUCCESS || written != values.size()) {
+    throw std::runtime_error("native Pcodec block decompression failed: " + file.path());
+  }
+  return values;
+}
+
+// Pcodec blocks are independent.  Give each worker its own ifstream rather
+// than sharing a seekable stream between threads; this keeps the reader's
+// hot path free of locks and also makes the function safe when a store is
+// read concurrently by more than one R call.
+template <typename T>
+void native_decompress_blocks_parallel(
+    const std::string& path,
+    const std::vector<NativePcodecBlock>& blocks,
+    unsigned char dtype,
+    std::size_t requested_threads,
+    std::vector<T>& output) {
+  if (blocks.empty()) return;
+  const std::size_t worker_count = std::max<std::size_t>(
+    1, std::min<std::size_t>(requested_threads, blocks.size()));
+  if (output.size() < static_cast<std::size_t>(blocks.back().row_stop)) {
+    throw std::runtime_error("native Pcodec output vector is too small");
+  }
+  if (worker_count == 1) {
+    NativePcodecFile file(path);
+    for (const NativePcodecBlock& block : blocks) {
+      std::vector<T> values = native_decompress_block<T>(file, block, dtype);
+      std::copy(values.begin(), values.end(),
+                output.begin() + static_cast<std::ptrdiff_t>(block.row_start));
+    }
+    return;
+  }
+
+  std::atomic<std::size_t> next_block(0);
+  std::mutex error_mutex;
+  std::exception_ptr first_error;
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count);
+  for (std::size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&]() {
+      try {
+        NativePcodecFile file(path);
+        while (true) {
+          const std::size_t block_id = next_block.fetch_add(
+            1, std::memory_order_relaxed);
+          if (block_id >= blocks.size()) break;
+          const NativePcodecBlock& block = blocks[block_id];
+          std::vector<T> values = native_decompress_block<T>(file, block, dtype);
+          std::copy(values.begin(), values.end(),
+                    output.begin() + static_cast<std::ptrdiff_t>(block.row_start));
+        }
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(error_mutex);
+        if (!first_error) first_error = std::current_exception();
+      }
+    });
+  }
+  for (std::thread& worker : workers) worker.join();
+  if (first_error) std::rethrow_exception(first_error);
+}
+
+std::uint32_t native_read_u32_le(const std::uint8_t* bytes) {
+  return static_cast<std::uint32_t>(bytes[0]) |
+    (static_cast<std::uint32_t>(bytes[1]) << 8) |
+    (static_cast<std::uint32_t>(bytes[2]) << 16) |
+    (static_cast<std::uint32_t>(bytes[3]) << 24);
+}
+
+float native_read_float_le(const std::uint8_t* bytes) {
+  const std::uint32_t bits = native_read_u32_le(bytes);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+void native_append_exception_block(
+    NativePcodecFile& file, const NativePcodecExceptionBlock& block,
+    const std::string& codec, std::vector<int>& rows, std::vector<double>& z,
+    std::vector<double>& log2se, std::vector<double>& eaf,
+    std::vector<int>& flags) {
+  if (block.count == 0) return;
+  if (block.count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 17)) {
+    throw std::runtime_error("native Pcodec exception block is too large");
+  }
+  const std::uint64_t expected_raw = block.count * 17;
+  if (block.raw_length != expected_raw) {
+    throw std::runtime_error("native Pcodec exception block has an invalid raw length");
+  }
+  std::vector<std::uint8_t> compressed = file.read(block.offset, block.length);
+  std::vector<std::uint8_t> raw(static_cast<std::size_t>(block.raw_length));
+  if (codec == "zstd") {
+    std::size_t written = 0;
+    const CompressorPcoError status = compressor_zstd_decompress_into(
+      compressed.data(), compressed.size(), raw.data(), raw.size(), &written);
+    if (status != COMPRESSOR_PCO_SUCCESS || written != raw.size()) {
+      throw std::runtime_error("native Pcodec exception decompression failed");
+    }
+  } else if (codec == "raw") {
+    if (compressed.size() != raw.size()) {
+      throw std::runtime_error("native Pcodec raw exception block is truncated");
+    }
+    raw.swap(compressed);
+  } else {
+    throw std::runtime_error("unsupported native Pcodec exception codec: " + codec);
+  }
+  for (std::uint64_t i = 0; i < block.count; ++i) {
+    const std::size_t index = static_cast<std::size_t>(i);
+    const std::size_t count = static_cast<std::size_t>(block.count);
+    const std::uint32_t row = native_read_u32_le(raw.data() + index * 4);
+    if (row > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+      throw std::runtime_error("native Pcodec exception row does not fit R integer");
+    }
+    rows.push_back(static_cast<int>(row));
+    z.push_back(static_cast<double>(native_read_float_le(raw.data() + count * 4 + index * 4)));
+    log2se.push_back(static_cast<double>(native_read_float_le(raw.data() + count * 8 + index * 4)));
+    eaf.push_back(static_cast<double>(native_read_float_le(raw.data() + count * 12 + index * 4)));
+    const int record_flags = static_cast<int>(raw[count * 16 + index]);
+    if (record_flags <= 0 || (record_flags & ~7) != 0) {
+      throw std::runtime_error("native Pcodec exception flags are invalid");
+    }
+    flags.push_back(record_flags);
+  }
+}
+
+#endif
 
 }  // namespace
 
@@ -306,6 +597,228 @@ extern "C" SEXP compressor_decode_native(
   Rf_setAttrib(output, R_NamesSymbol, names);
   UNPROTECT(protect_count);
   return output;
+}
+
+// Read the current on-disk native Pcodec streams directly. The old bridge
+// below reads an intermediate representation; this reader instead consumes the
+// `.cpr` stream files and block index used by current stores. It returns compact
+// integer/numeric vectors so R never has to perform one readBin()/decompress/
+// unlist cycle per block.
+extern "C" SEXP compressor_read_pcodec_native_codes(
+    SEXP files,
+    SEXP position_blocks,
+    SEXP substitution_blocks,
+    SEXP z_blocks,
+    SEXP eaf_blocks,
+    SEXP se_blocks,
+    SEXP exception_blocks,
+    SEXP row_count,
+    SEXP streams,
+    SEXP exception_codec,
+    SEXP threads) {
+#ifdef COMPRESSOR_NATIVE_PCODEC
+  try {
+    if (TYPEOF(files) != STRSXP || XLENGTH(files) != 6 ||
+        TYPEOF(streams) != STRSXP || TYPEOF(exception_codec) != STRSXP ||
+        XLENGTH(exception_codec) != 1 || STRING_ELT(exception_codec, 0) == NA_STRING) {
+      throw std::runtime_error("malformed arguments to native Pcodec stream reader");
+    }
+    const double row_count_value = Rf_asReal(row_count);
+    if (!R_FINITE(row_count_value) || row_count_value < 0.0 ||
+        row_count_value != std::floor(row_count_value) ||
+        row_count_value > static_cast<double>(std::numeric_limits<R_xlen_t>::max())) {
+      throw std::runtime_error("native Pcodec row count is invalid");
+    }
+    const R_xlen_t n = static_cast<R_xlen_t>(row_count_value);
+    const int thread_value = Rf_asInteger(threads);
+    if (thread_value == NA_INTEGER || thread_value < 1) {
+      throw std::runtime_error("native Pcodec thread count must be positive");
+    }
+    const std::size_t requested_threads = static_cast<std::size_t>(thread_value);
+    const bool need_position = requested_has(streams, "position");
+    const bool need_substitution = requested_has(streams, "substitution");
+    const bool need_z = requested_has(streams, "z");
+    const bool need_se = requested_has(streams, "se");
+    const bool need_eaf = need_se || requested_has(streams, "eaf");
+    const bool need_numeric = need_z || need_se || need_eaf;
+
+    std::vector<NativePcodecBlock> positions = read_native_blocks(
+      position_blocks, static_cast<R_xlen_t>(n), true);
+    std::vector<NativePcodecBlock> substitutions = read_native_blocks(
+      substitution_blocks, static_cast<R_xlen_t>(n), true);
+    std::vector<NativePcodecBlock> z_values = read_native_blocks(
+      z_blocks, static_cast<R_xlen_t>(n), false);
+    std::vector<NativePcodecBlock> eaf_values = read_native_blocks(
+      eaf_blocks, static_cast<R_xlen_t>(n), false);
+    std::vector<NativePcodecBlock> se_values = read_native_blocks(
+      se_blocks, static_cast<R_xlen_t>(n), false);
+    std::vector<NativePcodecExceptionBlock> exceptions =
+      read_native_exception_blocks(exception_blocks);
+    if (need_numeric && exceptions.size() != z_values.size()) {
+      throw std::runtime_error("native Pcodec exception index does not match value blocks");
+    }
+
+    int protect_count = 0;
+    SEXP position = R_NilValue;
+    SEXP substitution = R_NilValue;
+    SEXP z = R_NilValue;
+    SEXP se = R_NilValue;
+    SEXP eaf = R_NilValue;
+    if (need_position) {
+      position = PROTECT(Rf_allocVector(REALSXP, n));
+      ++protect_count;
+    }
+    if (need_substitution) {
+      substitution = PROTECT(Rf_allocVector(INTSXP, n));
+      ++protect_count;
+    }
+    if (need_z) {
+      z = PROTECT(Rf_allocVector(INTSXP, n));
+      ++protect_count;
+    }
+    if (need_se) {
+      se = PROTECT(Rf_allocVector(INTSXP, n));
+      ++protect_count;
+    }
+    if (need_eaf) {
+      eaf = PROTECT(Rf_allocVector(INTSXP, n));
+      ++protect_count;
+    }
+
+    std::unique_ptr<NativePcodecFile> exception_file;
+    if (need_numeric) exception_file.reset(new NativePcodecFile(
+      native_path(files, 5, "exception")));
+
+    if (need_position) {
+      std::vector<std::uint32_t> gaps(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint32_t>(
+        native_path(files, 0, "position"), positions, kPcoTypeU32,
+        requested_threads, gaps);
+      for (const NativePcodecBlock& block : positions) {
+        std::uint64_t current = block.first_position;
+        for (std::uint64_t i = 0; i < block.values; ++i) {
+          current += gaps[static_cast<std::size_t>(block.row_start + i)];
+          if (current > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error("native Pcodec position exceeds uint32");
+          }
+          REAL(position)[block.row_start + i] = static_cast<double>(current);
+        }
+      }
+    }
+    if (need_substitution) {
+      std::vector<std::uint8_t> codes(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint8_t>(
+        native_path(files, 1, "substitution"), substitutions, kPcoTypeU8,
+        requested_threads, codes);
+      for (std::size_t row = 0; row < codes.size(); ++row) {
+        if (codes[row] > 15) throw std::runtime_error("native Pcodec substitution code is invalid");
+        INTEGER(substitution)[row] = static_cast<int>(codes[row]);
+      }
+    }
+
+    if (need_z) {
+      std::vector<std::uint16_t> codes(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint16_t>(
+        native_path(files, 2, "z"), z_values, kPcoTypeU16,
+        requested_threads, codes);
+      for (std::size_t row = 0; row < codes.size(); ++row) {
+        INTEGER(z)[row] = static_cast<int>(codes[row]);
+      }
+    }
+    if (need_se) {
+      std::vector<std::uint8_t> codes(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint8_t>(
+        native_path(files, 4, "SE"), se_values, kPcoTypeU8,
+        requested_threads, codes);
+      for (std::size_t row = 0; row < codes.size(); ++row) {
+        INTEGER(se)[row] = static_cast<int>(codes[row]);
+      }
+    }
+    if (need_eaf) {
+      std::vector<std::uint8_t> codes(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint8_t>(
+        native_path(files, 3, "EAF"), eaf_values, kPcoTypeU8,
+        requested_threads, codes);
+      for (std::size_t row = 0; row < codes.size(); ++row) {
+        INTEGER(eaf)[row] = static_cast<int>(codes[row]);
+      }
+    }
+
+    std::vector<int> exception_rows;
+    std::vector<double> exception_z;
+    std::vector<double> exception_log2se;
+    std::vector<double> exception_eaf;
+    std::vector<int> exception_flags;
+    if (need_numeric) {
+      const std::string codec = CHAR(STRING_ELT(exception_codec, 0));
+      for (const NativePcodecExceptionBlock& block : exceptions) {
+        native_append_exception_block(*exception_file, block, codec,
+          exception_rows, exception_z, exception_log2se, exception_eaf,
+          exception_flags);
+      }
+    }
+
+    SEXP exception_output = PROTECT(Rf_allocVector(VECSXP, 5));
+    ++protect_count;
+    SEXP exception_row = PROTECT(Rf_allocVector(INTSXP, exception_rows.size()));
+    ++protect_count;
+    SEXP exception_z_output = PROTECT(Rf_allocVector(REALSXP, exception_z.size()));
+    ++protect_count;
+    SEXP exception_log2se_output = PROTECT(Rf_allocVector(REALSXP, exception_log2se.size()));
+    ++protect_count;
+    SEXP exception_eaf_output = PROTECT(Rf_allocVector(REALSXP, exception_eaf.size()));
+    ++protect_count;
+    SEXP exception_flags_output = PROTECT(Rf_allocVector(INTSXP, exception_flags.size()));
+    ++protect_count;
+    for (std::size_t i = 0; i < exception_rows.size(); ++i) {
+      INTEGER(exception_row)[i] = exception_rows[i];
+      REAL(exception_z_output)[i] = exception_z[i];
+      REAL(exception_log2se_output)[i] = exception_log2se[i];
+      REAL(exception_eaf_output)[i] = exception_eaf[i];
+      INTEGER(exception_flags_output)[i] = exception_flags[i];
+    }
+    SET_VECTOR_ELT(exception_output, 0, exception_row);
+    SET_VECTOR_ELT(exception_output, 1, exception_z_output);
+    SET_VECTOR_ELT(exception_output, 2, exception_log2se_output);
+    SET_VECTOR_ELT(exception_output, 3, exception_eaf_output);
+    SET_VECTOR_ELT(exception_output, 4, exception_flags_output);
+    SEXP exception_names = PROTECT(Rf_allocVector(STRSXP, 5));
+    ++protect_count;
+    SET_STRING_ELT(exception_names, 0, scalar_name("row"));
+    SET_STRING_ELT(exception_names, 1, scalar_name("z"));
+    SET_STRING_ELT(exception_names, 2, scalar_name("log2se"));
+    SET_STRING_ELT(exception_names, 3, scalar_name("eaf"));
+    SET_STRING_ELT(exception_names, 4, scalar_name("flags"));
+    Rf_setAttrib(exception_output, R_NamesSymbol, exception_names);
+
+    SEXP output = PROTECT(Rf_allocVector(VECSXP, 6));
+    ++protect_count;
+    SET_VECTOR_ELT(output, 0, position);
+    SET_VECTOR_ELT(output, 1, substitution);
+    SET_VECTOR_ELT(output, 2, z);
+    SET_VECTOR_ELT(output, 3, se);
+    SET_VECTOR_ELT(output, 4, eaf);
+    SET_VECTOR_ELT(output, 5, exception_output);
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 6));
+    ++protect_count;
+    SET_STRING_ELT(names, 0, scalar_name("position"));
+    SET_STRING_ELT(names, 1, scalar_name("substitution"));
+    SET_STRING_ELT(names, 2, scalar_name("z"));
+    SET_STRING_ELT(names, 3, scalar_name("se"));
+    SET_STRING_ELT(names, 4, scalar_name("eaf"));
+    SET_STRING_ELT(names, 5, scalar_name("exceptions"));
+    Rf_setAttrib(output, R_NamesSymbol, names);
+    UNPROTECT(protect_count);
+    return output;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  } catch (...) {
+    Rf_error("unknown native Pcodec stream reader error");
+  }
+#else
+  Rf_error("native Pcodec is not available in this build");
+#endif
+  return R_NilValue;
 }
 
 // Load the compact temporary bridge directly into final R vectors. This avoids

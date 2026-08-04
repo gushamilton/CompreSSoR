@@ -132,7 +132,7 @@ historical context but are not presented as competing formats.
 On the BP FinnGen chr1 fixture (1,124,344 SNVs; source TSV.gz 15,186,281
 bytes), the measured self-contained `.cpr` store is 4,298,204 bytes, or 3.53×
 smaller. The complete same-data comparison is in
-`inst/benchmarks/pareto-chr1-summary.csv`; its five-run access table, write
+`inst/benchmarks/archive/legacy-20260804/pareto-chr1-summary.csv`; its five-run access table, write
 timings, validation bounds, and plot frontier are stored alongside it. Every
 row in that headline record carries variant identity, so the storage numbers
 are directly comparable without a separately counted spine.

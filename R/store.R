@@ -538,12 +538,15 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #' @param region Optional genomic region.
 #' @param variants Optional variant IDs, zero-based row IDs, or—for Pcodec
 #'   stores—canonical `chromosome:position:REF:ALT` keys.
-#' @param columns Optional output columns.
-#' @param threads Number of Unix worker processes for independent Pcodec
-#'   stream/block reads. `NULL` selects four workers for whole-store reads and
-#'   one worker for regional or canonical-key reads. Set `threads` explicitly,
-#'   or use `options(CompreSSoR.pcodec.threads = n)`, for reproducibility. On
-#'   Windows, reads remain serial.
+#' @param columns Optional output columns. Pcodec stores additionally expose
+#'   `global_position` and `substitution`, the compact identity fields used by
+#'   native analytical readers; requesting these avoids chromosome/REF/ALT
+#'   reconstruction.
+#' @param threads Number of workers for Pcodec reads. The native full-store
+#'   reader performs indexed stream scans and block decompression in C++; the
+#'   regional, canonical-key and fallback paths use Unix worker processes.
+#'   Set `threads` explicitly, or use `options(CompreSSoR.pcodec.threads = n)`
+#'   for the non-native paths. On Windows, reads remain serial.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.
 #' @examples

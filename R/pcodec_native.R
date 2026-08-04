@@ -492,6 +492,58 @@ pcodec_native_read_stream_all <- function(store, index, stream) {
   unlist(parts, use.names = FALSE)
 }
 
+pcodec_native_block_matrix <- function(blocks, stream_blocks = blocks,
+                                       first_position = FALSE) {
+  n <- length(blocks)
+  if (length(stream_blocks) != n) {
+    stop("native Pcodec index and stream block counts differ", call. = FALSE)
+  }
+  columns <- if (first_position) 6L else 5L
+  if (!n) return(matrix(numeric(), nrow = 0L, ncol = columns))
+  values <- Map(function(block, stream_block) {
+    out <- c(as.numeric(stream_block$offset), as.numeric(stream_block$length),
+             as.numeric(stream_block$values), as.numeric(block$row_start),
+             as.numeric(block$row_stop))
+    if (first_position) out <- c(out, as.numeric(block$first_position))
+    out
+  }, blocks, stream_blocks)
+  matrix(unlist(values, use.names = FALSE), nrow = n, ncol = columns,
+         byrow = TRUE)
+}
+
+pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L) {
+  if (!is.loaded("compressor_read_pcodec_native_codes", PACKAGE = "CompreSSoR")) {
+    stop("native Pcodec stream reader is not available in this build", call. = FALSE)
+  }
+  key_blocks <- pcodec_native_index_blocks(index, "key")
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  exception_blocks <- index$exceptions$blocks %||% list()
+  files <- c(
+    file.path(store$path, index$streams$position$file),
+    file.path(store$path, index$streams$substitution$file),
+    file.path(store$path, index$streams$z$file),
+    file.path(store$path, index$streams$eaf$file),
+    file.path(store$path, index$streams$se$file),
+    file.path(store$path, index$exceptions$file)
+  )
+  .Call("compressor_read_pcodec_native_codes", files,
+        pcodec_native_block_matrix(key_blocks, index$streams$position$blocks,
+                                   first_position = TRUE),
+        pcodec_native_block_matrix(key_blocks, index$streams$substitution$blocks,
+                                   first_position = TRUE),
+        pcodec_native_block_matrix(value_blocks, index$streams$z$blocks),
+        pcodec_native_block_matrix(value_blocks, index$streams$eaf$blocks),
+        pcodec_native_block_matrix(value_blocks, index$streams$se$blocks),
+        do.call(rbind, lapply(exception_blocks, function(block) {
+          c(as.numeric(block$offset), as.numeric(block$length),
+            as.numeric(block$count), as.numeric(block$raw_length))
+        })) %||% matrix(numeric(), nrow = 0L, ncol = 4L),
+        as.numeric(store$manifest$n_rows %||% store$manifest$rows),
+        as.character(streams), index$exceptions$codec %||% "raw",
+        as.integer(threads),
+        PACKAGE = "CompreSSoR")
+}
+
 pcodec_native_read_all_exceptions <- function(store, index) {
   locations <- index$exceptions$blocks
   if (!length(locations)) {
@@ -525,17 +577,35 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   needed <- unique(c(if (need_z) "z", if (need_se) "se", if (need_eaf) "eaf"))
   if (need_se) needed <- unique(c(needed, "eaf"))
   streams <- unique(c(needed, if (need_identity) c("position", "substitution")))
-  decoded_streams <- pcodec_parallel_lapply(
-    streams, function(stream) pcodec_native_read_stream_all(store, index, stream),
-    threads = threads
-  )
-  codes <- stats::setNames(decoded_streams, streams)
+  native_stream_reader <- isTRUE(getOption(
+    "CompreSSoR.pcodec.native_stream_reader", TRUE
+  )) && is.loaded("compressor_read_pcodec_native_codes", PACKAGE = "CompreSSoR")
+  if (native_stream_reader) {
+    codes <- pcodec_native_read_native_codes(store, index, streams, threads = threads)
+  } else {
+    decoded_streams <- pcodec_parallel_lapply(
+      streams, function(stream) pcodec_native_read_stream_all(store, index, stream),
+      threads = threads
+    )
+    codes <- stats::setNames(decoded_streams, streams)
+  }
   if ("z" %in% needed) z_code <- codes$z else z_code <- rep.int(z_count, n)
   if ("se" %in% needed) se_code <- codes$se else se_code <- rep.int(se_count, n)
   if ("eaf" %in% needed) eaf_code <- codes$eaf else eaf_code <- rep.int(0L, n)
-  exceptions <- if (length(needed)) pcodec_native_read_all_exceptions(store, index) else
+  exceptions <- if (length(needed)) {
+    if (native_stream_reader) {
+      native_exceptions <- codes$exceptions
+      data.frame(row = native_exceptions$row, z = native_exceptions$z,
+                 log2se = native_exceptions$log2se,
+                 eaf = native_exceptions$eaf,
+                 flags = native_exceptions$flags)
+    } else {
+      pcodec_native_read_all_exceptions(store, index)
+    }
+  } else {
     data.frame(row = integer(), z = numeric(), log2se = numeric(),
                eaf = numeric(), flags = integer())
+  }
   decoded <- if (length(needed)) {
     .Call("compressor_decode_native", as.integer(z_code), as.integer(se_code),
       as.integer(eaf_code), z_range[1], z_range[2], z_count, se_count, eaf_count,
@@ -554,8 +624,15 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   if (need_identity) {
     position <- codes$position
     substitution <- codes$substitution
-    output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution),
-                                          stringsAsFactors = FALSE))
+    if (any(c("global_position", "substitution") %in% requested)) {
+      output$global_position <- position
+      output$substitution <- as.integer(substitution)
+    }
+    if (is.null(requested) || any(c("chromosome", "base_pair_location",
+                                    "effect_allele", "other_allele") %in% requested)) {
+      output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution),
+                                            stringsAsFactors = FALSE))
+    }
   }
   if (need_z) output$z <- decoded$z
   if (need_se) output$standard_error <- decoded$standard_error
@@ -677,7 +754,7 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
 
 pcodec_native_empty_result <- function(columns) {
   result <- data.frame(row = integer(), stringsAsFactors = FALSE)
-  all_columns <- c("chromosome", "base_pair_location", "effect_allele",
+  all_columns <- c("global_position", "substitution", "chromosome", "base_pair_location", "effect_allele",
                    "other_allele", "z", "beta", "standard_error",
                    "effect_allele_frequency", "p_value")
   needed <- if (is.null(columns)) all_columns else unique(columns)
@@ -685,6 +762,7 @@ pcodec_native_empty_result <- function(columns) {
     result[[column]] <- switch(column,
       chromosome = character(), effect_allele = character(),
       other_allele = character(), base_pair_location = integer(),
+      substitution = integer(), global_position = numeric(),
       numeric())
   }
   result[c("row", needed)]
@@ -705,7 +783,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     c("chromosome", "base_pair_location", "effect_allele", "other_allele",
       "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
   } else unique(as.character(columns))
-  allowed <- c("chromosome", "base_pair_location", "effect_allele", "other_allele",
+  allowed <- c("global_position", "substitution", "chromosome", "base_pair_location", "effect_allele", "other_allele",
                "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
   unknown <- setdiff(requested, allowed)
   if (length(unknown)) stop("unknown output column(s): ", paste(unknown, collapse = ", "), call. = FALSE)
@@ -722,7 +800,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       }
     }
   }
-  identity_needed <- is.null(columns) || any(c("chromosome", "base_pair_location",
+  identity_needed <- is.null(columns) || any(c("global_position", "substitution",
+                                                "chromosome", "base_pair_location",
                                                 "effect_allele", "other_allele") %in% requested) ||
     !is.null(region) || !is.null(key_targets)
   need_z <- is.null(columns) || any(c("z", "beta", "p_value") %in% requested)

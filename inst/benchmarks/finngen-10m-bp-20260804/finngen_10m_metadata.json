@@ -1,0 +1,13 @@
+{
+  "source": "/user/work/fh6520/CompreSSoR-bp-thread-test/external/benchmark-10m/finngen_r2_ANTIDEPRESSANTS.gz",
+  "source_sha256": "d99347b2687c809a9516ffe2956582a49f691f9288d16a839430311f608bf71f",
+  "output": "/user/work/fh6520/CompreSSoR-bp-thread-test/external/benchmark-10m/finngen_10m_snps.tsv.gz",
+  "output_sha256": "c7cac5afc4744f799416465cf5b073f0d994443b338bd05c0deb1b95290d6f80",
+  "rows": 10000000,
+  "columns": ["chrom", "pos", "ref", "alt", "beta", "se", "eaf", "p"],
+  "source_mapping": {
+    "eaf": "FinnGen maf, used as the benchmark EAF field"
+  },
+  "filters": ["autosomes 1-22", "biallelic A/C/G/T SNPs", "finite beta/se/EAF/P", "se > 0", "unique CHR:POS:REF:ALT"],
+  "ordering": "lexicographic chromosome then position/ref/alt; first 10,000,000 after filtering"
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Five-repeat rerun of the locked production candidate only.
 # Submit this through Slurm on BP; it is intentionally not a login-node script.
+# The standalone thread-comparison job is preferred for new full-file tests.
 #SBATCH --job-name=compressor-final-selected
 #SBATCH --account=sscm013902
 #SBATCH --partition=test
@@ -23,13 +24,16 @@ module load rust/1.78.0-n5bm
 module_cargo=$(command -v cargo)
 export PATH="$project/rust-1.87.0/rustc/bin:$(dirname "$module_cargo"):$PATH"
 export LD_LIBRARY_PATH="$project/rust-1.87.0/rustc/lib:${LD_LIBRARY_PATH:-}"
-lib="$project/r-lib-final-selected-$SLURM_ARRAY_TASK_ID"
+lib="$project/r-lib-final-selected-${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "$lib"
 export R_LIBS_USER="$lib"
 R CMD INSTALL --library="$lib" --no-multiarch repo
 
-export COMPRESSOR_FINAL_SOURCE="$project/data/finngen_chr1_core_snvs.tsv.gz"
+export COMPRESSOR_FINAL_SOURCE="$project/external/benchmark-10m/finngen_10m_snps.tsv.gz"
+export COMPRESSOR_FINAL_EXPECTED_ROWS="${COMPRESSOR_FINAL_EXPECTED_ROWS:-10000000}"
 export COMPRESSOR_FINAL_ONLY=pcodec_native
+export COMPRESSOR_FINAL_CONTRACT=compact
+export COMPRESSOR_FINAL_PCODEC_THREADS="${COMPRESSOR_FINAL_PCODEC_THREADS:-4}"
 export COMPRESSOR_FINAL_ROOT="${COMPRESSOR_FINAL_ROOT:-$project/results/final-selected-20260804}"
 export COMPRESSOR_FINAL_RUN="${COMPRESSOR_FINAL_RUN:-$SLURM_ARRAY_TASK_ID}"
 export COMPRESSOR_FINAL_KEEP_FORMATS=1

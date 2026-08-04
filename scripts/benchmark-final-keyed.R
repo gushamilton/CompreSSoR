@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 
-# Final self-contained format screen for real FinnGen chr1 data.
-# Every candidate contains the same exact identity: position plus directed
-# REF->ALT substitution. No shared spine or external reference is counted.
+# Final self-contained format screen for a 10-million-row real FinnGen SNP set.
+# Every candidate contains the same exact identity: global GRCh38 position plus
+# directed REF->ALT substitution. No shared spine or external reference is
+# counted.
 # Each Slurm array task is one independent benchmark repetition.
 
 suppressPackageStartupMessages({
@@ -16,9 +17,11 @@ source_path <- Sys.getenv("COMPRESSOR_FINAL_SOURCE", unset = "")
 result_root <- Sys.getenv("COMPRESSOR_FINAL_ROOT", unset = "final-keyed")
 run_id <- as.integer(Sys.getenv("COMPRESSOR_FINAL_RUN", unset = "1"))
 if (!nzchar(source_path) || !file.exists(source_path)) {
-  stop("set COMPRESSOR_FINAL_SOURCE to the FinnGen chr1 TSV.gz")
+  stop("set COMPRESSOR_FINAL_SOURCE to the normalized 10m FinnGen SNP TSV.gz")
 }
 if (!is.finite(run_id) || run_id < 1L) stop("invalid COMPRESSOR_FINAL_RUN")
+expected_rows <- as.integer(Sys.getenv("COMPRESSOR_FINAL_EXPECTED_ROWS", unset = "10000000"))
+if (!is.finite(expected_rows) || expected_rows < 1L) stop("invalid expected row count")
 
 run_root <- file.path(result_root, paste0("run-", run_id))
 format_root <- file.path(run_root, "formats")
@@ -38,8 +41,22 @@ file_bytes <- function(path) {
 source_data <- fread(cmd = paste("gzip -dc", shQuote(normalizePath(source_path))),
                      showProgress = FALSE)
 setnames(source_data, c("chrom", "pos", "ref", "alt", "beta", "se", "eaf", "p"))
+source_data[, chrom := toupper(sub("^CHR", "", as.character(chrom)))]
+grch38_lengths <- c(
+  `1` = 248956422, `2` = 242193529, `3` = 198295559, `4` = 190214555,
+  `5` = 181538259, `6` = 170805979, `7` = 159345973, `8` = 145138636,
+  `9` = 138394717, `10` = 133797422, `11` = 135086622, `12` = 133275309,
+  `13` = 114364328, `14` = 107043718, `15` = 101991189, `16` = 90338345,
+  `17` = 83257441, `18` = 80373285, `19` = 58617616, `20` = 64444167,
+  `21` = 46709983, `22` = 50818468
+)
+grch38_offsets <- c(0, cumsum(as.numeric(grch38_lengths)))[seq_along(grch38_lengths)]
+names(grch38_offsets) <- names(grch38_lengths)
+if (any(!source_data$chrom %in% names(grch38_lengths))) stop("input contains unsupported chromosomes")
+source_data[, global_pos := unname(grch38_offsets[chrom]) + as.numeric(pos) - 1]
 source_data[, z := beta / se]
 n <- nrow(source_data)
+if (n != expected_rows) stop("expected ", expected_rows, " rows; input has ", n)
 source_bytes <- as.numeric(file.info(source_path)$size)
 
 base_codes <- c(A = 0L, C = 1L, G = 2L, T = 3L)
@@ -48,14 +65,26 @@ substitution <- function(ref, alt) {
 }
 source_sub <- substitution(source_data$ref, source_data$alt)
 
+contract <- Sys.getenv("COMPRESSOR_FINAL_CONTRACT", unset = "compact")
+if (!contract %in% c("compact", "reconstruction")) {
+  stop("COMPRESSOR_FINAL_CONTRACT must be compact or reconstruction")
+}
+
 read_keyed_table <- function(x, z = NULL) {
   if (is.null(z)) z <- x$beta / x$se
-  data.table(pos = as.integer(x$pos), sub = as.integer(x$sub),
+  key_position <- if ("global_pos" %in% names(x)) x$global_pos else
+    unname(grch38_offsets[as.character(x$chrom)]) + as.numeric(x$pos) - 1
+  data.table(pos = as.numeric(key_position), sub = as.integer(x$sub),
              z = as.numeric(z), se = as.numeric(x$se),
              eaf = as.numeric(x$eaf))
 }
 
 checksum <- function(x) {
+  if (identical(contract, "reconstruction")) {
+    numeric_columns <- vapply(x, is.numeric, logical(1))
+    return(sum(vapply(x[, numeric_columns, with = FALSE], sum, 0.0,
+                      na.rm = TRUE)))
+  }
   sum(as.numeric(x$pos), as.numeric(x$sub), as.numeric(x$z),
       as.numeric(x$se), as.numeric(x$eaf), na.rm = TRUE)
 }
@@ -96,7 +125,11 @@ header_raw <- function(mode, n, bits_z = 0L, bits_eaf = 0L, bits_se = 0L) {
 write_stream <- function(con, x, type) {
   if (identical(type, "u8")) writeBin(as.raw(x), con, size = 1L)
   else if (identical(type, "u16")) writeBin(as.integer(x), con, size = 2L, endian = "little")
-  else if (identical(type, "u32")) writeBin(as.integer(x), con, size = 4L, endian = "little")
+  else if (identical(type, "u32")) {
+    value <- as.numeric(x)
+    signed <- ifelse(value > 2147483647, value - 4294967296, value)
+    writeBin(as.integer(signed), con, size = 4L, endian = "little")
+  }
   else if (identical(type, "f32")) writeBin(as.numeric(x), con, size = 4L, endian = "little")
   else if (identical(type, "f64")) writeBin(as.numeric(x), con, size = 8L, endian = "little")
   else stop("unknown stream type: ", type)
@@ -105,7 +138,10 @@ write_stream <- function(con, x, type) {
 read_stream <- function(con, n, type) {
   if (identical(type, "u8")) as.integer(readBin(con, raw(), n = n, size = 1L))
   else if (identical(type, "u16")) readBin(con, integer(), n = n, size = 2L, endian = "little")
-  else if (identical(type, "u32")) readBin(con, integer(), n = n, size = 4L, endian = "little")
+  else if (identical(type, "u32")) {
+    value <- readBin(con, integer(), n = n, size = 4L, endian = "little")
+    ifelse(value < 0, as.numeric(value) + 4294967296, as.numeric(value))
+  }
   else if (identical(type, "f32")) readBin(con, numeric(), n = n, size = 4L, endian = "little")
   else if (identical(type, "f64")) readBin(con, numeric(), n = n, size = 8L, endian = "little")
   else stop("unknown stream type: ", type)
@@ -139,7 +175,7 @@ write_binary <- function(path, mode, framed = FALSE, zstd = FALSE) {
   raw_path <- if (zstd) paste0(path, ".raw") else path
   con <- file(raw_path, open = "wb")
   writeBin(header_raw(mode, n, vectors$bits_z, vectors$bits_eaf, vectors$bits_se), con)
-  write_stream(con, source_data$pos, "u32")
+  write_stream(con, source_data$global_pos, "u32")
   write_stream(con, source_sub, "u8")
   if (!framed) {
     write_stream(con, vectors$z[[1L]], vectors$z[[2L]])
@@ -191,7 +227,7 @@ read_binary_connection <- function(con, mode, framed = FALSE) {
     eaf <- decode_eaf(eaf_code, vectors$bits_eaf)
     se <- 2^decode_linear(se_code, quant_spec$se_min, quant_spec$se_max, vectors$bits_se)
   }
-  data.table(pos = as.integer(pos), sub = as.integer(sub), z = as.numeric(z),
+  data.table(pos = as.numeric(pos), sub = as.integer(sub), z = as.numeric(z),
              se = as.numeric(se), eaf = as.numeric(eaf))
 }
 
@@ -208,17 +244,20 @@ write_tsv <- function(path) {
 read_tsv <- function(path) {
   x <- fread(path, showProgress = FALSE)
   x[, sub := substitution(ref, alt)]
+  x[, global_pos := unname(grch38_offsets[as.character(chrom)]) + as.numeric(pos) - 1]
   read_keyed_table(x, x$beta / x$se)
 }
 read_tsv_gz <- function(path) {
   x <- fread(cmd = paste("gzip -dc", shQuote(normalizePath(path))), showProgress = FALSE)
   x[, sub := substitution(ref, alt)]
+  x[, global_pos := unname(grch38_offsets[as.character(chrom)]) + as.numeric(pos) - 1]
   read_keyed_table(x, x$beta / x$se)
 }
 
 write_vcf <- function(path) {
   plain <- paste0(path, ".plain")
-  header <- c("##fileformat=VCFv4.3", "##contig=<ID=1>",
+  header <- c("##fileformat=VCFv4.3",
+              paste0("##contig=<ID=", names(grch38_lengths), ">"),
               "##INFO=<ID=BETA,Number=1,Type=Float,Description=Beta>",
               "##INFO=<ID=SE,Number=1,Type=Float,Description=SE>",
               "##INFO=<ID=EAF,Number=1,Type=Float,Description=EAF>",
@@ -240,13 +279,14 @@ read_vcf <- function(path) {
   x <- fread(cmd = query, header = FALSE, showProgress = FALSE)
   setnames(x, c("chrom", "pos", "ref", "alt", "beta", "se", "eaf"))
   x[, sub := substitution(ref, alt)]
+  x[, global_pos := unname(grch38_offsets[as.character(chrom)]) + as.numeric(pos) - 1]
   read_keyed_table(x, x$beta / x$se)
 }
 
-self_table <- source_data[, .(pos = as.integer(pos), sub = source_sub,
+self_table <- source_data[, .(pos = as.numeric(global_pos), sub = source_sub,
                               z, se, eaf)]
 q_table <- function(bits_z) {
-  data.table(pos = as.integer(source_data$pos), sub = source_sub,
+  data.table(pos = as.numeric(source_data$global_pos), sub = source_sub,
              z_code = quantise_linear(source_data$z, quant_spec$z_min,
                                       quant_spec$z_max, bits_z),
              eaf_code = quantise_eaf(source_data$eaf, 8L),
@@ -276,7 +316,7 @@ read_parquet_q <- function(path, bits_z, bits_se = 8L) {
 
 parquet_f32_table <- function() {
   arrow::Table$create(
-    pos = as.integer(source_data$pos), sub = as.integer(source_sub),
+    pos = as.numeric(source_data$global_pos), sub = as.integer(source_sub),
     z = arrow::Array$create(as.numeric(source_data$z), type = arrow::float32()),
     se = arrow::Array$create(as.numeric(source_data$se), type = arrow::float32()),
     eaf = arrow::Array$create(as.numeric(source_data$eaf), type = arrow::float32())
@@ -284,7 +324,7 @@ parquet_f32_table <- function() {
 }
 
 q_table_profile <- function(bits_z, bits_se = 8L) {
-  data.table(pos = as.integer(source_data$pos), sub = source_sub,
+  data.table(pos = as.numeric(source_data$global_pos), sub = source_sub,
              z_code = quantise_linear(source_data$z, quant_spec$z_min,
                                       quant_spec$z_max, bits_z),
              eaf_code = quantise_eaf(source_data$eaf, 8L),
@@ -301,13 +341,37 @@ write_pcodec <- function(path) {
                     assume_grch38_ref_alt = TRUE, overwrite = TRUE)
 }
 read_pcodec <- function(path) {
-  x <- read_sumstats(path, columns = c("base_pair_location", "effect_allele",
-                                       "other_allele", "z", "standard_error",
-                                       "effect_allele_frequency"))
-  data.table(pos = as.integer(x$base_pair_location),
-             sub = substitution(x$other_allele, x$effect_allele),
+  pcodec_threads <- as.integer(Sys.getenv("COMPRESSOR_FINAL_PCODEC_THREADS", unset = "4"))
+  if (!is.finite(pcodec_threads) || pcodec_threads < 1L) stop("invalid Pcodec thread count")
+  x <- read_sumstats(path, columns = c("global_position", "substitution", "z",
+                                       "standard_error", "effect_allele_frequency"),
+                      threads = pcodec_threads)
+  data.table(pos = as.numeric(x$global_position), sub = as.integer(x$substitution),
              z = as.numeric(x$z), se = as.numeric(x$standard_error),
              eaf = as.numeric(x$effect_allele_frequency))
+}
+
+expand_keyed <- function(x) {
+  if (!nrow(x)) return(data.table(
+    chromosome = character(), base_pair_location = integer(),
+    effect_allele = character(), other_allele = character(), z = numeric(),
+    standard_error = numeric(), effect_allele_frequency = numeric(),
+    beta = numeric(), p_value = numeric()))
+  chromosome_index <- findInterval(x$pos, grch38_offsets)
+  chromosome_index <- pmax(1L, pmin(length(grch38_lengths), chromosome_index))
+  bases <- c("A", "C", "G", "T")
+  reference_code <- bitwShiftR(as.integer(x$sub), 2L)
+  alternate_code <- bitwAnd(as.integer(x$sub), 3L)
+  data.table(
+    chromosome = names(grch38_lengths)[chromosome_index],
+    base_pair_location = as.integer(x$pos - grch38_offsets[chromosome_index] + 1),
+    effect_allele = bases[alternate_code + 1L],
+    other_allele = bases[reference_code + 1L],
+    z = as.numeric(x$z), standard_error = as.numeric(x$se),
+    effect_allele_frequency = as.numeric(x$eaf),
+    beta = as.numeric(x$z) * as.numeric(x$se),
+    p_value = 2 * pnorm(-abs(as.numeric(x$z)))
+  )
 }
 
 candidate <- function(id, label, family, path, writer, reader) {
@@ -454,24 +518,43 @@ if (nzchar(selected_id)) {
   }
 }
 
+if (identical(contract, "reconstruction")) {
+  candidates <- lapply(candidates, function(item) {
+    reader <- item$reader
+    item$reader <- function(path) expand_keyed(reader(path))
+    item
+  })
+}
+
 validate <- function(value) {
   if (nrow(value) != n) stop("row count mismatch")
-  source_key <- paste(source_data$pos, source_sub, sep = ":")
-  value_key <- paste(value$pos, value$sub, sep = ":")
-  if (anyNA(value$pos) || anyNA(value$sub) || anyDuplicated(source_key) ||
+  source_key <- paste(source_data$global_pos, source_sub, sep = ":")
+  if (identical(contract, "reconstruction")) {
+    value_position <- unname(grch38_offsets[as.character(value$chromosome)]) +
+      as.numeric(value$base_pair_location) - 1
+    value_sub <- substitution(value$other_allele, value$effect_allele)
+  } else {
+    value_position <- value$pos
+    value_sub <- value$sub
+  }
+  value_key <- paste(value_position, value_sub, sep = ":")
+  if (anyNA(value_position) || anyNA(value_sub) || anyDuplicated(source_key) ||
       anyDuplicated(value_key) || !setequal(value_key, source_key)) {
     stop("identity mismatch")
   }
   # VCF/Tabix and the native Pcodec store are allowed to reorder records by
   # their canonical key.  Compare values after aligning on the exact key.
-  source_order <- order(source_data$pos, source_sub, method = "radix")
-  value_order <- order(value$pos, value$sub, method = "radix")
+  source_order <- order(source_data$global_pos, source_sub, method = "radix")
+  value_order <- order(value_position, value_sub, method = "radix")
   value <- value[value_order, , drop = FALSE]
   source_data_ordered <- source_data[source_order, , drop = FALSE]
+  value_z <- if (identical(contract, "reconstruction")) value$z else value$z
+  value_se <- if (identical(contract, "reconstruction")) value$standard_error else value$se
+  value_eaf <- if (identical(contract, "reconstruction")) value$effect_allele_frequency else value$eaf
   data.table(
-    max_abs_z_error = max(abs(value$z - source_data_ordered$z), na.rm = TRUE),
-    max_abs_se_error = max(abs(value$se - source_data_ordered$se), na.rm = TRUE),
-    max_abs_eaf_error = max(abs(value$eaf - source_data_ordered$eaf), na.rm = TRUE),
+    max_abs_z_error = max(abs(value_z - source_data_ordered$z), na.rm = TRUE),
+    max_abs_se_error = max(abs(value_se - source_data_ordered$se), na.rm = TRUE),
+    max_abs_eaf_error = max(abs(value_eaf - source_data_ordered$eaf), na.rm = TRUE),
     checksum = checksum(value)
   )
 }
