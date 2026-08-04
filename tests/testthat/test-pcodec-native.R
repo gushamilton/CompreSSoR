@@ -95,7 +95,7 @@ test_that("native Pcodec keeps configurable stream frames aligned", {
   observed <- read_sumstats(store, columns = c("z", "standard_error",
                                                 "effect_allele_frequency"))
   expect_equal(nrow(observed), nrow(input))
-  expect_lt(max(abs(observed$z - input$z), na.rm = TRUE), 0.02)
+  expect_lt(max(abs(observed$z - input$beta / input$standard_error), na.rm = TRUE), 0.02)
 })
 
 test_that("native exception frames use Zstandard and round trip", {
