@@ -123,16 +123,19 @@ pcodec_stop_worker <- function() {
 pcodec_worker_read_line <- function(worker, timeout = 30000L) {
   deadline <- unname(proc.time()[["elapsed"]]) + as.numeric(timeout) / 1000
   connection <- worker$get_output_connection()
-  # processx's high-level read/poll cycle has an approximately 8 ms fixed cost
-  # on macOS.  Sparse Pcodec reads normally finish inside 2 ms, so directly
-  # inspect the pipe for a short bounded interval before entering normal polls.
-  # Long scans still sleep in poll_io() and therefore do not busy-wait.
+  buffer <- ""
+  # Read and frame the response on one low-level connection API. The explicit
+  # accumulator handles replies split across arbitrary pipe chunks.
   spin_ms <- getOption("CompreSSoR.worker_spin_ms", 0)
   spin_ms <- max(0, min(10, as.numeric(spin_ms)))
   spin_deadline <- min(deadline, unname(proc.time()[["elapsed"]]) + spin_ms / 1000)
   repeat {
-    lines <- processx::conn_read_lines(connection, n = 1L)
-    if (length(lines)) return(lines[[1L]])
+    chunk <- processx::conn_read_chars(connection, n = 65536L)
+    if (length(chunk) && nzchar(chunk[[1L]])) {
+      buffer <- paste0(buffer, paste0(chunk, collapse = ""))
+      newline <- regexpr("\n", buffer, fixed = TRUE)[[1L]]
+      if (newline > 0L) return(substr(buffer, 1L, newline - 1L))
+    }
     if (!worker$is_alive()) {
       error <- paste(worker$read_error_lines(), collapse = "\n")
       if (!nzchar(error)) error <- "Pcodec worker stopped unexpectedly"
@@ -142,24 +145,12 @@ pcodec_worker_read_line <- function(worker, timeout = 30000L) {
     remaining <- deadline - now
     if (remaining <= 0) stop("timed out waiting for the Pcodec worker", call. = FALSE)
     if (now < spin_deadline) next
-    break
-  }
-  # Switch back to processx's buffered reader after the low-latency window.
-  # Keeping the two modes separate avoids losing a response when poll_io()
-  # buffers output from a longer-running request.
-  repeat {
-    lines <- worker$read_output_lines()
-    if (length(lines)) return(lines[[1L]])
-    if (!worker$is_alive()) {
-      error <- paste(worker$read_error_lines(), collapse = "\n")
-      if (!nzchar(error)) error <- "Pcodec worker stopped unexpectedly"
-      stop(error, call. = FALSE)
-    }
-    remaining <- deadline - unname(proc.time()[["elapsed"]])
-    if (remaining <= 0) stop("timed out waiting for the Pcodec worker", call. = FALSE)
     poll_ms <- getOption("CompreSSoR.worker_poll_ms", 1L)
     poll_ms <- max(1L, min(10L, as.integer(poll_ms)))
-    worker$poll_io(as.integer(min(poll_ms, ceiling(remaining * 1000))))
+    processx::poll(
+      list(connection),
+      as.integer(min(poll_ms, ceiling(remaining * 1000)))
+    )
   }
 }
 
@@ -387,18 +378,37 @@ read_pcodec_binary_bridge <- function(path) {
   }
   n <- as.integer(metadata$rows)
   requested <- unlist(metadata$requested_columns, use.names = FALSE)
-  native_bridge <- identical(metadata$codec$encoding %||% NULL, "semantic_codes") &&
-    isTRUE(getOption("CompreSSoR.native_bridge", TRUE)) &&
+  identity_encoding <- metadata$identity$encoding %||% NULL
+  compact_identity <- identical(
+    identity_encoding, "global_position_substitution"
+  )
+  native_bridge <- (
+    compact_identity || (
+      identical(metadata$codec$encoding %||% NULL, "semantic_codes") &&
+        isTRUE(getOption("CompreSSoR.native_bridge", TRUE))
+    )
+  ) &&
     is.loaded("compressor_read_pcodec_bridge", PACKAGE = "CompreSSoR")
   if (native_bridge) {
-    codec <- metadata$codec
+    codec <- metadata$codec %||% list(
+      block_centers_log2_residual = numeric(), z_min = -3.5, z_max = 3.5,
+      z_count = 510L, se_count = 62L, eaf_count = 255L,
+      block_rows = 65536L
+    )
+    chromosome_lengths <- if (compact_identity) {
+      as.numeric(unlist(
+        metadata$identity$chromosome_lengths, use.names = FALSE
+      ))
+    } else {
+      numeric()
+    }
     return(.Call(
       "compressor_read_pcodec_bridge",
       normalizePath(path, mustWork = TRUE), as.character(requested), as.numeric(n),
       as.numeric(unlist(codec$block_centers_log2_residual, use.names = FALSE)),
       as.numeric(codec$z_min), as.numeric(codec$z_max),
       as.integer(codec$z_count), as.integer(codec$se_count), as.integer(codec$eaf_count),
-      as.integer(codec$block_rows), PACKAGE = "CompreSSoR"
+      as.integer(codec$block_rows), chromosome_lengths, PACKAGE = "CompreSSoR"
     ))
   }
   read_column <- function(spec) {
@@ -522,7 +532,8 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
         chromosome = if (!is.null(bounds)) as.character(bounds$chromosome) else NULL,
         start = if (!is.null(bounds)) as.integer(bounds$start) else NULL,
         end = if (!is.null(bounds)) as.integer(bounds$end) else NULL,
-        columns = if (!is.null(columns)) unname(unique(columns)) else NULL
+        columns = if (!is.null(columns)) unname(unique(columns)) else NULL,
+        compact_identity = isTRUE(getOption("CompreSSoR.native_bridge", TRUE))
       ))
     } else {
       args <- c("read", "--store", normalizePath(store$path, mustWork = TRUE),
@@ -544,6 +555,9 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
       }
       if (!is.null(columns)) {
         args <- c(args, "--columns", paste(unique(columns), collapse = ","))
+      }
+      if (!isTRUE(getOption("CompreSSoR.native_bridge", TRUE))) {
+        args <- c(args, "--expanded-identity-bridge")
       }
       pcodec_run(args)
     }
@@ -592,22 +606,22 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
       columns = unname(unique(columns))
     )
   })
-  if (pcodec_worker_enabled()) {
-    response <- pcodec_worker_request(list(
-      command = "batch-read", output = output_path, reads = reads,
-      threads = as.integer(threads)
-    ))
-  } else {
-    request_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
-                             fileext = ".json")
-    on.exit(unlink(request_path, force = TRUE), add = TRUE)
-    jsonlite::write_json(list(reads = reads), request_path, auto_unbox = FALSE)
-    pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
-                 "--threads", as.character(as.integer(threads))))
-    response <- jsonlite::fromJSON(
-      file.path(output_path, "batch.json"), simplifyVector = FALSE
-    )
-  }
+  coalesce <- isTRUE(getOption("CompreSSoR.coalesce_batch_reads", TRUE))
+  # A batch gets one Python process and one binary bridge for all reads.  The
+  # persistent processx worker is ideal for single requests, but large JSON
+  # writes to its stdin can stall on macOS before Python receives the command.
+  request_path <- tempfile("compressor-pcodec-batch-", tmpdir = bridge_tmp,
+                           fileext = ".json")
+  on.exit(unlink(request_path, force = TRUE), add = TRUE)
+  jsonlite::write_json(
+    list(reads = reads, coalesce = coalesce), request_path,
+    auto_unbox = FALSE
+  )
+  pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
+               "--threads", as.character(as.integer(threads))))
+  response <- jsonlite::fromJSON(
+    file.path(output_path, "batch.json"), simplifyVector = FALSE
+  )
   if (!identical(response$format, "CompreSSoR-batch-bridge") ||
       length(response$reads) != length(stores)) {
     stop("Pcodec batch bridge response is malformed", call. = FALSE)

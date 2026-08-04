@@ -18,6 +18,10 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None
 import gzip
 import hashlib
 import importlib.metadata
@@ -124,6 +128,49 @@ def _dependencies():
             "the Python environment selected by COMPRESSOR_PYTHON"
         ) from exc
     return np, zstd, ChunkConfig, standalone
+
+
+def _nocache_enabled() -> bool:
+    return os.environ.get("COMPRESSOR_NOCACHE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _open_read_fd(path: Path) -> int:
+    fd = os.open(path, os.O_RDONLY)
+    if _nocache_enabled() and fcntl is not None and hasattr(fcntl, "F_NOCACHE"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
+        except Exception:
+            os.close(fd)
+            raise
+    return fd
+
+
+def _read_path_bytes(path: Path) -> bytes:
+    fd = _open_read_fd(path)
+    try:
+        return _read_fd_bytes(fd, path.stat().st_size, path)
+    finally:
+        os.close(fd)
+
+
+def _read_fd_bytes(fd: int, size: int, path: Path) -> bytes:
+    """Read one descriptor sequentially in large requests.
+
+    Wrapped pages remain independently decodable, but a complete scan should
+    not turn a newly written or fragmented file into hundreds of small random
+    reads.  Darwin's F_NOCACHE mode makes that distinction especially large.
+    """
+    chunks = []
+    offset = 0
+    while offset < size:
+        chunk = os.pread(fd, min(8 * 1024 * 1024, size - offset), offset)
+        if not chunk:
+            raise ValueError(f"could not read complete file: {path}")
+        chunks.append(chunk)
+        offset += len(chunk)
+    return b"".join(chunks)
 
 
 def chromosome_offsets():
@@ -912,7 +959,8 @@ class WrappedStreamReader:
         self.numpy_dtype = np.dtype(numpy_dtype)
         self.data_path = store / manifest["files"][name]
         index_path = store / manifest["files"][f"{name}_index"]
-        blob = index_path.read_bytes()
+        blob = _read_path_bytes(index_path)
+        self.bytes_read = len(blob)
         if len(blob) < INDEX_HEADER.size:
             raise ValueError(f"wrapped {name} index is truncated")
         fields = INDEX_HEADER.unpack_from(blob)
@@ -983,8 +1031,9 @@ class WrappedStreamReader:
             raise ValueError(f"wrapped {name} payload layout or length is invalid")
         self.fd = None
         try:
-            self.fd = os.open(self.data_path, os.O_RDONLY)
+            self.fd = _open_read_fd(self.data_path)
             header = os.pread(self.fd, self.header_length, 0)
+            self.bytes_read += len(header)
             if (len(header) != self.header_length or
                     zlib.crc32(header) != int(header_crc)):
                 raise ValueError(f"wrapped {name} header checksum mismatch")
@@ -1013,6 +1062,7 @@ class WrappedStreamReader:
 
     def _read_blob(self, offset: int, length: int, crc: int) -> bytes:
         blob = os.pread(self.fd, int(length), int(offset))
+        self.bytes_read += len(blob)
         if len(blob) != int(length) or zlib.crc32(blob) != int(crc):
             raise ValueError(f"wrapped {self.name} page or metadata is corrupt")
         return blob
@@ -1049,14 +1099,155 @@ class WrappedStreamReader:
                 self.page_cache.popitem(last=False)
         return destination
 
+    def read_pages(self, page_ids):
+        """Decode several pages using an adaptive physical access plan."""
+        np, _, _, _ = _dependencies()
+        page_ids = [int(page_id) for page_id in page_ids]
+        if not page_ids:
+            return []
+        if any(
+            page_id < 0 or page_id >= len(self.pages)
+            for page_id in page_ids
+        ):
+            raise ValueError(f"wrapped {self.name} page ID is outside the stream")
+        if len(set(page_ids)) != len(page_ids):
+            raise ValueError(f"wrapped {self.name} page IDs must be unique")
+
+        first_offset = min(int(self.pages[page_id][0]) for page_id in page_ids)
+        last_offset = max(
+            int(self.pages[page_id][0] + self.pages[page_id][1])
+            for page_id in page_ids
+        )
+        try:
+            threshold = int(os.environ.get(
+                "COMPRESSOR_SEQUENTIAL_PAGE_THRESHOLD", "0"
+            ))
+        except ValueError:
+            threshold = 0
+        sequential = (
+            _nocache_enabled() and threshold >= 2 and
+            len(page_ids) >= threshold and
+            last_offset - first_offset >= self.data_path.stat().st_size // 2
+        )
+        if not sequential:
+            return [self.read_page(page_id) for page_id in page_ids]
+
+        # Genome-scattered instruments can touch many tiny pages over most of
+        # a stream.  On a true cold read, one sequential scan is much cheaper
+        # than many seeks, while only the selected Pcodec pages are decoded.
+        file_blob = _read_fd_bytes(
+            self.fd, self.data_path.stat().st_size, self.data_path
+        )
+        self.bytes_read += len(file_blob)
+        chunk_decompressors = {}
+        decoded_pages = []
+        for page_id in page_ids:
+            cached = self.page_cache.pop(page_id, None)
+            if cached is not None:
+                self.page_cache[page_id] = cached
+                decoded_pages.append(cached)
+                continue
+            offset, length, crc, _, count, chunk_id = self.pages[page_id]
+            chunk_id = int(chunk_id)
+            decompressor = chunk_decompressors.get(chunk_id)
+            if decompressor is None:
+                metadata_offset, metadata_length, metadata_crc, _, _ = (
+                    self.chunks[chunk_id]
+                )
+                metadata = file_blob[
+                    int(metadata_offset):int(metadata_offset + metadata_length)
+                ]
+                if (len(metadata) != int(metadata_length) or
+                        zlib.crc32(metadata) != int(metadata_crc)):
+                    raise ValueError(
+                        f"wrapped {self.name} page or metadata is corrupt"
+                    )
+                decompressor, consumed = self.file_decompressor.chunk_decompressor(
+                    metadata, self.pco_dtype
+                )
+                if consumed != int(metadata_length):
+                    raise ValueError(
+                        f"wrapped {self.name} chunk metadata length is invalid"
+                    )
+                chunk_decompressors[chunk_id] = decompressor
+            page_blob = file_blob[int(offset):int(offset + length)]
+            if (len(page_blob) != int(length) or
+                    zlib.crc32(page_blob) != int(crc)):
+                raise ValueError(
+                    f"wrapped {self.name} page or metadata is corrupt"
+                )
+            destination = np.empty(int(count), dtype=self.numpy_dtype)
+            progress, consumed = decompressor.read_page_into(
+                page_blob, int(count), destination
+            )
+            if (consumed != int(length) or not progress.finished or
+                    progress.n_processed != int(count)):
+                raise ValueError(
+                    f"wrapped {self.name} page did not decode completely"
+                )
+            decoded_pages.append(destination)
+        return decoded_pages
+
     def read_rows(self, rows=None):
         np, _, _, _ = _dependencies()
         if rows is None:
+            # Full scans use one sequential read of the physical stream.  Page
+            # framing is still validated and decoded independently, but this
+            # avoids a pread for every metadata/page blob on cold or freshly
+            # staged APFS files.
+            file_blob = _read_fd_bytes(
+                self.fd, self.data_path.stat().st_size, self.data_path
+            )
+            self.bytes_read += len(file_blob)
             output = np.empty(self.rows, dtype=self.numpy_dtype)
+            active_chunk = None
+            active_decompressor = None
             for page_id in range(len(self.pages)):
                 start = int(self.page_starts[page_id])
                 stop = int(self.page_stops[page_id])
-                output[start:stop] = self.read_page(page_id)
+                cached = self.page_cache.pop(page_id, None)
+                if cached is not None:
+                    self.page_cache[page_id] = cached
+                    output[start:stop] = cached
+                    continue
+                offset, length, crc, _, count, chunk_id = self.pages[page_id]
+                if active_chunk != int(chunk_id):
+                    metadata_offset, metadata_length, metadata_crc, _, _ = (
+                        self.chunks[int(chunk_id)]
+                    )
+                    metadata = file_blob[
+                        int(metadata_offset):int(metadata_offset + metadata_length)
+                    ]
+                    if (len(metadata) != int(metadata_length) or
+                            zlib.crc32(metadata) != int(metadata_crc)):
+                        raise ValueError(
+                            f"wrapped {self.name} page or metadata is corrupt"
+                        )
+                    active_decompressor, consumed = (
+                        self.file_decompressor.chunk_decompressor(
+                            metadata, self.pco_dtype
+                        )
+                    )
+                    if consumed != int(metadata_length):
+                        raise ValueError(
+                            f"wrapped {self.name} chunk metadata length is invalid"
+                        )
+                    active_chunk = int(chunk_id)
+                page_blob = file_blob[int(offset):int(offset + length)]
+                if (len(page_blob) != int(length) or
+                        zlib.crc32(page_blob) != int(crc)):
+                    raise ValueError(
+                        f"wrapped {self.name} page or metadata is corrupt"
+                    )
+                destination = output[start:stop]
+                progress, consumed = active_decompressor.read_page_into(
+                    page_blob, int(count), destination
+                )
+                if (consumed != length or not progress.finished or
+                        progress.n_processed != count):
+                    raise ValueError(
+                        f"wrapped {self.name} page did not decode completely"
+                    )
             return output
         rows = np.asarray(rows, dtype=np.int64)
         if not len(rows):
@@ -1073,10 +1264,9 @@ class WrappedStreamReader:
         if len(rows) == last_row - first_row + 1:
             first_page = int(np.searchsorted(self.page_stops, first_row, side="right"))
             last_page = int(np.searchsorted(self.page_stops, last_row, side="right"))
-            decoded = np.concatenate([
-                self.read_page(page_id)
-                for page_id in range(first_page, last_page + 1)
-            ])
+            decoded = np.concatenate(self.read_pages(
+                range(first_page, last_page + 1)
+            ))
             offset = first_row - int(self.page_starts[first_page])
             return decoded[offset:offset + len(rows)]
 
@@ -1088,10 +1278,11 @@ class WrappedStreamReader:
         output = np.empty(len(rows), dtype=self.numpy_dtype)
         group_starts = np.flatnonzero(np.r_[True, page_ids[1:] != page_ids[:-1]])
         group_stops = np.r_[group_starts[1:], len(rows)]
-        for group_start, group_stop in zip(group_starts, group_stops):
-            page_id = int(page_ids[group_start])
+        unique_page_ids = [int(page_ids[index]) for index in group_starts]
+        decoded_pages = self.read_pages(unique_page_ids)
+        for group_start, group_stop, page_id, page in zip(
+                group_starts, group_stops, unique_page_ids, decoded_pages):
             selected = slice(int(group_start), int(group_stop))
-            page = self.read_page(int(page_id))
             output[selected] = page[rows[selected] - self.page_starts[page_id]]
         return output
 
@@ -1102,6 +1293,7 @@ class WrappedStoreReader:
         self.manifest = manifest
         self.streams = {}
         self._exceptions = None
+        self.exception_bytes_read = 0
         # Pcodec chunk-decompressor objects are cached and are not documented
         # as thread-safe.  Batch reads may share one store context, so serialize
         # operations on that context while still allowing different stores to
@@ -1119,7 +1311,8 @@ class WrappedStoreReader:
             relative = self.manifest["files"]["exceptions"]
             path = self.store / relative
             record = self.manifest["integrity"]["files"][relative]
-            blob = path.read_bytes()
+            blob = _read_path_bytes(path)
+            self.exception_bytes_read += len(blob)
             if (len(blob) != int(record["bytes"]) or
                     hashlib.sha256(blob).hexdigest() != record["sha256"]):
                 raise ValueError("wrapped exception stream checksum mismatch")
@@ -1134,6 +1327,12 @@ class WrappedStoreReader:
             if len(self._exceptions) != int(self.manifest["semantic_codec"]["exception_rows"]):
                 raise ValueError("wrapped exception count differs from the manifest")
         return self._exceptions
+
+    @property
+    def bytes_read(self):
+        return self.exception_bytes_read + sum(
+            stream.bytes_read for stream in self.streams.values()
+        )
 
     def close(self):
         for stream in self.streams.values():
@@ -1151,7 +1350,7 @@ def _verify_file(store: Path, manifest: dict[str, Any], relative: str):
     expected_bytes = int(record["bytes"])
     if path.stat().st_size != expected_bytes:
         raise ValueError(f"file size mismatch: {relative}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(_read_path_bytes(path)).hexdigest()
     if digest != record["sha256"]:
         raise ValueError(f"file checksum mismatch: {relative}")
 
@@ -1262,8 +1461,10 @@ def _write_binary_bridge(
     requested_columns,
     output_values,
     semantic_codes=None,
+    identity_codes=None,
     exceptions=None,
     manifest=None,
+    source_bytes_read=None,
 ):
     """Write a temporary columnar bridge that R can load with readBin()."""
     np, _, _, _ = _dependencies()
@@ -1277,15 +1478,29 @@ def _write_binary_bridge(
         array.tofile(output / filename)
         files[name] = {"file": filename, "dtype": dtype_name, "length": int(len(array))}
 
-    identity_dtypes = {
-        "chromosome": ("u1", "uint8"),
-        "base_pair_location": ("<i4", "int32"),
-        "effect_allele": ("u1", "uint8"),
-        "other_allele": ("u1", "uint8"),
-    }
-    for name, (dtype, dtype_name) in identity_dtypes.items():
-        if name in requested_columns:
-            write_column(name, output_values[name], dtype, dtype_name)
+    identity = None
+    if identity_codes is not None:
+        write_column(
+            "global_position_code", identity_codes["position"], "<u4", "uint32"
+        )
+        write_column(
+            "substitution_code", identity_codes["substitution"], "u1", "uint8"
+        )
+        lengths = manifest["identity"]["chromosome_lengths"]
+        identity = {
+            "encoding": "global_position_substitution",
+            "chromosome_lengths": list(lengths.values()),
+        }
+    else:
+        identity_dtypes = {
+            "chromosome": ("u1", "uint8"),
+            "base_pair_location": ("<i4", "int32"),
+            "effect_allele": ("u1", "uint8"),
+            "other_allele": ("u1", "uint8"),
+        }
+        for name, (dtype, dtype_name) in identity_dtypes.items():
+            if name in requested_columns:
+                write_column(name, output_values[name], dtype, dtype_name)
 
     codec = None
     if semantic_codes is not None:
@@ -1342,6 +1557,8 @@ def _write_binary_bridge(
         "requested_columns": requested_columns,
         "files": files,
         "codec": codec,
+        "identity": identity,
+        "source_bytes_read": source_bytes_read,
     }, indent=2))
 
 
@@ -1847,9 +2064,20 @@ def _wrapped_rows_for_keys(context: WrappedStoreReader, target_keys):
             page_id += 1
     rows = []
     keys = []
-    for page_id in sorted(candidate_pages):
-        positions = position_stream.read_page(page_id).astype(np.uint64)
-        substitutions = substitution_stream.read_page(page_id).astype(np.uint64)
+    candidate_pages = sorted(candidate_pages)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        position_future = executor.submit(
+            position_stream.read_pages, candidate_pages
+        )
+        substitution_future = executor.submit(
+            substitution_stream.read_pages, candidate_pages
+        )
+        position_pages = position_future.result()
+        substitution_pages = substitution_future.result()
+    for page_id, position_page, substitution_page in zip(
+            candidate_pages, position_pages, substitution_pages):
+        positions = position_page.astype(np.uint64)
+        substitutions = substitution_page.astype(np.uint64)
         decoded = _combine_wrapped_keys(positions, substitutions)
         lo = int(np.searchsorted(target_keys, position_stream.first_keys[page_id]))
         hi = int(np.searchsorted(
@@ -1890,9 +2118,17 @@ def _wrapped_rows_for_region(
     rows = []
     keys = []
     substitution_stream = context.stream("substitution")
-    for page_id in pages:
-        positions = position_stream.read_page(page_id).astype(np.uint64)
-        substitutions = substitution_stream.read_page(page_id).astype(np.uint64)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        position_future = executor.submit(position_stream.read_pages, pages)
+        substitution_future = executor.submit(
+            substitution_stream.read_pages, pages
+        )
+        position_pages = position_future.result()
+        substitution_pages = substitution_future.result()
+    for page_id, position_page, substitution_page in zip(
+            pages, position_pages, substitution_pages):
+        positions = position_page.astype(np.uint64)
+        substitutions = substitution_page.astype(np.uint64)
         keep = (positions >= global_start) & (positions <= global_end)
         if np.any(keep):
             local = np.flatnonzero(keep)
@@ -1980,6 +2216,7 @@ def read_store_v3(
     include_p: bool = True,
     columns=None,
     output_format: str = "tsv",
+    compact_identity_bridge: bool = True,
     manifest=None,
     context=None,
 ):
@@ -1987,6 +2224,10 @@ def read_store_v3(
     manifest = load_manifest(store) if manifest is None else manifest
     owned_context = context is None
     context = WrappedStoreReader(store, manifest) if context is None else context
+    if os.environ.get("COMPRESSOR_RELOAD_EXCEPTIONS", "").strip().lower() in {
+            "1", "true", "yes", "on"}:
+        context._exceptions = None
+    bytes_read_at_start = context.bytes_read
     try:
         default_columns = [
             "chromosome", "base_pair_location", "effect_allele", "other_allele",
@@ -2047,16 +2288,31 @@ def read_store_v3(
             "chromosome", "base_pair_location", "effect_allele", "other_allele"
         }
         need_identity = bool(identity_columns.intersection(requested_columns))
+        full_identity_bridge = (
+            full_binary_selection and need_identity and resolved_keys is None and
+            compact_identity_bridge
+        )
+        identity_codes = None
         if need_identity:
-            if resolved_keys is None:
-                positions = context.stream("position").read_rows(output_rows).astype(np.uint64)
-                substitutions = context.stream("substitution").read_rows(output_rows).astype(np.uint64)
-                keys = _combine_wrapped_keys(positions, substitutions)
+            if full_identity_bridge:
+                identity_codes = {
+                    "position": context.stream("position").read_rows(),
+                    "substitution": context.stream("substitution").read_rows(),
+                }
+                chromosome_codes = np.empty(0, dtype=np.uint8)
+                positions = np.empty(0, dtype=np.int32)
+                effect_codes = np.empty(0, dtype=np.uint8)
+                other_codes = np.empty(0, dtype=np.uint8)
             else:
-                keys = resolved_keys
-            chromosome_codes, positions, effect_codes, other_codes = _keys_to_columns(
-                keys, manifest
-            )
+                if resolved_keys is None:
+                    positions = context.stream("position").read_rows(output_rows).astype(np.uint64)
+                    substitutions = context.stream("substitution").read_rows(output_rows).astype(np.uint64)
+                    keys = _combine_wrapped_keys(positions, substitutions)
+                else:
+                    keys = resolved_keys
+                chromosome_codes, positions, effect_codes, other_codes = _keys_to_columns(
+                    keys, manifest
+                )
         else:
             chromosome_codes = np.empty(0, dtype=np.uint8)
             positions = np.empty(0, dtype=np.int32)
@@ -2071,14 +2327,31 @@ def read_store_v3(
             numeric_needed.add("eaf")
         if "se" in numeric_needed:
             numeric_needed.add("eaf")
-        codes = {
-            name: context.stream(name).read_rows(output_rows)
-            for name in numeric_needed
-        }
+        sparse_parallel = output_rows is not None and len(numeric_needed) > 1
+        if sparse_parallel:
+            stream_names = sorted(numeric_needed)
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(stream_names) + 1) as executor:
+                code_futures = {
+                    name: executor.submit(
+                        context.stream(name).read_rows, output_rows
+                    )
+                    for name in stream_names
+                }
+                exception_future = executor.submit(context.exceptions)
+                codes = {
+                    name: code_futures[name].result() for name in stream_names
+                }
+                exceptions = exception_future.result()
+        else:
+            codes = {
+                name: context.stream(name).read_rows(output_rows)
+                for name in numeric_needed
+            }
+            exceptions = context.exceptions() if numeric_needed else None
         full_code_bridge = (
             full_binary_selection and bool(numeric_needed)
         )
-        exceptions = context.exceptions() if numeric_needed else None
         values = {} if full_code_bridge else _decode_wrapped_semantics(
             codes, output_rows, manifest, exceptions if exceptions is not None else []
         )
@@ -2107,8 +2380,10 @@ def read_store_v3(
                 output, n if output_rows is None else output_rows,
                 requested_columns, output_values,
                 semantic_codes=codes if full_code_bridge else None,
+                identity_codes=identity_codes,
                 exceptions=exceptions if full_code_bridge else None,
                 manifest=manifest,
+                source_bytes_read=context.bytes_read - bytes_read_at_start,
             )
             return
         if output_format != "tsv":
@@ -2150,6 +2425,7 @@ def read_store(
     include_p: bool = True,
     columns=None,
     output_format: str = "tsv",
+    compact_identity_bridge: bool = True,
     _manifest=None,
     _key_index=None,
     _value_index=None,
@@ -2162,6 +2438,7 @@ def read_store(
             row_indices=row_indices, identity_keys=identity_keys,
             chromosome=chromosome, start=start, end=end, include_p=include_p,
             columns=columns, output_format=output_format,
+            compact_identity_bridge=compact_identity_bridge,
             manifest=manifest, context=context,
         )
     return read_store_v2(
@@ -2204,7 +2481,10 @@ def _load_cached_store(store: Path, cache=None):
         )
     if cache is not None:
         cache[cache_key] = (fingerprint, manifest, key_index, value_index)
-        while len(cache) > 32:
+        # A wrapped context can hold five stream descriptors.  Keep enough
+        # contexts for ordinary reuse without approaching macOS's common
+        # 256-descriptor soft limit in large GWAS grids.
+        while len(cache) > 8:
             _, _, evicted, _ = cache.pop(next(iter(cache)))
             if isinstance(evicted, WrappedStoreReader):
                 evicted.close()
@@ -2224,6 +2504,7 @@ def read_stores_batch_payload(
     reads = payload.get("reads") if isinstance(payload, dict) else None
     if not isinstance(reads, list) or not reads:
         raise ValueError("batch request must contain a non-empty reads list")
+    coalesce = bool(payload.get("coalesce", True))
     output.mkdir(parents=True, exist_ok=False)
     if cache is None:
         cache = {}
@@ -2253,7 +2534,7 @@ def read_stores_batch_payload(
         cache_key = str(store)
         manifest, key_index, value_index = _load_cached_store(store, cache)
         signature = (cache_key, tuple(keys), tuple(columns))
-        if signature in seen_requests:
+        if coalesce and signature in seen_requests:
             bridge_for[index] = seen_requests[signature]
         else:
             seen_requests[signature] = index
@@ -2291,6 +2572,12 @@ def read_stores_batch_payload(
                 )
         except Exception as exc:
             raise RuntimeError(f"failed to read {store}: {exc}") from exc
+        finally:
+            retained = any(
+                cached[2] is key_index for cached in cache.values()
+            )
+            if isinstance(key_index, WrappedStoreReader) and not retained:
+                key_index.close()
         bridge_manifest = json.loads((bridge / "bridge.json").read_text())
         return {"index": index, "rows": int(bridge_manifest["rows"])}
 
@@ -2315,7 +2602,9 @@ def read_stores_batch_payload(
         "reads": results,
     }
     if write_response:
-        (output / "batch.json").write_text(json.dumps(response, indent=2) + "\n")
+        temporary = output / "batch.json.tmp"
+        temporary.write_text(json.dumps(response, indent=2) + "\n")
+        os.replace(temporary, output / "batch.json")
     return response
 
 
@@ -2358,13 +2647,31 @@ def serve() -> None:
                 return
             if command == "batch-read":
                 output = Path(request["output"]).expanduser()
-                result = read_stores_batch_payload(
-                    {"reads": request.get("reads")},
-                    output,
-                    threads=int(request.get("threads", 1)),
-                    cache=cache,
-                    write_response=False,
-                )
+                try:
+                    batch_result = read_stores_batch_payload(
+                        {
+                            "reads": request.get("reads"),
+                            "coalesce": request.get("coalesce", True),
+                        },
+                        output,
+                        threads=int(request.get("threads", 1)),
+                        cache=cache,
+                        write_response=True,
+                    )
+                except Exception as exc:
+                    output.mkdir(parents=True, exist_ok=True)
+                    temporary = output / "batch-error.json.tmp"
+                    temporary.write_text(json.dumps({
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }) + "\n")
+                    os.replace(temporary, output / "batch-error.json")
+                    raise
+                result = {
+                    "format": "CompreSSoR-batch-ack",
+                    "version": 1,
+                    "batch_file": "batch.json",
+                    "reads": len(batch_result["reads"]),
+                }
             elif command == "read":
                 store = Path(request["store"]).expanduser().resolve(strict=True)
                 output = Path(request["output"]).expanduser()
@@ -2390,6 +2697,9 @@ def serve() -> None:
                     end=request.get("end"),
                     columns=columns,
                     output_format="binary",
+                    compact_identity_bridge=bool(
+                        request.get("compact_identity", True)
+                    ),
                     _manifest=manifest,
                     _key_index=key_index,
                     _value_index=value_index,
@@ -2605,6 +2915,7 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("--omit-p", action="store_true")
     read.add_argument("--columns")
     read.add_argument("--output-format", choices=("tsv", "binary"), default="tsv")
+    read.add_argument("--expanded-identity-bridge", action="store_true")
     batch_read = subparsers.add_parser("batch-read")
     batch_read.add_argument("--request", type=Path, required=True)
     batch_read.add_argument("--output", type=Path, required=True)
@@ -2634,7 +2945,8 @@ def main(argv: list[str] | None = None) -> int:
                    row_indices=rows, identity_keys=keys, chromosome=args.chromosome,
                    start=args.start, end=args.end,
                    include_p=not args.omit_p, columns=columns,
-                   output_format=args.output_format)
+                   output_format=args.output_format,
+                   compact_identity_bridge=not args.expanded_identity_bridge)
     elif args.command == "batch-read":
         print(json.dumps(
             read_stores_batch(args.request, args.output, threads=args.threads),

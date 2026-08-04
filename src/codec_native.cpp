@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -300,9 +301,11 @@ SEXP compressor_read_pcodec_bridge_impl(
     SEXP z_count,
     SEXP se_count,
     SEXP eaf_count,
-    SEXP block_rows) {
+    SEXP block_rows,
+    SEXP chromosome_lengths) {
   if (TYPEOF(directory) != STRSXP || XLENGTH(directory) != 1 ||
-      TYPEOF(requested) != STRSXP || TYPEOF(centres) != REALSXP) {
+      TYPEOF(requested) != STRSXP || TYPEOF(centres) != REALSXP ||
+      TYPEOF(chromosome_lengths) != REALSXP) {
     throw std::runtime_error("malformed arguments to native Pcodec bridge reader");
   }
   const std::string root = CHAR(STRING_ELT(directory, 0));
@@ -331,26 +334,41 @@ SEXP compressor_read_pcodec_bridge_impl(
   const bool need_se = want_se || want_beta;
   const bool need_eaf = want_eaf || need_se;
   const bool need_numeric = need_z || need_se || need_eaf;
+  const bool compact_identity = XLENGTH(chromosome_lengths) > 0;
+  if (compact_identity && XLENGTH(chromosome_lengths) != 24) {
+    throw std::runtime_error(
+      "compact Pcodec identity requires 24 chromosome lengths");
+  }
 
   std::vector<std::uint8_t> chromosome_codes;
   std::vector<std::int32_t> positions;
   std::vector<std::uint8_t> effect_codes;
   std::vector<std::uint8_t> other_codes;
-  if (want_chromosome) {
-    chromosome_codes = read_bridge_vector<std::uint8_t>(
-      bridge_file(root, "chromosome.bin"), rows);
-  }
-  if (want_position) {
-    positions = read_bridge_vector<std::int32_t>(
-      bridge_file(root, "base_pair_location.bin"), rows);
-  }
-  if (want_effect) {
-    effect_codes = read_bridge_vector<std::uint8_t>(
-      bridge_file(root, "effect_allele.bin"), rows);
-  }
-  if (want_other) {
-    other_codes = read_bridge_vector<std::uint8_t>(
-      bridge_file(root, "other_allele.bin"), rows);
+  std::vector<std::uint32_t> global_positions;
+  std::vector<std::uint8_t> substitution_codes;
+  if (compact_identity &&
+      (want_chromosome || want_position || want_effect || want_other)) {
+    global_positions = read_bridge_vector<std::uint32_t>(
+      bridge_file(root, "global_position_code.bin"), rows);
+    substitution_codes = read_bridge_vector<std::uint8_t>(
+      bridge_file(root, "substitution_code.bin"), rows);
+  } else {
+    if (want_chromosome) {
+      chromosome_codes = read_bridge_vector<std::uint8_t>(
+        bridge_file(root, "chromosome.bin"), rows);
+    }
+    if (want_position) {
+      positions = read_bridge_vector<std::int32_t>(
+        bridge_file(root, "base_pair_location.bin"), rows);
+    }
+    if (want_effect) {
+      effect_codes = read_bridge_vector<std::uint8_t>(
+        bridge_file(root, "effect_allele.bin"), rows);
+    }
+    if (want_other) {
+      other_codes = read_bridge_vector<std::uint8_t>(
+        bridge_file(root, "other_allele.bin"), rows);
+    }
   }
 
   std::vector<std::uint16_t> z_codes;
@@ -401,37 +419,107 @@ SEXP compressor_read_pcodec_bridge_impl(
   if (want_beta) { beta = PROTECT(Rf_allocVector(REALSXP, n)); ++protect_count; }
   if (want_p) { p = PROTECT(Rf_allocVector(REALSXP, n)); ++protect_count; }
 
-  if (want_chromosome) {
-    const char* labels[] = {
-      "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
-      "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "X", "Y"
-    };
-    SEXP chars[24];
-    for (int i = 0; i < 24; ++i) chars[i] = scalar_name(labels[i]);
-    for (R_xlen_t row = 0; row < n; ++row) {
-      const int code = chromosome_codes[static_cast<std::size_t>(row)];
-      if (code < 1 || code > 24) throw std::runtime_error("invalid chromosome code in Pcodec bridge");
-      SET_STRING_ELT(chromosome, row, chars[code - 1]);
-    }
+  const char* chromosome_labels[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "X", "Y"
+  };
+  SEXP chromosome_chars[24];
+  for (int i = 0; i < 24; ++i) {
+    chromosome_chars[i] = scalar_name(chromosome_labels[i]);
   }
-  if (want_position) {
-    for (R_xlen_t row = 0; row < n; ++row) {
-      const int value = positions[static_cast<std::size_t>(row)];
-      if (value < 1) throw std::runtime_error("invalid position in Pcodec bridge");
-      INTEGER(position)[row] = value;
+  SEXP bases[] = {
+    scalar_name("A"), scalar_name("C"), scalar_name("G"), scalar_name("T")
+  };
+  if (compact_identity &&
+      (want_chromosome || want_position || want_effect || want_other)) {
+    std::vector<std::uint64_t> offsets(24);
+    std::vector<std::uint64_t> lengths(24);
+    std::uint64_t total_length = 0;
+    const double* supplied_lengths = REAL(chromosome_lengths);
+    for (std::size_t chromosome_index = 0; chromosome_index < 24;
+         ++chromosome_index) {
+      const double supplied = supplied_lengths[chromosome_index];
+      if (!R_FINITE(supplied) || supplied < 1.0 ||
+          supplied != std::floor(supplied)) {
+        throw std::runtime_error(
+          "compact Pcodec identity has an invalid chromosome length");
+      }
+      offsets[chromosome_index] = total_length;
+      lengths[chromosome_index] = static_cast<std::uint64_t>(supplied);
+      total_length += lengths[chromosome_index];
     }
-  }
-  if (want_effect || want_other) {
-    SEXP bases[] = {scalar_name("A"), scalar_name("C"), scalar_name("G"), scalar_name("T")};
+    std::size_t chromosome_index = 0;
+    std::uint64_t previous_global = 0;
     for (R_xlen_t row = 0; row < n; ++row) {
+      const std::uint64_t global =
+        global_positions[static_cast<std::size_t>(row)];
+      if (global >= total_length) {
+        throw std::runtime_error(
+          "global position is outside the compact Pcodec genome");
+      }
+      if (row > 0 && global < previous_global) {
+        throw std::runtime_error(
+          "compact Pcodec global positions are not sorted");
+      }
+      previous_global = global;
+      while (chromosome_index + 1 < offsets.size() &&
+             global >= offsets[chromosome_index + 1]) {
+        ++chromosome_index;
+      }
+      const std::uint64_t local = global - offsets[chromosome_index] + 1;
+      if (local > lengths[chromosome_index] ||
+          local > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error(
+          "local position is outside the compact Pcodec chromosome");
+      }
+      const int substitution =
+        substitution_codes[static_cast<std::size_t>(row)];
+      const int reference_code = substitution >> 2;
+      const int alternate_code = substitution & 3;
+      if (substitution < 0 || substitution > 15 ||
+          reference_code == alternate_code) {
+        throw std::runtime_error(
+          "invalid substitution code in compact Pcodec identity");
+      }
+      if (want_chromosome) {
+        SET_STRING_ELT(chromosome, row, chromosome_chars[chromosome_index]);
+      }
+      if (want_position) INTEGER(position)[row] = static_cast<int>(local);
+      if (want_effect) SET_STRING_ELT(effect, row, bases[alternate_code]);
+      if (want_other) SET_STRING_ELT(other, row, bases[reference_code]);
+    }
+  } else {
+    for (R_xlen_t row = 0; row < n; ++row) {
+      const std::size_t index = static_cast<std::size_t>(row);
+      if (want_chromosome) {
+        const int code = chromosome_codes[index];
+        if (code < 1 || code > 24) {
+          throw std::runtime_error(
+            "invalid chromosome code in Pcodec bridge");
+        }
+        SET_STRING_ELT(chromosome, row, chromosome_chars[code - 1]);
+      }
+      if (want_position) {
+        const int value = positions[index];
+        if (value < 1) {
+          throw std::runtime_error("invalid position in Pcodec bridge");
+        }
+        INTEGER(position)[row] = value;
+      }
       if (want_effect) {
-        const int code = effect_codes[static_cast<std::size_t>(row)];
-        if (code < 0 || code > 3) throw std::runtime_error("invalid effect-allele code in Pcodec bridge");
+        const int code = effect_codes[index];
+        if (code < 0 || code > 3) {
+          throw std::runtime_error(
+            "invalid effect-allele code in Pcodec bridge");
+        }
         SET_STRING_ELT(effect, row, bases[code]);
       }
       if (want_other) {
-        const int code = other_codes[static_cast<std::size_t>(row)];
-        if (code < 0 || code > 3) throw std::runtime_error("invalid other-allele code in Pcodec bridge");
+        const int code = other_codes[index];
+        if (code < 0 || code > 3) {
+          throw std::runtime_error(
+            "invalid other-allele code in Pcodec bridge");
+        }
         SET_STRING_ELT(other, row, bases[code]);
       }
     }
@@ -478,6 +566,10 @@ SEXP compressor_read_pcodec_bridge_impl(
         throw std::runtime_error("Pcodec bridge has a non-finite SE block centre");
       }
     }
+    std::vector<double> centre_factors(static_cast<std::size_t>(centre_count));
+    for (R_xlen_t i = 0; i < centre_count; ++i) {
+      centre_factors[static_cast<std::size_t>(i)] = std::exp2(centre_values[i]);
+    }
     double* z_out = need_z ? REAL(z) : nullptr;
     double* se_out = need_se ? REAL(se) : nullptr;
     double* eaf_out = need_eaf ? REAL(eaf) : nullptr;
@@ -503,7 +595,7 @@ SEXP compressor_read_pcodec_bridge_impl(
         const R_xlen_t centre = std::min<R_xlen_t>(block, centre_count - 1);
         decoded_se = se_table[static_cast<std::size_t>(se_value) * eaf_width +
                               static_cast<std::size_t>(eaf_value)] *
-                     std::exp2(centre_values[centre]);
+                     centre_factors[static_cast<std::size_t>(centre)];
       }
       if (need_z) z_out[row] = decoded_z;
       if (need_se) se_out[row] = decoded_se;
@@ -571,11 +663,12 @@ extern "C" SEXP compressor_read_pcodec_bridge(
     SEXP z_count,
     SEXP se_count,
     SEXP eaf_count,
-    SEXP block_rows) {
+    SEXP block_rows,
+    SEXP chromosome_lengths) {
   try {
     return compressor_read_pcodec_bridge_impl(
       directory, requested, row_count, centres, z_min, z_max,
-      z_count, se_count, eaf_count, block_rows);
+      z_count, se_count, eaf_count, block_rows, chromosome_lengths);
   } catch (const std::exception& exception) {
     Rf_error("%s", exception.what());
   } catch (...) {

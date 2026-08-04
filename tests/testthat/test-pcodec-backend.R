@@ -133,6 +133,23 @@ test_that("batched canonical reads equal independent reads", {
   })
   expect_named(observed, c("first", "second"))
   expect_equal(unname(observed), expected, tolerance = 1e-12)
+  old_coalesce <- getOption("CompreSSoR.coalesce_batch_reads")
+  options(CompreSSoR.coalesce_batch_reads = FALSE)
+  uncoalesced <- read_sumstats_batch(
+    c(first = path, second = path), rep(variants[1L], 2L),
+    columns = columns, threads = 2L
+  )
+  options(CompreSSoR.coalesce_batch_reads = old_coalesce)
+  expect_equal(unname(uncoalesced), rep(expected[1L], 2L), tolerance = 1e-12)
+
+  options(CompreSSoR.coalesce_batch_reads = FALSE)
+  large_reply <- read_sumstats_batch(
+    rep(path, 100L), rep(variants[2L], 100L),
+    columns = columns, threads = 1L
+  )
+  options(CompreSSoR.coalesce_batch_reads = old_coalesce)
+  expect_length(large_reply, 100L)
+  expect_equal(unname(large_reply), rep(expected[2L], 100L), tolerance = 1e-12)
   expect_error(read_sumstats_batch(path, keys[1L], threads = 0L),
                "positive integer")
 })
@@ -395,7 +412,7 @@ test_that("native bridge fails closed on hostile codec domains", {
               file.path(bridge, "exception_flags.bin"))
   hostile_call <- function() .Call(
     "compressor_read_pcodec_bridge", normalizePath(bridge), "standard_error",
-    1, 0, -3.5, 3.5, 510L, 62L, 1L, 65536L,
+    1, 0, -3.5, 3.5, 510L, 62L, 1L, 65536L, numeric(),
     PACKAGE = "CompreSSoR"
   )
   for (i in seq_len(20L)) {
