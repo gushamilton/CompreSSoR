@@ -3,9 +3,9 @@
 - New stores use the native Pcodec backend when Rust/Cargo is available at
   installation time. The 0.4 block-indexed format keeps the self-contained
   GRCh38 identity key and semantic Z/EAF/SE profile while avoiding the Python
-  process for ordinary reads and writes.
-- The Python Pcodec backend remains available for older stores, fallback
-  installations, and explicit compatibility testing.
+  process entirely for ordinary reads and writes.
+- The historical Python Pcodec backend is archived outside the installed
+  package; Rust/Cargo is now the sole Pcodec build requirement.
 
 # CompreSSoR 0.3.0
 

@@ -340,9 +340,10 @@ open_compressor <- function(path) {
     verify_pcodec_manifest(file.path(path, "manifest.json"))
   }
   if (identical(manifest$backend, "pcodec") &&
-      !manifest$format_version %in% c("0.2.0-pcodec", "0.3.0-pcodec",
-                                      "0.4.0-pcodec-native")) {
-    stop("unsupported Pcodec format version: ", manifest$format_version %||% "missing", call. = FALSE)
+      !identical(manifest$format_version, PCODEC_NATIVE_FORMAT)) {
+    stop("unsupported or archived Pcodec format version: ",
+         manifest$format_version %||% "missing",
+         "; this build reads native 0.4 stores only", call. = FALSE)
   }
   structure(list(path = path, manifest = manifest), class = "compressor_store")
 }
@@ -683,9 +684,6 @@ validate_compressor <- function(store, full = FALSE) {
     error = function(e) NULL
   )
   if (!is.null(store_object) && identical(store_object$manifest$backend, "pcodec")) {
-    if (identical(store_object$manifest$format_version, PCODEC_NATIVE_FORMAT)) {
-      return(pcodec_native_validate_store(store_object, full = full))
-    }
     return(pcodec_validate_store(store_object, full = full))
   }
   errors <- character()

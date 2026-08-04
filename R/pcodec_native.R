@@ -16,8 +16,7 @@ pcodec_native_available <- function() {
 }
 
 pcodec_native_enabled <- function() {
-  pcodec_native_available() &&
-    isTRUE(getOption("CompreSSoR.native_pcodec", TRUE))
+  pcodec_native_available()
 }
 
 pcodec_native_compress <- function(values, dtype) {

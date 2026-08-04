@@ -74,7 +74,7 @@ encoded as SNVs.
 The standard store is a directory rather than an opaque monolithic file so
 that the reader can seek to independent streams and pages:
 
-The legacy 0.3 layout is:
+For historical reference, the archived legacy 0.3 layout was:
 
 ```text
 gwas.cpr/
@@ -176,27 +176,22 @@ small float32 sidecar with row, Z, log2(SE), EAF, and flags. The index records
 the byte offset and row count of every block, so regional and sparse reads do
 not decode the complete file.
 
-The native path is the default for writes and whole-store reads. The existing
-Python worker remains as a compatibility backend for 0.2/0.3 stores and as a
-fallback on systems without Cargo. Set `COMPRESSOR_DISABLE_NATIVE=1` while
-installing, or `options(CompreSSoR.native_pcodec = FALSE)`, to select it.
-Set `COMPRESSOR_REQUIRE_NATIVE=1` during installation to fail if the native
-library cannot be built.
+The native path is the only write and read backend in the current package.
+Cargo is required during installation; if the native library cannot be built,
+installation stops with the build error. The historical Python-backed 0.2/0.3
+implementation remains under `archive/python-backend/` for reference but is
+not installed or called.
 
 The upstream Pcodec project documents its standalone C bindings as incomplete;
 the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
 and round-trip tests rather than exposing that upstream API directly.
 
-On the Mac mini, a coherent one-million-row synthetic stream (`Z ~ N(0, 1)`,
-`beta = Z × SE`) at the selected 32,768-row block size measured 1,679,354
-bytes for native 0.4 versus 1,688,390 bytes for the Python-backed store.
-Native write time was 3.55 s versus 4.13 s. Five warm reads of the three core
-numeric columns had medians of 0.020 s and 0.013 s respectively. This is an
-engineering smoke benchmark, not a claim about every GWAS or sparse workload:
-the native path's main advantages are a self-contained install and no Python
-process boundary, while the legacy Python reader remains competitive for some
-small projections. Real-GWAS benchmark results should be regenerated after
-the format is merged.
+On the Mac mini, the native-only smoke benchmark uses a coherent one-million-
+row synthetic stream (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm reads of
+the three core numeric columns. The recorded native result is retained in the
+README; it is an engineering smoke benchmark, not a claim about every GWAS or
+sparse workload. The real-GWAS suite should be regenerated for the native
+format before making a new production headline.
 
 ## Benchmark interpretation
 
@@ -255,7 +250,6 @@ store itself, so reading does not require the external reference.
 On the Mac mini:
 
 ```bash
-python3 scripts/test_pcodec_backend.py
 Rscript -e 'testthat::test_local(".")'
 R CMD check . --no-manual --as-cran
 ```

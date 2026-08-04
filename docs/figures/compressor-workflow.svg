@@ -26,7 +26,7 @@
     <text x="705" y="194" font-size="13" fill="#503710">independent pages + checksums</text>
     <rect x="892" y="100" width="166" height="116" rx="16" fill="#17324d"/>
     <text x="975" y="137" font-size="18" font-weight="700" fill="white">SERVE</text>
-    <text x="975" y="164" font-size="14" fill="#dbe9f3">R · Python · fastMR</text>
+    <text x="975" y="164" font-size="14" fill="#dbe9f3">R · fastMR</text>
     <text x="975" y="187" font-size="13" fill="#dbe9f3">whole / region / keys</text>
   </g>
   <g stroke="#6b7c8d" stroke-width="3" fill="none" marker-end="url(#arrow)">

@@ -19,20 +19,16 @@ Encoding: UTF-8
 Imports:
     data.table (>= 1.15.0),
     digest,
-    jsonlite,
-    processx
+    jsonlite
 Suggests:
     arrow (>= 23.0.0),
     dplyr,
     testthat (>= 3.0.0),
-    withr,
     rtracklayer,
     GenomicRanges,
     IRanges
 Config/testthat/edition: 3
-SystemRequirements: Rust/Cargo (optional; preferred native Pcodec backend) or
-    Python (>= 3.10; fallback Pcodec backend) with the
-    inst/python/requirements.txt runtime
+SystemRequirements: Rust/Cargo (required to build the native Pcodec backend)
 NeedsCompilation: yes
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

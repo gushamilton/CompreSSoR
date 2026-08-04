@@ -1,5 +1,3 @@
-withr::local_options(CompreSSoR.native_pcodec = TRUE)
-
 test_that("native Pcodec is available and round trips integer streams", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

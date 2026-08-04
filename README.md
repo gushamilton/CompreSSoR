@@ -42,45 +42,42 @@ that motivated the current Pcodec representation.
 
 ![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
 
+The native-only smoke benchmark on the Mac mini used one million coherent
+rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
+
+| Native 0.4 measure | Result |
+|---|---:|
+| Store size | **1,679,354 bytes** |
+| Write time | **3.55 s** |
+| Three-column full-read median | **0.020 s** |
+
+This is a reproducible engineering check for the installed native backend;
+the historical real-GWAS table above predates the native-only format.
+
 See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)
 for all runs and [the technical guide](docs/README-technical.md) for protocol,
 limitations, and historical comparisons.
 
 ## Installation
 
-Install the R package from GitHub:
+The package is native-only: it builds Pcodec through a small Rust-to-R C ABI,
+so ordinary reads and writes do not start another process. Install Rust/Cargo
+once, then install CompreSSoR:
+
+```bash
+# macOS with Homebrew
+brew install rust
+```
 
 ```r
 install.packages("remotes")
 remotes::install_github("gushamilton/CompreSSoR")
 ```
 
-The standard Pcodec backend is native when Rust/Cargo is available at install
-time. The package builds a small Rust-to-R C ABI around Pcodec, so ordinary
-reads and writes do not start Python. If Rust is not available, installation
-still succeeds and the package uses the pinned Python bindings as a compatible
-fallback. The fallback is also useful for reading older 0.2/0.3 stores.
-
-For the fallback, install the small runtime once in a dedicated environment:
-
-```bash
-python3 -m venv ~/.virtualenvs/compressor
-~/.virtualenvs/compressor/bin/python -m pip install \
-  numpy==1.26.4 pcodec==1.0.3 zstandard==0.25.0
-```
-
-Then point CompreSSoR at it:
-
-```r
-options(CompreSSoR.python = "~/.virtualenvs/compressor/bin/python")
-# or set COMPRESSOR_PYTHON before starting R
-```
-
-To force the fallback, set `COMPRESSOR_DISABLE_NATIVE=1` before installation
-or use `options(CompreSSoR.native_pcodec = FALSE)`. To require the native
-backend during installation, set `COMPRESSOR_REQUIRE_NATIVE=1`; this is useful
-in reproducible deployment checks. See
-[the technical guide](docs/README-technical.md#native-pcodec-backend) for the
+If Cargo is missing or the native library cannot be built, installation stops
+with an actionable error. The historical Python-backed implementation is
+archived in the repository and is not part of the installed package. See the
+[technical guide](docs/README-technical.md#native-pcodec-backend) for the
 format and build details.
 
 ## Quick start
@@ -181,9 +178,8 @@ gwas.cpr/
 └── exceptions.bin          sparse higher-precision numeric exceptions
 ```
 
-The native 0.4 store uses 32,768-row blocks. Older 0.2/0.3 stores have a
-different wrapped-Pcodec layout but remain readable through the Python
-fallback.
+The native 0.4 store uses 32,768-row blocks. Older 0.2/0.3 stores belong to
+the archived pre-native implementation and are not read by this release.
 
 | Logical field | Standard storage | Read-time result |
 |---|---|---|
@@ -250,7 +246,6 @@ TSV.gz, and 10.163 s for VCF.gz.
 ## Verification
 
 ```bash
-python3 scripts/test_pcodec_backend.py
 Rscript -e 'testthat::test_local(".")'
 R CMD check . --no-manual --as-cran
 ```

@@ -6,6 +6,8 @@
 ^CLAUDE\.md$
 ^HANDOFF\.md$
 ^\.github$
+^archive$
+^archive/
 ^README_files$
 \.syncthing\.
 ^src/Makevars$
