@@ -94,6 +94,9 @@ variant_set_canonical_keys <- function(data) {
     )
   }
   parsed <- parse_canonical_variant_keys(data$variant_id)
+  parsed$chromosome <- sub("^chr", "", parsed$chromosome, ignore.case = TRUE)
+  parsed$reference_allele <- toupper(parsed$reference_allele)
+  parsed$alternate_allele <- toupper(parsed$alternate_allele)
   valid_id <- is.na(out) & !is.na(parsed$chromosome) &
     is.finite(parsed$base_pair_location) &
     parsed$reference_allele %in% c("A", "C", "G", "T") &

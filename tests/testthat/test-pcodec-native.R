@@ -102,6 +102,14 @@ test_that("a native Pcodec store can be used as an identity-only panel", {
                                  variant_set = panel_path)
   expect_equal(nrow(filtered), 3L)
   expect_equal(filtered$base_pair_location, panel$base_pair_location)
+
+  output_path <- tempfile("pcodec-filtered-")
+  filtered_store <- compress_sumstats(
+    input, output_path, reference = NULL, mode = "convert",
+    variant_set = panel_path, assume_grch38_ref_alt = TRUE, overwrite = TRUE
+  )
+  expect_equal(filtered_store$manifest$n_rows, 3L)
+  expect_equal(nrow(read_sumstats(filtered_store)), 3L)
 })
 
 test_that("native Pcodec keeps configurable stream frames aligned", {
