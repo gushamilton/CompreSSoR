@@ -58,6 +58,17 @@ source_times <- vapply(seq_len(5L), function(i) timed(function() {
 native_times <- vapply(seq_len(5L), function(i) timed(function() {
   read_sumstats(store_path)
 }), numeric(1))
+region_times <- vapply(seq_len(5L), function(i) timed(function() {
+  read_sumstats(store_path, region = "1:100001-110000",
+                columns = c("z", "standard_error", "effect_allele_frequency"))
+}), numeric(1))
+keys <- compressor_variant_key(data$chromosome, data$base_pair_location,
+                               data$other_allele, data$effect_allele)
+sparse_keys <- keys[seq.int(1001L, n, by = floor(n / 25L))][seq_len(25L)]
+sparse_times <- vapply(seq_len(5L), function(i) timed(function() {
+  read_sumstats(store_path, variants = sparse_keys,
+                columns = c("z", "standard_error", "effect_allele_frequency"))
+}), numeric(1))
 
 manifest <- jsonlite::read_json(file.path(store_path, "manifest.json"), simplifyVector = FALSE)
 result <- data.frame(
@@ -68,6 +79,8 @@ result <- data.frame(
   compression_ratio_vs_source_gzip = file.info(source_gz)$size / store_bytes,
   source_median_seconds = median(source_times),
   native_median_seconds = median(native_times),
+  native_region_median_seconds = median(region_times),
+  native_sparse25_median_seconds = median(sparse_times),
   write_seconds = write_elapsed,
   native_format = manifest$format_version,
   block_rows = block_rows,
@@ -84,4 +97,5 @@ write.csv(data.frame(access = c(rep("source_gzip_full_read", 5L),
                      seconds = c(source_times, native_times)),
           sub("\\.csv$", "-runs.csv", args[[2L]]), row.names = FALSE)
 print(result)
-print(data.frame(source_times = source_times, native_times = native_times))
+print(data.frame(source_times = source_times, native_times = native_times,
+                 region_times = region_times, sparse25_times = sparse_times))
