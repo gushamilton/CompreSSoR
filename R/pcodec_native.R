@@ -704,6 +704,13 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       as.numeric(block$last_position) >= lower && as.numeric(block$first_position) <= upper
     }, logical(1))]
   }
+  if (!is.null(key_targets)) {
+    target_positions <- as.numeric(key_targets$position)
+    candidate_blocks <- candidate_blocks[vapply(index$blocks, function(block) {
+      any(target_positions >= as.numeric(block$first_position) &
+            target_positions <= as.numeric(block$last_position))
+    }, logical(1))]
+  }
   if (!is.null(row_targets)) candidate_blocks <- intersect(candidate_blocks,
     pcodec_native_block_ids_for_rows(index, row_targets))
   if (!length(candidate_blocks)) return(pcodec_native_empty_result(columns))
