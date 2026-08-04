@@ -4,8 +4,8 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.1-pcodec-native"
-PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", PCODEC_NATIVE_FORMAT)
+PCODEC_NATIVE_FORMAT <- "0.4.2-pcodec-native"
+PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native", PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 32768L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 32768L
@@ -189,6 +189,21 @@ pcodec_native_append_stream <- function(values, path, dtype,
   list(file = basename(path), bytes = offset, blocks = blocks)
 }
 
+pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLOCK_ROWS) {
+  n <- length(position)
+  gaps <- numeric(n)
+  if (n) {
+    blocks <- ceiling(n / as.integer(block_rows))
+    for (block in seq_len(blocks)) {
+      start <- (block - 1L) * as.integer(block_rows) + 1L
+      stop <- min(n, block * as.integer(block_rows))
+      gaps[start] <- 0
+      if (stop > start) gaps[(start + 1L):stop] <- diff(position[start:stop])
+    }
+  }
+  gaps
+}
+
 pcodec_native_exception_bytes <- function(exceptions) {
   if (!nrow(exceptions)) return(raw())
   connection <- rawConnection(raw(0), open = "wb")
@@ -269,7 +284,9 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
          last_position = ordered_position[stop])
   })
   streams <- list(
-    position = pcodec_native_append_stream(ordered_position, file.path(output, "position.pco"), "u32"),
+    position = pcodec_native_append_stream(
+      pcodec_native_position_gaps(ordered_position, block_rows),
+      file.path(output, "position.pco"), "u32"),
     substitution = pcodec_native_append_stream(ordered_substitution, file.path(output, "substitution.pco"), "u8"),
     z = pcodec_native_append_stream(values$z, file.path(output, "z.pco"), "u16"),
     eaf = pcodec_native_append_stream(values$eaf, file.path(output, "eaf.pco"), "u8"),
@@ -277,7 +294,8 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   )
   exception_stream <- pcodec_native_write_exceptions(values$exceptions, output, block_template)
   index <- list(
-    format = "CompreSSoR-native-index", version = 1L,
+    format = "CompreSSoR-native-index", version = 2L,
+    position_encoding = "delta_u32_within_block",
     rows = n, block_rows = block_rows,
     blocks = block_template,
     streams = streams, exceptions = exception_stream
@@ -298,6 +316,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     value_block_rows = block_rows,
     identity = list(
       encoding = "native_global_position_plus_full_ref_alt_code",
+      position_storage = "within-block delta-coded uint32; block first positions are in the index",
       external_reference_required = FALSE,
       chromosome_lengths = as.list(chromosomes),
       chromosome_offsets = as.list(offsets),
@@ -325,6 +344,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     derived_columns = list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))"),
     variant_storage = "self_contained_identity_key",
     variant_identity = list(encoding = "global_position_plus_full_ref_alt_code",
+                            position_storage = "within-block delta-coded uint32",
                             rsid = "not_stored", external_reference_required = FALSE),
     genome_build = "GRCh38",
     reference = metadata$reference %||% list(id = "none", build = "GRCh38",
@@ -358,7 +378,7 @@ pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
   index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
   if (!identical(index$format, "CompreSSoR-native-index") ||
-      as.integer(index$version) != 1L) {
+      !as.integer(index$version) %in% c(1L, 2L)) {
     stop("invalid native Pcodec index", call. = FALSE)
   }
   index
@@ -379,9 +399,13 @@ pcodec_native_read_stream_block <- function(store, index, stream, block) {
   blob <- pcodec_native_read_blob(
     file.path(store$path, spec$file), location$offset, location$length
   )
-  pcodec_native_decompress(blob, as.integer(location$values),
+  values <- pcodec_native_decompress(blob, as.integer(location$values),
                            if (stream %in% c("position")) "u32" else
                              if (stream %in% c("z")) "u16" else "u8")
+  if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
+    values <- cumsum(values) + as.numeric(index$blocks[[block]]$first_position)
+  }
+  values
 }
 
 pcodec_native_read_stream_all <- function(store, index, stream) {
@@ -395,8 +419,12 @@ pcodec_native_read_stream_all <- function(store, index, stream) {
     if (length(blob) != as.integer(location$length)) {
       stop("native Pcodec stream is truncated", call. = FALSE)
     }
-    pcodec_native_decompress(blob, as.integer(location$values),
+    values <- pcodec_native_decompress(blob, as.integer(location$values),
       if (stream == "position") "u32" else if (stream == "z") "u16" else "u8")
+    if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
+      values <- cumsum(values) + as.numeric(index$blocks[[block]]$first_position)
+    }
+    values
   })
   if (!length(parts)) {
     return(if (stream == "position") numeric() else integer())
