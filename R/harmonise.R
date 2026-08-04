@@ -12,8 +12,10 @@
 #' @param mode One of `"qc"` (default, harmonise and drop unresolved rows),
 #'   `"convert"` (minimal conversion without reference QC), `"all"` (alias
 #'   for `"qc"`), `"core"`, or `"hm3"`.
-#' @param variant_set Panel data.frame or file used by `mode = "core"` or
-#'   `mode = "hm3"`. PLINK `.bim`, Parquet and delimited panel files are
+#' @param variant_set Optional panel data.frame or file used to subset the
+#'   result. Named `"common"` and `"tag"` values resolve through the
+#'   `COMPRESSOR_COMMON_VARIANTS` and `COMPRESSOR_TAG_VARIANTS` environment
+#'   variables. PLINK `.bim`, Parquet and native Pcodec panel stores are
 #'   supported.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, or duplicated.

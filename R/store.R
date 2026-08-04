@@ -8,9 +8,12 @@
 #' @param mode One of `"qc"` (default, harmonise and drop unresolved rows),
 #'   `"convert"` (minimal conversion without reference QC), `"all"` (alias
 #'   for `"qc"`), `"core"`, or `"hm3"`.
-#' @param variant_set Panel data.frame or file used by `mode = "core"` or
-#'   `mode = "hm3"`. PLINK `.bim`, Parquet and delimited panel files are
-#'   supported.
+#' @param variant_set Optional panel data.frame or file. It can be used with
+#'   any mode: in `mode = "convert"` it filters by the input's existing
+#'   GRCh38 identity without invoking reference harmonisation. Named values
+#'   `"common"` and `"tag"` resolve to `COMPRESSOR_COMMON_VARIANTS` and
+#'   `COMPRESSOR_TAG_VARIANTS`; PLINK `.bim`, compressed Parquet and native
+#'   Pcodec variant stores are supported.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, duplicated, or unsupported by the selected backend.
 #' @param drop_unresolved Whether unmatched, incompatible, ambiguous and

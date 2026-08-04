@@ -135,6 +135,29 @@ The reference is used during ingestion to establish GRCh38 identity and
 allele orientation. The completed standard `.cpr` store carries its own
 identity and does not need the reference beside it for reading.
 
+### Optional BP-style variant panels
+
+The default is to keep every valid input variant. To apply a BP common- or
+tag-variant panel, pass `variant_set = "common"` or `variant_set = "tag"` and
+point the corresponding environment variable at a small compressed panel:
+
+```r
+Sys.setenv(COMPRESSOR_COMMON_VARIANTS = "/data/panels/common.parquet")
+store <- compress_sumstats(
+  "gwas.tsv.gz", "gwas-common.cpr", mode = "convert", reference = NULL,
+  assume_grch38_ref_alt = TRUE, variant_set = "common", overwrite = TRUE
+)
+```
+
+Panels may be Parquet, delimited text, PLINK `.bim`, or a CompreSSoR Pcodec
+store. They need either the canonical `variant_id` (`chrom:pos:REF:ALT`) or
+`chromosome`, `base_pair_location`, `other_allele` (REF), and `effect_allele`
+(ALT). The panel is only a membership filter against the identity key already
+stored in each GWAS; it is not a shared spine and is not included in the GWAS
+store size. `variant_set = NULL` leaves the main pathway unchanged. The same
+flag works with `harmonise_sumstats()` and with `mode = "convert"`, where no
+reference harmonisation is performed.
+
 ## Reading and FastMR
 
 ```r

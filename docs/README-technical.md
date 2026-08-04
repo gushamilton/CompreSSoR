@@ -118,6 +118,23 @@ enough for the main MR and association-serving workflows. N, INFO, case/control
 counts, study labels, QC flags, and other fields are useful in some projects,
 but they should not enlarge every routine store by default.
 
+### Optional variant-set membership
+
+`variant_set` is an independent, opt-in membership filter. A panel can be a
+Parquet or delimited table, a PLINK `.bim`, or a CompreSSoR Pcodec store. Its
+canonical identity is the same self-contained `chrom:pos:REF:ALT` key as the
+GWAS store. Named panels resolve from `COMPRESSOR_COMMON_VARIANTS`,
+`COMPRESSOR_TAG_VARIANTS`, `COMPRESSOR_CORE_VARIANTS`, or
+`COMPRESSOR_HM3_VARIANTS` (or from `COMPRESSOR_VARIANT_SET_DIR` using the
+corresponding conventional filename).
+
+The default `variant_set = NULL` retains all variants. With
+`mode = "convert"`, the panel is matched to the input's existing REF/ALT
+identity and no reference table, harmonisation, or shared spine is introduced.
+With the QC path, harmonisation happens first and the same identity filter is
+then applied. The selected panel is recorded in alignment statistics; its
+bytes are external to the per-GWAS store.
+
 ### What works today
 
 For exact arbitrary extras, use the Parquet backend:

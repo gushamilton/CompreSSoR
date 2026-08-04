@@ -84,6 +84,26 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   expect_equal(observed[[1L]]$effect_allele_frequency[2], input$effect_allele_frequency[3])
 })
 
+test_that("a native Pcodec store can be used as an identity-only panel", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(128L)
+  panel_input <- input[c(1L, 17L, 99L), , drop = FALSE]
+  panel_path <- tempfile("pcodec-variant-panel-")
+  compress_sumstats(panel_input, panel_path, reference = NULL, mode = "convert",
+                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+
+  panel <- CompreSSoR:::read_variant_set(panel_path)
+  expect_equal(nrow(panel), 3L)
+  expect_true(all(grepl("^[0-9XY]+:[0-9]+:[ACGT]:[ACGT]$", panel$variant_id)))
+  expect_equal(attr(panel, "variant_set_metadata")$rows, 3L)
+
+  filtered <- harmonise_sumstats(input, reference = NULL, mode = "convert",
+                                 variant_set = panel_path)
+  expect_equal(nrow(filtered), 3L)
+  expect_equal(filtered$base_pair_location, panel$base_pair_location)
+})
+
 test_that("native Pcodec keeps configurable stream frames aligned", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

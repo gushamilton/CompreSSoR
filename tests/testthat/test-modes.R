@@ -45,6 +45,64 @@ test_that("convert is an explicit no-reference escape hatch", {
   expect_error(harmonise_sumstats(input, reference = NULL, mode = "qc"), "reference is required")
 })
 
+test_that("variant-set filtering works in convert mode without harmonisation", {
+  input <- make_edge_case_sumstats()
+  panel <- input[c(1L, 2L), c("chromosome", "base_pair_location",
+                               "other_allele", "effect_allele")]
+
+  converted <- harmonise_sumstats(input, reference = NULL, mode = "convert",
+                                   variant_set = panel)
+
+  # The no-reference conversion path keeps both input rows that carry the
+  # selected identity; it does not silently deduplicate them.
+  expect_equal(nrow(converted), 3L)
+  expect_equal(converted$base_pair_location, c(100L, 200L, 100L))
+  expect_true(all(converted$harmonisation_status == "unreferenced"))
+  expect_equal(attr(converted, "alignment_stats")$variant_set$name, "convert")
+  expect_equal(attr(converted, "alignment_stats")$variant_set$kept_rows, 3L)
+  expect_equal(attr(converted, "alignment_stats")$variant_set$dropped_rows, 4L)
+
+  wrong_allele_panel <- panel[1L, , drop = FALSE]
+  wrong_allele_panel$effect_allele <- "G"
+  expect_error(
+    harmonise_sumstats(input, reference = NULL, mode = "convert",
+                       variant_set = wrong_allele_panel),
+    "retained no variants"
+  )
+})
+
+test_that("named common and tag panels resolve through environment variables", {
+  input <- make_edge_case_sumstats()
+  panel_path <- tempfile("common-variants-", fileext = ".tsv.gz")
+  panel <- data.frame(variant_id = compressor_variant_key(
+    input$chromosome[1:2], input$base_pair_location[1:2],
+    input$other_allele[1:2], input$effect_allele[1:2]
+  ), stringsAsFactors = FALSE
+  )
+  data.table::fwrite(panel, panel_path, sep = "\t")
+
+  old_common <- Sys.getenv("COMPRESSOR_COMMON_VARIANTS", unset = NA_character_)
+  old_tag <- Sys.getenv("COMPRESSOR_TAG_VARIANTS", unset = NA_character_)
+  on.exit({
+    if (is.na(old_common)) Sys.unsetenv("COMPRESSOR_COMMON_VARIANTS") else
+      Sys.setenv(COMPRESSOR_COMMON_VARIANTS = old_common)
+    if (is.na(old_tag)) Sys.unsetenv("COMPRESSOR_TAG_VARIANTS") else
+      Sys.setenv(COMPRESSOR_TAG_VARIANTS = old_tag)
+  }, add = TRUE)
+  Sys.setenv(COMPRESSOR_COMMON_VARIANTS = panel_path,
+             COMPRESSOR_TAG_VARIANTS = panel_path)
+
+  common <- harmonise_sumstats(input, reference = NULL, mode = "convert",
+                               variant_set = "common")
+  tag <- harmonise_sumstats(input, reference = NULL, mode = "convert",
+                            variant_set = "tag")
+
+  expect_equal(common$variant_id, tag$variant_id)
+  expect_equal(attr(common, "alignment_stats")$variant_set$name, "common")
+  expect_equal(attr(tag, "alignment_stats")$variant_set$name, "tag")
+  expect_equal(attr(common, "alignment_stats")$variant_set$rows, 2L)
+})
+
 test_that("chromosome-parallel harmonisation matches serial output", {
   input <- make_edge_case_sumstats()
   reference <- make_edge_case_reference()
