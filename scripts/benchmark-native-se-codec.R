@@ -38,9 +38,11 @@ store_path <- file.path(root, "store.cpr")
 fwrite(data, source_plain, sep = "\t", quote = FALSE, na = "NA")
 system2("gzip", c("-f", source_plain))
 
+block_rows <- as.integer(Sys.getenv("COMPRESSOR_NATIVE_BLOCK_ROWS", "32768"))
 write_elapsed <- system.time({
   compress_sumstats(data, store_path, reference = NULL, mode = "convert",
-                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+                    assume_grch38_ref_alt = TRUE, overwrite = TRUE,
+                    block_rows = block_rows)
 })[["elapsed"]]
 store_files <- list.files(store_path, recursive = TRUE, full.names = TRUE)
 store_bytes <- sum(file.info(store_files)$size)
@@ -68,6 +70,7 @@ result <- data.frame(
   native_median_seconds = median(native_times),
   write_seconds = write_elapsed,
   native_format = manifest$format_version,
+  block_rows = block_rows,
   codec = manifest$codec$name,
   exception_rows = manifest$semantic_codec$exception_rows,
   se_bits = manifest$semantic_codec$se_bits,

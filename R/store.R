@@ -156,6 +156,7 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
     reference_metadata$sha256 <- alignment$reference_hash
     reference_metadata$rows <- alignment$reference_rows
     pcodec_metadata <- list(
+      block_rows = as.integer(block_rows),
       genome_build = "GRCh38",
       reference = reference_metadata,
       harmonisation = list(

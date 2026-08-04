@@ -285,7 +285,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   ordered <- data[order, , drop = FALSE]
   values <- pcodec_native_quantise(ordered)
   n <- nrow(ordered)
-  block_rows <- PCODEC_NATIVE_BLOCK_ROWS
+  block_rows <- as.integer(metadata$block_rows %||% PCODEC_NATIVE_BLOCK_ROWS)
+  if (length(block_rows) != 1L || is.na(block_rows) || block_rows < 1024L ||
+      block_rows != 2^round(log2(block_rows))) {
+    stop("native Pcodec block_rows must be a power of two >= 1024", call. = FALSE)
+  }
   block_count <- if (n) ceiling(n / block_rows) else 0L
   block_template <- lapply(seq_len(block_count), function(block) {
     start <- (block - 1L) * block_rows
@@ -349,7 +353,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     codec = list(
       name = "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
-      compression = "Pcodec standalone stream per 32768-row block",
+      compression = paste0("Pcodec standalone stream per ", block_rows, "-row block"),
       z_bits = 9L, eaf_bits = 8L, se_bits = PCODEC_NATIVE_SE_BITS,
       se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
       p_storage = "omitted; derived from z",
