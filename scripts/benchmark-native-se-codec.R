@@ -59,7 +59,7 @@ native_times <- vapply(seq_len(5L), function(i) timed(function() {
   read_sumstats(store_path)
 }), numeric(1))
 region_times <- vapply(seq_len(5L), function(i) timed(function() {
-  read_sumstats(store_path, region = "1:100001-110000",
+  read_sumstats(store_path, region = "chr1:100001-110000",
                 columns = c("z", "standard_error", "effect_allele_frequency"))
 }), numeric(1))
 keys <- compressor_variant_key(data$chromosome, data$base_pair_location,
