@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # Repeated chr1 benchmark for the current native CompreSSoR Pcodec store.
-# The input is a prefiltered FinnGen chr1 SNV TSV.gz. Large input/output
+# The input is a prefiltered FinnGen chr1 core-SNV TSV.gz. Large input/output
 # stores stay on the external benchmark volume; only CSV/JSON evidence is
 # written to the requested result directory.
 
@@ -65,8 +65,10 @@ source_probe <- read_source()
 if (!nrow(source_probe)) stop("chr1 source has no rows")
 source_keys <- compressor_variant_key(source_probe$chrom, source_probe$pos,
                                       source_probe$ref, source_probe$alt)
-sparse_rows <- unique(as.integer(round(seq(1, nrow(source_probe), length.out = 1000L))))
-sparse_keys <- source_keys[sparse_rows]
+sparse_25_rows <- unique(as.integer(round(seq(1, nrow(source_probe), length.out = 25L))))
+sparse_25_keys <- source_keys[sparse_25_rows]
+sparse_1000_rows <- unique(as.integer(round(seq(1, nrow(source_probe), length.out = 1000L))))
+sparse_1000_keys <- source_keys[sparse_1000_rows]
 region <- "chr1:100000000-101000000"
 core_columns <- c("chromosome", "base_pair_location", "z",
                   "standard_error", "effect_allele_frequency")
@@ -118,7 +120,10 @@ for (i in seq_len(runs)) {
   measured <- time_read(read_sumstats(store, region = region, columns = core_columns))
   record("CompreSSoR Pcodec", "region_chr1_1mb", i, measured$elapsed,
          nrow(measured$value), store_bytes, checksum_store(measured$value))
-  measured <- time_read(read_sumstats(store, variants = sparse_keys, columns = core_columns))
+  measured <- time_read(read_sumstats(store, variants = sparse_25_keys, columns = core_columns))
+  record("CompreSSoR Pcodec", "sparse_25_keys", i, measured$elapsed,
+         nrow(measured$value), store_bytes, checksum_store(measured$value))
+  measured <- time_read(read_sumstats(store, variants = sparse_1000_keys, columns = core_columns))
   record("CompreSSoR Pcodec", "sparse_1000_keys", i, measured$elapsed,
          nrow(measured$value), store_bytes, checksum_store(measured$value))
 }
@@ -135,7 +140,10 @@ for (i in seq_len(runs)) {
   measured <- time_read({ x <- read_source(); x <- x[pos >= 100000000 & pos <= 101000000]; x })
   record("TSV gzip", "region_chr1_1mb", i, measured$elapsed,
          nrow(measured$value), source_bytes, checksum(measured$value))
-  measured <- time_read({ x <- read_source(); x[sparse_rows] })
+  measured <- time_read({ x <- read_source(); x[sparse_25_rows] })
+  record("TSV gzip", "sparse_25_keys", i, measured$elapsed,
+         nrow(measured$value), source_bytes, checksum(measured$value))
+  measured <- time_read({ x <- read_source(); x[sparse_1000_rows] })
   record("TSV gzip", "sparse_1000_keys", i, measured$elapsed,
          nrow(measured$value), source_bytes, checksum(measured$value))
 }
@@ -156,7 +164,7 @@ write_json(list(
                      error = function(e) NA_character_),
   source = list(path = source_path, rows = source_rows, bytes = source_bytes,
                 sha256 = digest::digest(source_path, algo = "sha256", file = TRUE),
-                description = "FinnGen chr1 biallelic SNVs; external identity not counted"),
+                description = "FinnGen chr1 biallelic SNVs with core columns only; external identity not counted"),
   store = list(path = store_path, rows = store$manifest$n_rows, bytes = store_bytes,
                format = store$manifest$format_version,
                codec = store$manifest$codec$name),
