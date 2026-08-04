@@ -37,30 +37,29 @@ On a real 14,923,434-variant FinnGen GWAS:
 | Direct 25×25 MR | **1.274 s** |
 | Same 25×25 workflow from TSV.gz | 165.266 s |
 
-The headline Pareto result is below. It preserves the measured historical
-frontier that motivated the Pcodec representation and now overlays the shipped
-native Pcodec implementation as `Native Pcodec 0.4*`.
+The headline Pareto result below preserves the measured historical frontier
+that motivated the Pcodec representation. The legacy native overlay is kept as
+a diagnostic record; the current native implementation benchmark is recorded
+separately while the final full-FinnGen comparison is regenerated.
 
 ![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
 
-The native point is measured separately on the Mac mini because the historical
-frontier used a 10-million-row real GWAS, while the native implementation check
-used a 1-million-row fixture. On that fixture, TSV.gz was 41,306,032 bytes and
-the native `.cpr` was 8,691,591 bytes (4.752×), with five-run full-read medians
-of 0.193 s and 0.079 s respectively. See the [native benchmark summary](inst/benchmarks/native-pcodec-implementation.csv)
-and [per-run timings](inst/benchmarks/native-pcodec-implementation-runs.csv).
+The current native check uses a deterministic 1-million-row fixture on the Mac
+mini. TSV.gz is 53,154,119 bytes and the self-contained native `.cpr` is
+3,008,525 bytes (17.67× smaller), with five-run warm medians of 0.392 s and
+0.055 s for full reads. A 10 kb region read is 0.007 s. See the [native SE8
+benchmark](inst/benchmarks/native-pcodec-se8-frame.csv).
 
 The native-only smoke benchmark on the Mac mini used one million coherent
 rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
 
-| Native 0.4 measure | Result |
+| Native 0.4.3 measure | Result |
 |---|---:|
-| Store size | **1,679,354 bytes** |
-| Write time | **3.578 s** |
-| Full read, all columns | **0.048 s** |
-| Full read, Z/SE/EAF only | **0.020 s** |
-| 10 kb region read | **0.004 s** |
-| 100 canonical-key read | **0.650 s** |
+| Store size | **3,008,525 bytes** |
+| Write time | **4.429 s** |
+| Full read, all columns | **0.055 s** |
+| 10 kb region read | **0.007 s** |
+| 25 canonical-key read | **0.846 s** |
 
 Each access number is the median of five runs; the canonical-key test requests
 100 keys. The store passed full validation and all checksums. This is a
@@ -191,7 +190,8 @@ gwas.cpr/
 └── exceptions.bin          sparse higher-precision numeric exceptions
 ```
 
-The native 0.4 store uses 32,768-row blocks. Older 0.2/0.3 stores belong to
+The native 0.4.3 store uses 65,536-row blocks by default; `block_rows` can be
+changed when a smaller random-access frame is preferable. Older 0.2/0.3 stores belong to
 the archived pre-native implementation and are not read by this release.
 
 | Logical field | Standard storage | Read-time result |
@@ -200,7 +200,7 @@ the archived pre-native implementation and are not read by this release.
 | REF + ALT | Complete four-bit substitution code | Exact alleles |
 | Z | 9-bit semantic code, Pcodec stream | Quantised Z, with exceptions |
 | EAF | 8-bit arcsine code, Pcodec stream | Quantised EAF |
-| SE | 6-bit block-centred log2 residual | Quantised SE, with exceptions |
+| SE | 8-bit block-centred log2 residual | Quantised SE, with exceptions |
 | Beta | Not stored per row | Derived as `Z × SE` |
 | p-value | Not stored | Derived from Z |
 | rsID/text variant ID | Not stored | Use `chrom:pos:REF:ALT` |

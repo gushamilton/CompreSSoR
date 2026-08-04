@@ -1,0 +1,11 @@
+benchmark_id,access,run,seconds
+native_pcodec_se8_frame_1m,source_gzip_full_read,1,0.394
+native_pcodec_se8_frame_1m,source_gzip_full_read,2,0.388
+native_pcodec_se8_frame_1m,source_gzip_full_read,3,0.382
+native_pcodec_se8_frame_1m,source_gzip_full_read,4,0.392
+native_pcodec_se8_frame_1m,source_gzip_full_read,5,0.392
+native_pcodec_se8_frame_1m,native_full_read,1,0.055
+native_pcodec_se8_frame_1m,native_full_read,2,0.057
+native_pcodec_se8_frame_1m,native_full_read,3,0.052
+native_pcodec_se8_frame_1m,native_full_read,4,0.056
+native_pcodec_se8_frame_1m,native_full_read,5,0.051

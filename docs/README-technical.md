@@ -168,13 +168,16 @@ ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
 the package independent of the incomplete upstream wrapped C API while
 retaining Pcodec's numerical codec.
 
-The native format is `0.4.0-pcodec-native`. Each logical column is a separate
-stream, split into 32,768-row blocks. The five streams are `uint32` global
-position, `uint8` substitution code, `uint16` Z code, `uint8` EAF code, and
-`uint8` SE code. SE centres are shared across 65,536 rows. Exceptions are a
-small float32 sidecar with row, Z, log2(SE), EAF, and flags. The index records
-the byte offset and row count of every block, so regional and sparse reads do
-not decode the complete file.
+The native format is `0.4.3-pcodec-native`. Each logical column is a separate
+stream, split into 65,536-row blocks by default (`block_rows` can be reduced
+for finer random access). The five streams are `uint32` global position,
+`uint8` substitution code, `uint16` Z code, `uint8` EAF code, and `uint8` SE
+code. SE centres are shared across 65,536 rows, while the SE code now uses all
+eight physical bits: 254 central bins plus missing and exact-exception
+sentinels. Exceptions are a small Zstandard-compressed float32 sidecar with
+row, Z, log2(SE), EAF, and flags. The index records the byte offset and row
+count of every block, so regional and sparse reads do not decode the complete
+file.
 
 The native path is the only write and read backend in the current package.
 Cargo is required during installation; if the native library cannot be built,
@@ -186,14 +189,14 @@ The upstream Pcodec project documents its standalone C bindings as incomplete;
 the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
 and round-trip tests rather than exposing that upstream API directly.
 
-On the Mac mini, the native-only smoke benchmark uses a coherent one-million-
-row synthetic stream (`Z ~ N(0, 1)`, `beta = Z × SE`). The store is 1,679,354
-bytes and takes 3.578 s to write. Five-run medians are 0.048 s for all-column
-full load, 0.020 s for Z/SE/EAF only, 0.004 s for a 10 kb region, and 0.650 s
-for 100 canonical-key reads. Full validation passed. This is an engineering
-smoke benchmark, not a claim about every GWAS or sparse workload; the real-
-GWAS suite should be regenerated for the native format before making a new
-production headline.
+On the Mac mini, the current native-only smoke benchmark uses a deterministic
+one-million-row SNV fixture and the self-contained identity key. The 0.4.3
+store is 3,008,525 bytes versus 53,154,119 bytes for source TSV.gz and takes
+4.429 s to write. Five-run warm medians are 0.055 s for all-column full load,
+0.007 s for a 10 kb region, and 0.846 s for 25 canonical-key reads. Full
+validation passed. This is an engineering smoke benchmark, not a claim about
+every GWAS or sparse workload; the real-GWAS suite should be regenerated for
+the native format before making a new production headline.
 
 ## Benchmark interpretation
 

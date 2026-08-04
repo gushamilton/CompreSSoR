@@ -23,13 +23,14 @@ benchmark_metadata <- function() {
 #'   chromosome-parallel slice follow-up, "pcodec_access" for the current
 #'   v0.3 full-FinnGen exported-API runs, "storage_size" for the historical
 #'   on-disk size comparison on the real release-gate GWAS, or
-#'   "storage_amortization" for the historical shared-spine experiment.
+#'   "storage_amortization" for the historical shared-spine experiment, or
+#'   "native_se8" for the current native implementation smoke benchmark.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
 benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimization",
                                     "modes", "release_gate", "release_gate_followup",
                                     "pcodec_access", "storage_size",
-                                    "storage_amortization")) {
+                                    "storage_amortization", "native_se8")) {
   kind <- match.arg(kind)
   filename <- switch(kind,
                      pareto = "first-pareto.csv",
@@ -41,7 +42,8 @@ benchmark_table <- function(kind = c("pareto", "vcf", "finngen", "finngen_optimi
                      release_gate_followup = "release-gate-followup.csv",
                      pcodec_access = "pcodec-canonical-access-runs.csv",
                      storage_size = "storage-size-benchmark.csv",
-                     storage_amortization = "storage-amortization.csv")
+                     storage_amortization = "storage-amortization.csv",
+                     native_se8 = "native-pcodec-se8-frame.csv")
   path <- system.file("benchmarks", filename, package = "CompreSSoR")
   if (!nzchar(path)) path <- file.path("inst", "benchmarks", filename)
   utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)

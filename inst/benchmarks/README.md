@@ -30,6 +30,14 @@ Pcodec store, versus 201,658,018 bytes for the eight-column TSV.gz and
 228,634,485 bytes for indexed VCF.gz plus `.tbi`. Exact REF/ALT identity is
 included in the Pcodec size; there is no uncounted variant spine.
 
+The current native implementation check is recorded in
+`native-pcodec-se8-frame.csv` and `native-pcodec-se8-frame-runs.csv`. On a
+deterministic 1,000,000-row Mac mini fixture, the 0.4.3 native store is
+3,008,525 bytes versus 53,154,119 bytes for the source TSV.gz (17.67x), with
+five-run warm medians of 55 ms for a full read and 7 ms for a 10 kb region.
+This is an implementation benchmark, not a replacement for the final
+full-FinnGen comparison.
+
 ## Pareto design record
 
 `first-pareto.csv` is the data behind `inst/figures/compressor-pareto.svg`.
@@ -40,13 +48,13 @@ run logs, source byte accounting, exact projection schema, and complete runtime
 metadata were not retained, so it must not be used as an independently
 reproducible comparison with the release benchmark.
 
-The plot also overlays the shipped native implementation as `Native Pcodec
-0.4*`. Its exact five-run evidence is in `native-pcodec-implementation.csv`
-and `native-pcodec-implementation-runs.csv`: a 1,000,000-row Mac mini smoke
-fixture, with the same source written as TSV.gz and read through `fread` versus
-the native `.cpr` reader. The point is deliberately annotated because it is a
-different fixture size from the historical 10M-row sweep; it is an implementation
-check, not a claim that unlike datasets share one Pareto frontier.
+The plot retains an older diagnostic overlay labelled `Native Pcodec 0.4*`.
+That point is not the current implementation result. The current native
+evidence is in `native-pcodec-se8-frame.csv` and its companion run table: a
+1,000,000-row Mac mini smoke fixture, with the same source written as TSV.gz
+and read through `fread` versus the 0.4.3 native `.cpr` reader. It is an
+implementation check, not a claim that unlike datasets share one Pareto
+frontier.
 
 ## Earlier engineering records
 
