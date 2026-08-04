@@ -301,11 +301,15 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   streams <- list(
     position = pcodec_native_append_stream(
       pcodec_native_position_gaps(ordered_position, block_rows),
-      file.path(output, "position.pco"), "u32"),
-    substitution = pcodec_native_append_stream(ordered_substitution, file.path(output, "substitution.pco"), "u8"),
-    z = pcodec_native_append_stream(values$z, file.path(output, "z.pco"), "u16"),
-    eaf = pcodec_native_append_stream(values$eaf, file.path(output, "eaf.pco"), "u8"),
-    se = pcodec_native_append_stream(values$se, file.path(output, "se.pco"), "u8")
+      file.path(output, "position.pco"), "u32", block_rows),
+    substitution = pcodec_native_append_stream(
+      ordered_substitution, file.path(output, "substitution.pco"), "u8", block_rows),
+    z = pcodec_native_append_stream(
+      values$z, file.path(output, "z.pco"), "u16", block_rows),
+    eaf = pcodec_native_append_stream(
+      values$eaf, file.path(output, "eaf.pco"), "u8", block_rows),
+    se = pcodec_native_append_stream(
+      values$se, file.path(output, "se.pco"), "u8", block_rows)
   )
   exception_stream <- pcodec_native_write_exceptions(values$exceptions, output, block_template)
   index <- list(

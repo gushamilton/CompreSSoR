@@ -82,6 +82,22 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   expect_equal(observed[[1L]]$effect_allele_frequency[2], input$effect_allele_frequency[3])
 })
 
+test_that("native Pcodec keeps configurable stream frames aligned", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(70000L)
+  path <- tempfile("pcodec-native-frame-")
+  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
+                             assume_grch38_ref_alt = TRUE, block_rows = 65536L,
+                             overwrite = TRUE)
+  expect_equal(store$manifest$block_rows, 65536L)
+  expect_true(validate_compressor(store, full = TRUE)$valid)
+  observed <- read_sumstats(store, columns = c("z", "standard_error",
+                                                "effect_allele_frequency"))
+  expect_equal(nrow(observed), nrow(input))
+  expect_lt(max(abs(observed$z - input$z), na.rm = TRUE), 0.02)
+})
+
 test_that("native exception frames use Zstandard and round trip", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")
