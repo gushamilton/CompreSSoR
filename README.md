@@ -27,29 +27,34 @@ The store keeps the variant identity in every file, without repeating rsIDs or
 requiring a study-specific external spine. It stores the core numerical streams
 in Pcodec and derives beta and p-value when requested.
 
-The current headline plot below is a clean, same-data BP benchmark on 1,124,344
-FinnGen chr1 SNVs. It measures five formats, each carrying its variant identity
-in the file, with five access runs per format. Storage is relative to the same
-source TSV.gz; higher is smaller and left is faster.
+The headline plot below is the final same-data BP benchmark on 1,124,344
+FinnGen chr1 SNVs. It measures 34 concrete keyed formats, with five independent
+Slurm runs per format. Every candidate stores the exact position plus directed
+REF→ALT identity; no external spine is counted. Storage is relative to the
+same TSV.gz, so higher is smaller and left is faster.
 
-![Compression/access Pareto frontier](inst/figures/compressor-pareto.png)
+![Compression/access Pareto frontier](inst/figures/compressor-pareto-final-keyed.png)
 
-| Format | Access median | Storage relative to TSV.gz |
+| Pareto point | Access median | Storage relative to TSV.gz |
 |---|---:|---:|
-| TSV gzip | 0.363 s | 1.00× |
-| TSV uncompressed | 0.105 s | 0.30× |
-| Parquet self-contained exact | 0.132 s | 0.74× |
-| VCF + Tabix | 0.794 s | 0.94× |
-| CompreSSoR Pcodec self-contained (default) | **0.116 s** | **3.53×** |
+| Raw float64 keyed binary | 0.066 s | 0.47× |
+| Parquet exact self-contained | 0.069 s | 0.75× |
+| Parquet q8 self-contained | 0.126 s | 1.61× |
+| Parquet q8 + Gzip | 0.271 s | 1.88× |
+| **CompreSSoR native Pcodec (default)** | **0.321 s** | **3.53×** |
+| TSV.gz baseline | 0.607 s | 1.00× |
 
-The 3.53× point is what users actually get from the portable default: the exact
-position/REF→ALT identity is inside every `.cpr` store, so it does not depend on
-a separately counted spine. Older reference-anchored experiments are retained
-as historical records, but are deliberately not part of this comparison.
-The full measured table, write timings, validation bounds, and access repeats
-are in [`inst/benchmarks/pareto-chr1-summary.csv`](inst/benchmarks/pareto-chr1-summary.csv),
-[`inst/benchmarks/pareto-chr1-write.csv`](inst/benchmarks/pareto-chr1-write.csv),
-and [`inst/benchmarks/pareto-chr1-validation.csv`](inst/benchmarks/pareto-chr1-validation.csv).
+The standard Pcodec store is the compression-first choice: it is 3.53× smaller
+than TSV.gz and its full-file read was 1.9× faster on this BP run. Its measured
+conversion median was 12.18 s; conversion is intentionally secondary to repeated
+read/access cost. All 34 candidates passed identity and numeric round-trip
+validation. The complete 170-observation table, medians, frontier, and measured
+/unavailable registry are in [`inst/benchmarks/final-keyed-20260804/`](inst/benchmarks/final-keyed-20260804/).
+
+The final benchmark script is [`scripts/benchmark-final-keyed.R`](scripts/benchmark-final-keyed.R)
+and the five-task Slurm wrapper is [`scripts/benchmark-final-keyed.sbatch`](scripts/benchmark-final-keyed.sbatch).
+Zarr, Blosc2, Vortex, and Python-only Pcodec bindings were recorded as unavailable
+on BP rather than guessed or plotted.
 
 The old one-million-row Mac mini fixture remains available as a historical
 engineering record; the current real-data check is run on BP below.
@@ -70,17 +75,14 @@ Each access number is the median of five runs; the canonical-key test requests
 reproducible engineering check for the installed native backend; the older
 real-GWAS records predate the native-only format.
 
-The current BP chr1 package check uses the same 1,124,344 biallelic SNVs and
-five repetitions per workload. The source is an eight-column TSV.gz (`chrom`,
-`pos`, `REF`, `ALT`, `beta`, `SE`, `EAF`, `p`):
+The final BP chr1 check uses the same eight-column source (`chrom`, `pos`, `REF`,
+`ALT`, `beta`, `SE`, `EAF`, `p`) and five independent full-file access runs:
 
-| Workload | Best self-contained Pcodec |
+| Measure | CompreSSoR Pcodec |
 |---|---:|
 | Store size | **4,298,204 bytes** |
-| Write time, single measured conversion | **10.389 s** |
-| Full numeric read | **0.057 s** |
-| Full identity + numeric read | **0.116 s** |
-| 1 Mb identity + numeric region | **0.021 s** |
+| Conversion median | **12.178 s** |
+| Full-file read median | **0.321 s** |
 
 The source TSV.gz is 15,186,281 bytes, so the self-contained store is
 **3.53× smaller**. The selected geometry uses 131,072-row identity frames and

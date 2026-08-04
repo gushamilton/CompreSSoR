@@ -1,6 +1,32 @@
 # CompreSSoR benchmark records
 
-## Current BP chr1 optimisation record
+## Final BP chr1 keyed-format screen
+
+`final-keyed-20260804/` is the authoritative final format comparison. It uses
+the real 1,124,344-row FinnGen chr1 core-SNV file on BP, five independent
+Slurm tasks, and 34 concrete formats. Every measured format contains the exact
+position plus directed REF→ALT identity; no shared spine or external reference
+is included in the storage accounting. All 170 observations passed identity and
+numeric round-trip checks.
+
+- `final-keyed-runs.csv`: all 170 measured observations;
+- `final-keyed-summary.csv`: five-run medians and validation bounds;
+- `final-keyed-frontier.csv`: the mathematically calculated Pareto frontier;
+- `final-keyed-registry.csv`: measured formats and unavailable bindings;
+- `compressor-pareto-final-keyed.png`: the final plot, labelled only at the
+  frontier plus the TSV.gz baseline.
+
+The source TSV.gz is 15,186,281 bytes. The default CompreSSoR native Pcodec
+store is 4,298,204 bytes (3.53× smaller), with a five-run full-file read median
+of 0.321 seconds versus 0.607 seconds for TSV.gz. Its conversion median is
+12.178 seconds. The standard store is therefore selected for compression-first
+use; the full table shows the speed/storage alternatives.
+
+Zarr, Blosc2, Vortex, and Python-only Pcodec bindings were not installed in the
+BP environment. They are recorded as `UNAVAILABLE`, not represented by guessed
+numbers.
+
+## Earlier BP chr1 optimisation record
 
 `bp-finngen-chr1-optimization.csv` is the current five-run Linux evidence
 from BluePebble compute nodes, using the real 1,124,344-row FinnGen chr1 core
@@ -16,11 +42,11 @@ The final same-data Pareto record is split into:
 - `pareto-chr1-validation.csv`: package round-trip and quantisation-bound checks;
 - `pareto-chr1-frontier.csv`: the plotted, contract-specific frontier.
 
-The corresponding plot is `inst/figures/compressor-pareto.png`. The standard
-CompreSSoR result is the self-contained Pcodec point (4,298,204 bytes and
-0.116 seconds on this fixture). Every format in the plotted record carries
-variant identity. Reference-anchored numeric projections are retained only in
-older engineering records and are not used for the headline comparison.
+The superseded five-format plot is `inst/figures/compressor-pareto.png`. The
+authoritative current plot is `inst/figures/compressor-pareto-final-keyed.png`
+and the current five-run results are in `final-keyed-20260804/`. Reference-
+anchored numeric projections are retained only in older engineering records and
+are not used for the headline comparison.
 
 ## Earlier release evidence
 
@@ -93,7 +119,7 @@ workers are useful for sparse and batch access.
 ## Pareto design record
 
 `first-pareto.csv` is the historical data behind the old Pareto design plot;
-the current key-bearing plot is `inst/figures/compressor-pareto.png`.
+the current key-bearing plot is `inst/figures/compressor-pareto-final-keyed.png`.
 It records the original five-repeat representation sweep that selected the
 independent quantised streams. It is a historical design benchmark rather than
 the current exported-package timing. Only its median summary survives here: raw

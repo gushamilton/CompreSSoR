@@ -1,0 +1,40 @@
+format_id,format,family,identity_included,status,reason
+tsv_gzip,TSV gzip,Text,TRUE,MEASURED,Five-run keyed benchmark passed
+tsv_plain,TSV uncompressed,Text,TRUE,MEASURED,Five-run keyed benchmark passed
+vcf_tabix,VCF bgzip + Tabix,VCF + Tabix,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_exact,Parquet exact self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_f32,Parquet float32 self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q8,Parquet q8 self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q9,Parquet q9 self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q12,Parquet q12 self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q16_u8,Parquet q9/eaf8/se16 self-contained,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q8_snappy,Parquet q8 + Snappy,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+parquet_q8_gzip,Parquet q8 + Gzip,Parquet,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f64,Raw float64 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f64_zstd,Raw float64 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f32,Raw float32 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f32_zstd,Raw float32 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f32_framed,Raw float32 framed keyed binary,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+raw_f32_framed_zstd,Raw float32 framed keyed binary + Zstd,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q8_binary,q8 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q8_binary_zstd,q8 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q9_binary,q9 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q9_binary_zstd,q9 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q12_binary,q12 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q12_binary_zstd,q12 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q8_framed,q8 framed keyed binary,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q8_framed_zstd,q8 framed keyed binary + Zstd,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q9_framed,q9 framed keyed binary,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q9_framed_zstd,q9 framed keyed binary + Zstd,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q12_framed,q12 framed keyed binary,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q12_framed_zstd,q12 framed keyed binary + Zstd,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q16_u8,q16/u8 keyed binary,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q16_u8_framed,q9/eaf8/se16 framed keyed binary,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q16_u8_zstd,q16/u8 keyed binary + Zstd,Binary,TRUE,MEASURED,Five-run keyed benchmark passed
+q16_u8_framed_zstd,q9/eaf8/se16 framed keyed binary + Zstd,Framed binary,TRUE,MEASURED,Five-run keyed benchmark passed
+pcodec_native,CompreSSoR native Pcodec,CompreSSoR,TRUE,MEASURED,Five-run keyed benchmark passed
+zarr_pcodec,Zarr + Pcodec,Zarr,TRUE,UNAVAILABLE,Python zarr/pcodec bindings were not installed in the BP R environment
+zarr_blosc2,Zarr + Blosc2,Zarr,TRUE,UNAVAILABLE,Python zarr/numcodecs/blosc2 bindings were not installed in the BP R environment
+blosc2_frame,Blosc2 frame,Blosc2,TRUE,UNAVAILABLE,blosc2 Python binding was not installed in the BP R environment
+vortex,Vortex,Vortex,TRUE,UNAVAILABLE,Vortex runtime was not installed in the BP environment
+python_pcodec,Python Pcodec,Python,TRUE,UNAVAILABLE,Python pcodec binding was not installed in the BP environment
