@@ -48,6 +48,27 @@ than the 15,186,281-byte TSV.gz. Full and 1 Mb regional reads are faster with
 Pcodec; the current many-independent-key path is slower and is reported as a
 known optimization target rather than hidden in a single aggregate score.
 
+The clean Linux portability/threading check is recorded in
+`pcodec-threads-bp-summary.csv`. It ran as separate one-hour Slurm jobs on
+BluePebble compute nodes with R 4.5.1 and the unchanged native Pcodec 1.0.3
+backend built using an official Rust 1.87 toolchain. The real SBP GWAS source
+yielded 579,586 valid chr1 biallelic SNVs after restricting coordinates to the
+GRCh38 chr1 primary range; the 6,181,455-byte core TSV.gz became a
+2,584,730-byte self-contained Pcodec store. Five-run medians were:
+
+| Workload | 1 worker | 2 workers | 4 workers |
+|---|---:|---:|---:|
+| Full core read | 0.156 s | 0.232 s | 0.238 s |
+| 1 Mb region | 0.023 s | 0.029 s | 0.029 s |
+| 25 canonical keys | 0.832 s | 0.449 s | 0.395 s |
+| 1,000 canonical keys | 2.217 s | 1.127 s | 0.844 s |
+| Five-store batch, 25 keys | 4.177 s | 2.776 s | 2.441 s |
+
+Serial and parallel reads passed equality checks, with maximum observed Z
+reconstruction error 0.00686 and EAF quantisation error 0.00308. Full and
+regional reads remain serial because they are already column-streamed; four
+workers are useful for sparse and batch access.
+
 ## Pareto design record
 
 `first-pareto.csv` is the data behind `inst/figures/compressor-pareto.svg`.
