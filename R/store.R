@@ -540,8 +540,10 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #'   stores—canonical `chromosome:position:REF:ALT` keys.
 #' @param columns Optional output columns.
 #' @param threads Number of Unix worker processes for independent Pcodec
-#'   block/key reads. The default is one; full sequential reads are already
-#'   column-streamed. On Windows, reads remain serial.
+#'   stream/block reads. `NULL` selects four workers for whole-store reads and
+#'   one worker for regional or canonical-key reads. Set `threads` explicitly,
+#'   or use `options(CompreSSoR.pcodec.threads = n)`, for reproducibility. On
+#'   Windows, reads remain serial.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.
 #' @examples
@@ -552,7 +554,7 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #' }
 #' @export
 read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
-                          use_cache = FALSE, threads = 1L) {
+                          use_cache = FALSE, threads = NULL) {
   store <- if (inherits(store, "compressor_store")) store else pcodec_open_store_cached(store)
   if (identical(store$manifest$backend, "pcodec")) {
     if (isTRUE(use_cache)) warning("use_cache is ignored for the block-framed Pcodec backend", call. = FALSE)
@@ -675,7 +677,7 @@ read_sumstats_batch <- function(
 #' }
 #' @export
 decompress_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
-                                use_cache = FALSE, threads = 1L) {
+                                use_cache = FALSE, threads = NULL) {
   read_sumstats(store, region = region, variants = variants, columns = columns,
                 threads = threads, use_cache = use_cache)
 }

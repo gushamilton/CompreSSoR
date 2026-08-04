@@ -76,6 +76,16 @@ pcodec_validate_threads <- function(threads) {
   as.integer(threads)
 }
 
+pcodec_native_default_threads <- function(region = NULL, variants = NULL,
+                                           threads = NULL) {
+  if (!is.null(threads)) return(pcodec_validate_threads(threads))
+  configured <- getOption("CompreSSoR.pcodec.threads", NULL)
+  if (!is.null(configured)) return(pcodec_validate_threads(configured))
+  # Whole-file reads benefit from independent stream decoding in parallel;
+  # regional and canonical-key reads are block-selective and avoid forking.
+  if (!is.null(region) || !is.null(variants)) 1L else 4L
+}
+
 pcodec_parallel_lapply <- function(X, FUN, threads = 1L) {
   threads <- pcodec_validate_threads(threads)
   if (length(X) <= 1L || threads <= 1L) return(lapply(X, FUN))
@@ -88,7 +98,7 @@ pcodec_parallel_lapply <- function(X, FUN, threads = 1L) {
 }
 
 pcodec_read_store <- function(store, region = NULL, variants = NULL,
-                               columns = NULL, threads = 1L) {
+                               columns = NULL, threads = NULL) {
   store <- pcodec_open_store_cached(store)
   if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
     stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",

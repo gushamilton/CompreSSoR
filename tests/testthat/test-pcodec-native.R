@@ -12,6 +12,17 @@ test_that("native Pcodec is available and round trips integer streams", {
   }
 })
 
+test_that("native Pcodec selects access-appropriate thread defaults", {
+  expect_equal(CompreSSoR:::pcodec_native_default_threads(), 4L)
+  expect_equal(CompreSSoR:::pcodec_native_default_threads(region = "chr1:1-10"), 1L)
+  expect_equal(CompreSSoR:::pcodec_native_default_threads(variants = 0L), 1L)
+  expect_equal(CompreSSoR:::pcodec_native_default_threads(threads = 2L), 2L)
+  old <- getOption("CompreSSoR.pcodec.threads")
+  on.exit(options(CompreSSoR.pcodec.threads = old), add = TRUE)
+  options(CompreSSoR.pcodec.threads = 3L)
+  expect_equal(CompreSSoR:::pcodec_native_default_threads(), 3L)
+})
+
 test_that("native 0.4 stores are the default and support full, regional, key, and row reads", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

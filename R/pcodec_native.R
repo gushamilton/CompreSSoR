@@ -691,11 +691,12 @@ pcodec_native_empty_result <- function(columns) {
 }
 
 pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
-                                      columns = NULL, threads = 1L) {
+                                      columns = NULL, threads = NULL) {
   if (!pcodec_native_available()) {
     stop("native Pcodec is not available in this build", call. = FALSE)
   }
-  threads <- pcodec_validate_threads(threads)
+  threads <- pcodec_native_default_threads(region = region, variants = variants,
+                                            threads = threads)
   manifest <- store$manifest
   index <- pcodec_native_read_index(store)
   n <- as.integer(manifest$n_rows %||% manifest$rows)

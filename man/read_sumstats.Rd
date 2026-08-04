@@ -4,7 +4,7 @@
 \description{Reads decoded summary statistics from a CompreSSoR store.}
 \usage{
 read_sumstats(store, region = NULL, variants = NULL, columns = NULL,
-              use_cache = FALSE, threads = 1L)
+              use_cache = FALSE, threads = NULL)
 }
 \arguments{
   \item{store}{A \code{compressor_store} object or store directory path.}
@@ -14,8 +14,10 @@ read_sumstats(store, region = NULL, variants = NULL, columns = NULL,
   \item{columns}{Optional output columns to return.}
   \item{use_cache}{Use an existing q8 cache for a regional read when available.}
   \item{threads}{Number of Unix worker processes for independent Pcodec
-  block/key reads. Full sequential reads are already column-streamed;
-  Windows remains serial.}
+  stream/block reads. \code{NULL} selects four workers for whole-store reads
+  and one worker for regional or canonical-key reads. Set \code{threads}
+  explicitly, or use \code{options(CompreSSoR.pcodec.threads = n)}. Windows
+  remains serial.}
 }
 \value{A data frame with ordinary summary-statistics columns.}
 \examples{

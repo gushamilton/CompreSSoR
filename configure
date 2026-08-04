@@ -20,7 +20,7 @@ fi
 
 target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
 mkdir -p "$target_dir"
-if ! "$cargo_bin" build --locked \
+if ! RUSTFLAGS="${COMPRESSOR_RUSTFLAGS:-}" "$cargo_bin" build --locked \
      --manifest-path "$package_root/src/pcodec_native/Cargo.toml" \
      --release --target-dir "$target_dir" >/dev/null 2>&1; then
   printf '%s\n' 'CompreSSoR could not build its native Pcodec backend with Cargo.' >&2
