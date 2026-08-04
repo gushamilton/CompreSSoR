@@ -68,8 +68,27 @@ pcodec_native_projection <- function(out, columns = NULL) {
   out
 }
 
+pcodec_validate_threads <- function(threads) {
+  if (length(threads) != 1L || !is.numeric(threads) || is.na(threads) ||
+      !is.finite(threads) || threads < 1 || threads != floor(threads)) {
+    stop("threads must be one positive integer", call. = FALSE)
+  }
+  as.integer(threads)
+}
+
+pcodec_parallel_lapply <- function(X, FUN, threads = 1L) {
+  threads <- pcodec_validate_threads(threads)
+  if (length(X) <= 1L || threads <= 1L) return(lapply(X, FUN))
+  # Forked workers are safe here because each worker opens independent files
+  # and calls the standalone Pcodec decoder on private R objects. Windows has
+  # no fork backend; retain deterministic serial behaviour there.
+  if (.Platform$OS.type == "windows") return(lapply(X, FUN))
+  parallel::mclapply(X, FUN, mc.cores = min(threads, length(X)),
+                     mc.preschedule = TRUE)
+}
+
 pcodec_read_store <- function(store, region = NULL, variants = NULL,
-                               columns = NULL) {
+                               columns = NULL, threads = 1L) {
   store <- pcodec_open_store_cached(store)
   if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
     stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",
@@ -77,7 +96,7 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL,
   }
   pcodec_native_projection(
     pcodec_native_read_store(store, region = region, variants = variants,
-                             columns = columns),
+                             columns = columns, threads = threads),
     columns = columns
   )
 }
@@ -89,10 +108,7 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
   if (!length(columns) || anyNA(columns) || any(!nzchar(columns))) {
     stop("columns must contain at least one non-empty column name", call. = FALSE)
   }
-  if (!is.numeric(threads) || length(threads) != 1L || is.na(threads) ||
-      !is.finite(threads) || threads < 1 || threads != floor(threads)) {
-    stop("threads must be one positive integer", call. = FALSE)
-  }
+  threads <- pcodec_validate_threads(threads)
   stores <- lapply(stores, pcodec_open_store_cached)
   if (any(!vapply(stores, function(store) {
     store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS
@@ -106,9 +122,10 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     }
     unique(trimws(keys))
   })
-  decoded <- Map(function(store, keys) {
-    pcodec_read_store(store, variants = keys, columns = columns)
-  }, stores, variants)
+  decoded <- pcodec_parallel_lapply(seq_along(stores), function(i) {
+    pcodec_read_store(stores[[i]], variants = variants[[i]], columns = columns,
+                      threads = 1L)
+  }, threads = threads)
   names(decoded) <- names(stores)
   decoded
 }

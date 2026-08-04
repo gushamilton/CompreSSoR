@@ -196,6 +196,27 @@ sparse <- read_sumstats(
 )
 ```
 
+For independent block or canonical-key reads, set `threads` to run several
+Pcodec readers concurrently on Unix-like systems. This is most useful when a
+request spans many blocks or when reading the same instruments from several
+GWAS files; the default remains serial and Windows falls back to serial reads:
+
+```r
+hits <- read_sumstats(
+  store, variants = instruments,
+  columns = c("beta", "standard_error"), threads = 4
+)
+
+grid <- read_sumstats_batch(
+  c(exposure = "exposure.cpr", outcome = "outcome.cpr"),
+  variants = instruments,
+  columns = c("beta", "standard_error"), threads = 4
+)
+```
+
+The parallel path uses independent R worker processes, each decoding private
+Pcodec blocks; it does not change the file format or decoded values.
+
 `fastMR` can read the requested canonical keys directly from `.cpr` stores and
 send the matched beta/SE matrices into its compiled estimator:
 

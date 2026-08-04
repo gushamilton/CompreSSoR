@@ -507,7 +507,8 @@ pcodec_native_read_all_exceptions <- function(store, index) {
 }
 
 pcodec_native_full_read <- function(store, index, requested, need_identity,
-                                     need_z, need_se, need_eaf) {
+                                     need_z, need_se, need_eaf, threads = 1L) {
+  threads <- pcodec_validate_threads(threads)
   n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
   semantic <- store$manifest$semantic_codec %||% list()
   z_count <- as.integer(semantic$z_count %||% 510L)
@@ -520,10 +521,12 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   se_range <- as.numeric(unlist(semantic$se_residual_range %||% c(-1, 1)))
   needed <- unique(c(if (need_z) "z", if (need_se) "se", if (need_eaf) "eaf"))
   if (need_se) needed <- unique(c(needed, "eaf"))
-  codes <- list()
-  for (stream in needed) {
-    codes[[stream]] <- pcodec_native_read_stream_all(store, index, stream)
-  }
+  streams <- unique(c(needed, if (need_identity) c("position", "substitution")))
+  decoded_streams <- pcodec_parallel_lapply(
+    streams, function(stream) pcodec_native_read_stream_all(store, index, stream),
+    threads = threads
+  )
+  codes <- stats::setNames(decoded_streams, streams)
   if ("z" %in% needed) z_code <- codes$z else z_code <- rep.int(z_count, n)
   if ("se" %in% needed) se_code <- codes$se else se_code <- rep.int(se_count, n)
   if ("eaf" %in% needed) eaf_code <- codes$eaf else eaf_code <- rep.int(0L, n)
@@ -546,8 +549,8 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
               effect_allele_frequency = numeric(n))
   output <- data.frame(row = seq_len(n) - 1L, stringsAsFactors = FALSE)
   if (need_identity) {
-    position <- pcodec_native_read_stream_all(store, index, "position")
-    substitution <- pcodec_native_read_stream_all(store, index, "substitution")
+    position <- codes$position
+    substitution <- codes$substitution
     output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution),
                                           stringsAsFactors = FALSE))
   }
@@ -685,10 +688,11 @@ pcodec_native_empty_result <- function(columns) {
 }
 
 pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
-                                      columns = NULL) {
+                                      columns = NULL, threads = 1L) {
   if (!pcodec_native_available()) {
     stop("native Pcodec is not available in this build", call. = FALSE)
   }
+  threads <- pcodec_validate_threads(threads)
   manifest <- store$manifest
   index <- pcodec_native_read_index(store)
   n <- as.integer(manifest$n_rows %||% manifest$rows)
@@ -733,7 +737,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   }
   if (is.null(region) && is.null(variants)) {
     output <- pcodec_native_full_read(store, index, requested, identity_needed,
-                                      need_z, need_se, need_eaf)
+                                      need_z, need_se, need_eaf, threads = threads)
     attr(output, "source_bytes_read") <- NA_real_
     return(output)
   }
@@ -761,13 +765,12 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       key_candidates <- intersect(key_candidates,
                                   pcodec_native_block_ids_for_rows(index, row_targets, "key"))
     }
-    key_parts <- list()
-    for (key_block in key_candidates) {
+    read_key_candidate <- function(key_block) {
       meta <- key_blocks[[key_block]]
       rows <- as.integer(meta$row_start):(as.integer(meta$row_stop) - 1L)
       position <- pcodec_native_read_stream_block(store, index, "position", key_block)
       substitution <- pcodec_native_read_stream_block(store, index, "substitution", key_block)
-      source_bytes <- source_bytes +
+      bytes <-
         as.numeric(index$streams$position$blocks[[key_block]]$length) +
         as.numeric(index$streams$substitution$blocks[[key_block]]$length)
       keep <- rep(TRUE, length(rows))
@@ -777,12 +780,20 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         keep <- keep & paste(position, substitution, sep = ":") %in%
           paste(key_targets$position, key_targets$substitution, sep = ":")
       }
-      if (any(keep)) {
-        key_parts[[length(key_parts) + 1L]] <- data.frame(
+      part <- if (any(keep)) {
+        data.frame(
           row = rows[keep], position = position[keep],
           substitution = substitution[keep], stringsAsFactors = FALSE)
-      }
+      } else NULL
+      list(part = part, source_bytes = bytes)
     }
+    key_results <- pcodec_parallel_lapply(key_candidates, read_key_candidate,
+                                          threads = threads)
+    source_bytes <- source_bytes + sum(vapply(key_results,
+                                              function(result) result$source_bytes,
+                                              numeric(1)))
+    key_parts <- lapply(key_results, `[[`, "part")
+    key_parts <- key_parts[!vapply(key_parts, is.null, logical(1))]
     if (!length(key_parts)) return(pcodec_native_empty_result(columns))
     selected <- do.call(rbind, key_parts)
     selected <- selected[order(selected$row), , drop = FALSE]
@@ -798,26 +809,28 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   }
   if (!length(candidate_blocks)) return(pcodec_native_empty_result(columns))
 
-  results <- list()
-  for (block in candidate_blocks) {
+  decode_value_block <- function(block) {
     meta <- value_blocks[[block]]
     row_start <- as.integer(meta$row_start)
     row_stop <- as.integer(meta$row_stop)
     rows <- row_start:(row_stop - 1L)
+    block_source_bytes <- 0
     if (identity_needed) {
       keep <- rows %in% selected_rows
     } else {
       keep <- if (is.null(row_targets)) rep(TRUE, length(rows)) else rows %in% row_targets
     }
-    if (!any(keep)) next
+    if (!any(keep)) return(list(part = NULL, source_bytes = block_source_bytes))
     value_codes <- list()
     for (stream in intersect(c("z", "eaf", "se"), needed)) {
       value_codes[[stream]] <- pcodec_native_read_stream_block(store, index, stream, block)
-      source_bytes <- source_bytes + as.numeric(index$streams[[stream]]$blocks[[block]]$length)
+      block_source_bytes <- block_source_bytes +
+        as.numeric(index$streams[[stream]]$blocks[[block]]$length)
     }
     exceptions <- pcodec_native_read_exception_block(store, index, block)
     if (nrow(exceptions)) {
-      source_bytes <- source_bytes + as.numeric(index$exceptions$blocks[[block]]$length)
+      block_source_bytes <- block_source_bytes +
+        as.numeric(index$exceptions$blocks[[block]]$length)
     }
     centre_id <- floor(row_start / as.integer(
       manifest$semantic_codec$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
@@ -840,8 +853,15 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
     if ("beta" %in% requested) part$beta <- part$z * part$standard_error
     if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
-    results[[length(results) + 1L]] <- part
+    list(part = part, source_bytes = block_source_bytes)
   }
+  block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
+                                          threads = threads)
+  source_bytes <- source_bytes + sum(vapply(block_results,
+                                            function(result) result$source_bytes,
+                                            numeric(1)))
+  results <- lapply(block_results, `[[`, "part")
+  results <- results[!vapply(results, is.null, logical(1))]
   if (!length(results)) return(pcodec_native_empty_result(columns))
   output <- do.call(rbind, results)
   output <- output[order(output$row), , drop = FALSE]

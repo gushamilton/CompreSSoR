@@ -539,6 +539,9 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #' @param variants Optional variant IDs, zero-based row IDs, or—for Pcodec
 #'   stores—canonical `chromosome:position:REF:ALT` keys.
 #' @param columns Optional output columns.
+#' @param threads Number of Unix worker processes for independent Pcodec
+#'   block/key reads. The default is one; full sequential reads are already
+#'   column-streamed. On Windows, reads remain serial.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.
 #' @examples
@@ -548,11 +551,13 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #'               columns = c("beta", "standard_error", "p_value"))
 #' }
 #' @export
-read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL, use_cache = FALSE) {
+read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
+                          use_cache = FALSE, threads = 1L) {
   store <- if (inherits(store, "compressor_store")) store else pcodec_open_store_cached(store)
   if (identical(store$manifest$backend, "pcodec")) {
     if (isTRUE(use_cache)) warning("use_cache is ignored for the block-framed Pcodec backend", call. = FALSE)
-    return(pcodec_read_store(store, region = region, variants = variants, columns = columns))
+    return(pcodec_read_store(store, region = region, variants = variants,
+                             columns = columns, threads = threads))
   }
   require_parquet_backend("reading a Parquet CompreSSoR store", dplyr = TRUE)
   cache_columns <- c("chromosome", "base_pair_location", "effect_allele", "other_allele",
@@ -613,16 +618,18 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 
 #' Read canonical variants from several compressed GWAS files
 #'
-#' Starts the Pcodec runtime once for the complete batch. This is substantially
-#' faster than repeated [read_sumstats()] calls when an analysis extracts a
-#' small instrument set from several GWAS files.
+#' Reads the requested canonical keys from several GWAS files. With
+#' `threads > 1` on Unix-like systems, independent stores are decoded in
+#' parallel; this is substantially faster than repeated [read_sumstats()]
+#' calls when an analysis extracts a small instrument set from several files.
 #'
 #' @param stores A non-empty list or character vector of Pcodec stores.
 #' @param variants A canonical `chromosome:position:REF:ALT` vector shared by
 #'   every store, or one such vector per store in a list.
 #' @param columns Output columns requested from every store.
-#' @param threads Number of stores to decode concurrently inside the shared
-#'   Pcodec process.
+#' @param threads Number of independent Pcodec store readers to run in
+#'   parallel on Unix-like systems. The default is one. Windows uses serial
+#'   reads for portability.
 #' @return A list of decoded data frames in the same order as `stores`.
 #' @examples
 #' \dontrun{
@@ -667,8 +674,10 @@ read_sumstats_batch <- function(
 #' decoded <- decompress_sumstats("gwas.cpr")
 #' }
 #' @export
-decompress_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL, use_cache = FALSE) {
-  read_sumstats(store, region = region, variants = variants, columns = columns, use_cache = use_cache)
+decompress_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
+                                use_cache = FALSE, threads = 1L) {
+  read_sumstats(store, region = region, variants = variants, columns = columns,
+                threads = threads, use_cache = use_cache)
 }
 
 #' Validate a CompreSSoR store

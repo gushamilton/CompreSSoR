@@ -27,7 +27,9 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
   expect_true(validate_compressor(store, full = TRUE)$valid)
 
   full <- read_sumstats(store)
+  full_parallel <- read_sumstats(store, threads = 2L)
   expect_equal(nrow(full), nrow(input))
+  expect_equal(full_parallel, full)
   expect_false("row" %in% names(full))
   expect_false("variant_id" %in% names(full))
   expect_equal(full[c("chromosome", "base_pair_location", "effect_allele", "other_allele")],
@@ -77,7 +79,11 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   observed <- read_sumstats_batch(c(path1, path2), list(keys[c(1, 3, 100)], keys[2]),
                                   columns = c("z", "standard_error", "effect_allele_frequency"),
                                   threads = 2L)
+  serial <- read_sumstats_batch(c(path1, path2), list(keys[c(1, 3, 100)], keys[2]),
+                                columns = c("z", "standard_error", "effect_allele_frequency"),
+                                threads = 1L)
   expect_length(observed, 2L)
+  expect_equal(observed, serial)
   expect_equal(nrow(observed[[1L]]), 3L)
   expect_equal(nrow(observed[[2L]]), 1L)
   expect_equal(observed[[1L]]$z[1], input$z[1], tolerance = 1e-5)
@@ -126,6 +132,22 @@ test_that("native Pcodec keeps configurable stream frames aligned", {
                                                 "effect_allele_frequency"))
   expect_equal(nrow(observed), nrow(input))
   expect_lt(max(abs(observed$z - input$beta / input$standard_error), na.rm = TRUE), 0.02)
+
+  keys <- compressor_variant_key(
+    input$chromosome[seq(1L, nrow(input), by = 5000L)],
+    input$base_pair_location[seq(1L, nrow(input), by = 5000L)],
+    input$other_allele[seq(1L, nrow(input), by = 5000L)],
+    input$effect_allele[seq(1L, nrow(input), by = 5000L)]
+  )
+  serial <- read_sumstats(store, variants = keys,
+                          columns = c("chromosome", "base_pair_location", "z",
+                                      "standard_error", "effect_allele_frequency"),
+                          threads = 1L)
+  parallel <- read_sumstats(store, variants = keys,
+                            columns = c("chromosome", "base_pair_location", "z",
+                                        "standard_error", "effect_allele_frequency"),
+                            threads = 2L)
+  expect_equal(parallel, serial)
 })
 
 test_that("native exception frames use Zstandard and round trip", {
