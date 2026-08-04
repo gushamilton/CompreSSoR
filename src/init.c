@@ -15,6 +15,8 @@ extern SEXP compressor_pcodec_compress_u32(SEXP, SEXP, SEXP);
 extern SEXP compressor_pcodec_decompress_u8(SEXP, SEXP);
 extern SEXP compressor_pcodec_decompress_u16(SEXP, SEXP);
 extern SEXP compressor_pcodec_decompress_u32(SEXP, SEXP);
+extern SEXP compressor_zstd_compress(SEXP, SEXP);
+extern SEXP compressor_zstd_decompress(SEXP, SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
     {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 20},
@@ -26,6 +28,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"compressor_pcodec_decompress_u8", (DL_FUNC) &compressor_pcodec_decompress_u8, 2},
     {"compressor_pcodec_decompress_u16", (DL_FUNC) &compressor_pcodec_decompress_u16, 2},
     {"compressor_pcodec_decompress_u32", (DL_FUNC) &compressor_pcodec_decompress_u32, 2},
+    {"compressor_zstd_compress", (DL_FUNC) &compressor_zstd_compress, 2},
+    {"compressor_zstd_decompress", (DL_FUNC) &compressor_zstd_decompress, 2},
     {NULL, NULL, 0}
 };
 

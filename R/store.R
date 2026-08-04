@@ -340,7 +340,7 @@ open_compressor <- function(path) {
     verify_pcodec_manifest(file.path(path, "manifest.json"))
   }
   if (identical(manifest$backend, "pcodec") &&
-      !identical(manifest$format_version, PCODEC_NATIVE_FORMAT)) {
+      !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {
     stop("unsupported or archived Pcodec format version: ",
          manifest$format_version %||% "missing",
          "; this build reads native 0.4 stores only", call. = FALSE)

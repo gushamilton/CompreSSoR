@@ -4,7 +4,8 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.0-pcodec-native"
+PCODEC_NATIVE_FORMAT <- "0.4.1-pcodec-native"
+PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 32768L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 32768L
@@ -51,6 +52,22 @@ pcodec_native_decompress <- function(blob, n, dtype) {
                 PACKAGE = "CompreSSoR"),
     stop("unsupported native Pcodec dtype: ", dtype, call. = FALSE)
   )
+}
+
+pcodec_native_zstd_compress <- function(blob, level = 19L) {
+  if (!pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  .Call("compressor_zstd_compress", blob, as.integer(level),
+        PACKAGE = "CompreSSoR")
+}
+
+pcodec_native_zstd_decompress <- function(blob, n) {
+  if (!pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  .Call("compressor_zstd_decompress", blob, as.integer(n),
+        PACKAGE = "CompreSSoR")
 }
 
 pcodec_native_offsets <- function() {
@@ -210,14 +227,17 @@ pcodec_native_write_exceptions <- function(exceptions, output, blocks) {
   for (block in seq_along(blocks)) {
     inside <- exceptions$row >= blocks[[block]]$row_start &
       exceptions$row < blocks[[block]]$row_stop
-    blob <- pcodec_native_exception_bytes(exceptions[inside, , drop = FALSE])
+    raw_blob <- pcodec_native_exception_bytes(exceptions[inside, , drop = FALSE])
+    blob <- if (length(raw_blob)) pcodec_native_zstd_compress(raw_blob, level = 19L) else raw()
     if (length(blob)) writeBin(blob, connection, useBytes = TRUE)
     locations[[block]] <- list(
-      offset = offset, length = length(blob), count = sum(inside)
+      offset = offset, length = length(blob), raw_length = length(raw_blob),
+      count = sum(inside)
     )
     offset <- offset + length(blob)
   }
-  list(file = basename(path), bytes = offset, blocks = locations)
+  list(file = basename(path), bytes = offset, codec = "zstd", record_bytes = 17L,
+       blocks = locations)
 }
 
 pcodec_native_write_store <- function(data, output, metadata = list()) {
@@ -293,12 +313,13 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       p_value = "derived as 2 * pnorm(-abs(z))"
     ),
     codec = list(
-      name = "pcodec_native_standalone_z9_eaf8_se6",
+      name = "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
       compression = "Pcodec standalone stream per 32768-row block",
       z_bits = 9L, eaf_bits = 8L, se_bits = 6L,
       p_storage = "omitted; derived from z",
-      beta_storage = "omitted; derived from z and standard_error"
+      beta_storage = "omitted; derived from z and standard_error",
+      exception_storage = "zstd level 19, 17-byte float32 records"
     ),
     files = files, logical_columns = c("z", "standard_error", "effect_allele_frequency"),
     derived_columns = list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))"),
@@ -451,6 +472,13 @@ pcodec_native_read_exception_block <- function(store, index, block) {
   blob <- pcodec_native_read_blob(
     file.path(store$path, index$exceptions$file), location$offset, location$length
   )
+  codec <- index$exceptions$codec %||% "raw"
+  if (identical(codec, "zstd")) {
+    raw_length <- as.integer(location$raw_length %||% (as.integer(location$count) * 17L))
+    blob <- pcodec_native_zstd_decompress(blob, raw_length)
+  } else if (!identical(codec, "raw")) {
+    stop("unsupported native exception codec: ", codec, call. = FALSE)
+  }
   pcodec_native_read_exception_bytes(blob, as.integer(location$count))
 }
 

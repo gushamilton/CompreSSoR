@@ -2,7 +2,7 @@
 
 use std::ptr;
 
-use libc::{c_uchar, c_uint, c_void, size_t};
+use libc::{c_uchar, c_int, c_uint, c_void, size_t};
 use pco::data_types::{Number, NumberType};
 use pco::standalone::guarantee;
 use pco::{match_number_enum, ChunkConfig, PagingSpec};
@@ -127,4 +127,51 @@ pub extern "C" fn compressor_pco_decompress_into(
     match_number_enum!(dtype_enum, NumberType<T> => {
         decompress_into::<T>(compressed, compressed_len, dst, dst_cap, n_written)
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn compressor_zstd_compress_into(
+    input: *const c_void,
+    input_len: size_t,
+    level: c_int,
+    dst: *mut c_void,
+    dst_cap: size_t,
+    n_written: *mut size_t,
+) -> PcoError {
+    let source = unsafe { std::slice::from_raw_parts(input as *const u8, input_len) };
+    let compressed = match zstd::bulk::compress(source, level) {
+        Ok(value) => value,
+        Err(_) => return PcoError::PcoCompressionError,
+    };
+    if compressed.len() > dst_cap {
+        return PcoError::PcoCompressionError;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(compressed.as_ptr(), dst as *mut u8, compressed.len());
+        *n_written = compressed.len();
+    }
+    PcoError::PcoSuccess
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn compressor_zstd_decompress_into(
+    input: *const c_void,
+    input_len: size_t,
+    dst: *mut c_void,
+    dst_cap: size_t,
+    n_written: *mut size_t,
+) -> PcoError {
+    let source = unsafe { std::slice::from_raw_parts(input as *const u8, input_len) };
+    let decompressed = match zstd::bulk::decompress(source, dst_cap) {
+        Ok(value) => value,
+        Err(_) => return PcoError::PcoDecompressionError,
+    };
+    if decompressed.len() > dst_cap {
+        return PcoError::PcoDecompressionError;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(decompressed.as_ptr(), dst as *mut u8, decompressed.len());
+        *n_written = decompressed.len();
+    }
+    PcoError::PcoSuccess
 }

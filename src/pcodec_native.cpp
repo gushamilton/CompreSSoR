@@ -146,6 +146,46 @@ SEXP decompress_numeric_u32(SEXP compressed, SEXP n) {
   UNPROTECT(1);
   return output;
 }
+
+SEXP zstd_compress(SEXP input, SEXP level) {
+  if (TYPEOF(input) != RAWSXP) Rf_error("Zstandard input must be a raw vector");
+  const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
+  if (n == 0) return Rf_allocVector(RAWSXP, 0);
+  const int compression_level = Rf_asInteger(level);
+  const std::size_t capacity = n + (n / 8) + 131072;
+  SEXP output = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(capacity)));
+  std::size_t written = 0;
+  check_status(compressor_zstd_compress_into(
+      RAW(input), n, compression_level, RAW(output), capacity, &written),
+    "Zstandard compression");
+  if (written != capacity) {
+    SEXP trimmed = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(written)));
+    if (written) std::memcpy(RAW(trimmed), RAW(output), written);
+    UNPROTECT(2);
+    return trimmed;
+  }
+  UNPROTECT(1);
+  return output;
+}
+
+SEXP zstd_decompress(SEXP input, SEXP expected) {
+  if (TYPEOF(input) != RAWSXP) Rf_error("Zstandard input must be a raw vector");
+  const R_xlen_t expected_length = Rf_asInteger(expected);
+  if (expected_length < 0) Rf_error("expected decompressed length must be non-negative");
+  if (expected_length == 0) return Rf_allocVector(RAWSXP, 0);
+  SEXP output = PROTECT(Rf_allocVector(RAWSXP, expected_length));
+  std::size_t written = 0;
+  check_status(compressor_zstd_decompress_into(
+      RAW(input), static_cast<std::size_t>(XLENGTH(input)), RAW(output),
+      static_cast<std::size_t>(expected_length), &written),
+    "Zstandard decompression");
+  if (written != static_cast<std::size_t>(expected_length)) {
+    UNPROTECT(1);
+    Rf_error("Zstandard returned %zu bytes; expected %td", written, expected_length);
+  }
+  UNPROTECT(1);
+  return output;
+}
 }
 
 extern "C" SEXP compressor_pcodec_native_available() {
@@ -176,6 +216,14 @@ extern "C" SEXP compressor_pcodec_decompress_u32(SEXP compressed, SEXP n) {
   return decompress_numeric_u32(compressed, n);
 }
 
+extern "C" SEXP compressor_zstd_compress(SEXP input, SEXP level) {
+  return zstd_compress(input, level);
+}
+
+extern "C" SEXP compressor_zstd_decompress(SEXP input, SEXP expected) {
+  return zstd_decompress(input, expected);
+}
+
 #else
 
 extern "C" SEXP compressor_pcodec_native_available() {
@@ -198,6 +246,12 @@ extern "C" SEXP compressor_pcodec_decompress_u16(SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 extern "C" SEXP compressor_pcodec_decompress_u32(SEXP, SEXP) {
+  Rf_error("native Pcodec is not available in this build");
+}
+extern "C" SEXP compressor_zstd_compress(SEXP, SEXP) {
+  Rf_error("native Pcodec is not available in this build");
+}
+extern "C" SEXP compressor_zstd_decompress(SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 

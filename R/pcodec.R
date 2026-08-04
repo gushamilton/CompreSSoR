@@ -71,7 +71,7 @@ pcodec_native_projection <- function(out, columns = NULL) {
 pcodec_read_store <- function(store, region = NULL, variants = NULL,
                                columns = NULL) {
   store <- pcodec_open_store_cached(store)
-  if (!identical(store$manifest$format_version, PCODEC_NATIVE_FORMAT)) {
+  if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
     stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",
          call. = FALSE)
   }
@@ -95,7 +95,7 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
   }
   stores <- lapply(stores, pcodec_open_store_cached)
   if (any(!vapply(stores, function(store) {
-    identical(store$manifest$format_version, PCODEC_NATIVE_FORMAT)
+    store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS
   }, logical(1)))) {
     stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",
          call. = FALSE)
@@ -115,7 +115,7 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
 
 pcodec_validate_store <- function(store, full = FALSE) {
   store <- pcodec_open_store_cached(store)
-  if (!identical(store$manifest$format_version, PCODEC_NATIVE_FORMAT)) {
+  if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
     stop("this CompreSSoR build validates native 0.4 stores only; the historical Python-backed store is archived",
          call. = FALSE)
   }

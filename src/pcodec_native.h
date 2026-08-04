@@ -27,6 +27,12 @@ CompressorPcoError compressor_pco_compress_into(
 CompressorPcoError compressor_pco_decompress_into(
     const void* compressed, size_t compressed_len, unsigned char dtype,
     void* dst, size_t dst_cap, size_t* n_written);
+CompressorPcoError compressor_zstd_compress_into(
+    const void* input, size_t input_len, int level, void* dst, size_t dst_cap,
+    size_t* n_written);
+CompressorPcoError compressor_zstd_decompress_into(
+    const void* input, size_t input_len, void* dst, size_t dst_cap,
+    size_t* n_written);
 
 #ifdef __cplusplus
 }

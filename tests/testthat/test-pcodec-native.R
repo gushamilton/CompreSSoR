@@ -19,8 +19,8 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
   path <- tempfile("pcodec-native-")
   store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  expect_equal(store$manifest$format_version, "0.4.0-pcodec-native")
-  expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se6")
+  expect_equal(store$manifest$format_version, "0.4.1-pcodec-native")
+  expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions")
   expect_false(file.exists(file.path(path, "variants.parquet")))
   expect_true(validate_compressor(store, full = TRUE)$valid)
 
@@ -80,4 +80,13 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   expect_equal(nrow(observed[[2L]]), 1L)
   expect_equal(observed[[1L]]$z[1], input$z[1], tolerance = 1e-5)
   expect_equal(observed[[1L]]$effect_allele_frequency[2], input$effect_allele_frequency[3])
+})
+
+test_that("native exception frames use Zstandard and round trip", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  raw <- as.raw(rep(c(0L, 1L, 2L, 3L, 255L), 2000L))
+  encoded <- CompreSSoR:::pcodec_native_zstd_compress(raw, level = 19L)
+  expect_lt(length(encoded), length(raw))
+  expect_identical(CompreSSoR:::pcodec_native_zstd_decompress(encoded, length(raw)), raw)
 })
