@@ -48,10 +48,15 @@ rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
 | Native 0.4 measure | Result |
 |---|---:|
 | Store size | **1,679,354 bytes** |
-| Write time | **3.55 s** |
-| Three-column full-read median | **0.020 s** |
+| Write time | **3.578 s** |
+| Full read, all columns | **0.048 s** |
+| Full read, Z/SE/EAF only | **0.020 s** |
+| 10 kb region read | **0.004 s** |
+| 100 canonical-key read | **0.650 s** |
 
-This is a reproducible engineering check for the installed native backend;
+Each access number is the median of five runs; the canonical-key test requests
+100 keys. The store passed full validation and all checksums. This is a
+reproducible engineering check for the installed native backend;
 the historical real-GWAS table above predates the native-only format.
 
 See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)

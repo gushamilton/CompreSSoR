@@ -187,11 +187,13 @@ the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
 and round-trip tests rather than exposing that upstream API directly.
 
 On the Mac mini, the native-only smoke benchmark uses a coherent one-million-
-row synthetic stream (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm reads of
-the three core numeric columns. The recorded native result is retained in the
-README; it is an engineering smoke benchmark, not a claim about every GWAS or
-sparse workload. The real-GWAS suite should be regenerated for the native
-format before making a new production headline.
+row synthetic stream (`Z ~ N(0, 1)`, `beta = Z × SE`). The store is 1,679,354
+bytes and takes 3.578 s to write. Five-run medians are 0.048 s for all-column
+full load, 0.020 s for Z/SE/EAF only, 0.004 s for a 10 kb region, and 0.650 s
+for 100 canonical-key reads. Full validation passed. This is an engineering
+smoke benchmark, not a claim about every GWAS or sparse workload; the real-
+GWAS suite should be regenerated for the native format before making a new
+production headline.
 
 ## Benchmark interpretation
 
