@@ -4,7 +4,10 @@ set -eu
 
 package_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 makevars="$package_root/src/Makevars"
-if [ -d /opt/homebrew/opt/rust/bin ]; then
+if [ -d /opt/homebrew/opt/rustup/bin ]; then
+  PATH=/opt/homebrew/opt/rustup/bin:$PATH
+  export PATH
+elif [ -d /opt/homebrew/opt/rust/bin ]; then
   PATH=/opt/homebrew/opt/rust/bin:$PATH
   export PATH
 fi
@@ -20,13 +23,75 @@ fi
 
 target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
 mkdir -p "$target_dir"
+# Cargo follows the host architecture by default. R can legitimately run
+# under Rosetta, so build for the architecture of the R runtime rather than
+# the architecture of the machine running configure. During R CMD check the
+# helper binaries are not always on PATH, so retain an R_HOME fallback and a
+# compiler-flag fallback.
+rscript_bin="$(command -v Rscript 2>/dev/null || true)"
+# R CMD check prepends a wrapper called Rscript that is intentionally not a
+# general-purpose interpreter. Prefer the real framework/system binary below
+# when that wrapper is present.
+case "$rscript_bin" in
+  */R_check_bin/*) rscript_bin="" ;;
+esac
+if [ -z "$rscript_bin" ]; then
+  for candidate in \
+      "${R_HOME:-}/bin/Rscript" \
+      /Library/Frameworks/R.framework/Resources/bin/Rscript \
+      /usr/local/bin/Rscript \
+      /opt/homebrew/bin/Rscript \
+      /usr/lib/R/bin/Rscript \
+      /usr/bin/Rscript; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      rscript_bin="$candidate"
+      break
+    fi
+  done
+fi
+r_arch=""
+r_platform=""
+if [ -n "$rscript_bin" ]; then
+  r_arch="$("$rscript_bin" --vanilla -e 'cat(R.version$arch)' 2>/dev/null || true)"
+  r_platform="$("$rscript_bin" --vanilla -e 'cat(R.version$platform)' 2>/dev/null || true)"
+fi
+if [ -z "$r_arch" ] && [ -n "${R_ARCH:-}" ]; then
+  r_arch="${R_ARCH#/}"
+fi
+if [ -z "$r_arch" ]; then
+  r_cxx17="$(R CMD config CXX17 2>/dev/null || true)"
+  case "$r_cxx17" in
+    *"-arch x86_64"*) r_arch="x86_64" ;;
+    *"-arch arm64"*) r_arch="arm64" ;;
+  esac
+fi
+if [ -z "$r_platform" ]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) r_platform="unknown-apple-darwin" ;;
+    Linux) r_platform="unknown-linux-gnu" ;;
+  esac
+fi
+cargo_target=""
+case "$r_platform:$r_arch" in
+  *-apple-darwin*:x86_64) cargo_target="x86_64-apple-darwin" ;;
+  *-apple-darwin*:arm64|*-apple-darwin*:aarch64) cargo_target="aarch64-apple-darwin" ;;
+  *-linux-gnu*:x86_64) cargo_target="x86_64-unknown-linux-gnu" ;;
+  *-linux-gnu*:aarch64|*-linux-gnu*:arm64) cargo_target="aarch64-unknown-linux-gnu" ;;
+esac
+
+cargo_target_args=""
+native_library="$target_dir/release/libcompressor_pcodec_native.a"
+if [ -n "$cargo_target" ]; then
+  cargo_target_args="--target $cargo_target"
+  native_library="$target_dir/$cargo_target/release/libcompressor_pcodec_native.a"
+fi
+
 if ! RUSTFLAGS="${COMPRESSOR_RUSTFLAGS:-}" "$cargo_bin" build --locked \
      --manifest-path "$package_root/src/pcodec_native/Cargo.toml" \
-     --release --target-dir "$target_dir" >/dev/null 2>&1; then
+     --release --target-dir "$target_dir" $cargo_target_args >/dev/null 2>&1; then
   printf '%s\n' 'CompreSSoR could not build its native Pcodec backend with Cargo.' >&2
   exit 1
 fi
-native_library="$target_dir/release/libcompressor_pcodec_native.a"
 if [ ! -f "$native_library" ]; then
   printf '%s\n' 'Cargo completed without producing the native Pcodec library.' >&2
   exit 1

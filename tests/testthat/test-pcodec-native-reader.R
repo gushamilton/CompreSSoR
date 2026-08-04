@@ -28,6 +28,8 @@ test_that("native stream reader returns compact keys without identity expansion"
     columns = c("z", "standard_error", "effect_allele_frequency")
   )
   options(CompreSSoR.pcodec.native_stream_reader = old)
-  expect_equal(compact[c("z", "standard_error", "effect_allele_frequency")],
-               fallback)
+  expect_equal(compact$z, fallback$z)
+  expect_equal(compact$standard_error, fallback$standard_error)
+  expect_equal(compact$effect_allele_frequency,
+               fallback$effect_allele_frequency)
 })

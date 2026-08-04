@@ -88,6 +88,11 @@ pcodec_native_default_threads <- function(region = NULL, variants = NULL,
 
 pcodec_parallel_lapply <- function(X, FUN, threads = 1L) {
   threads <- pcodec_validate_threads(threads)
+  # R CMD check sets this guard to prevent packages from spawning an
+  # uncontrolled number of workers. Respect it while retaining the native
+  # four-thread default for ordinary whole-file reads.
+  check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
+  if (nzchar(check_limit) && check_limit != "false") threads <- min(threads, 2L)
   if (length(X) <= 1L || threads <= 1L) return(lapply(X, FUN))
   # Forked workers are safe here because each worker opens independent files
   # and calls the standalone Pcodec decoder on private R objects. Windows has

@@ -50,8 +50,7 @@ benchmark_table <- function(kind = c("finngen_10m", "pcodec_10m_threads", "paret
                                     "modes", "release_gate", "release_gate_followup",
                                     "pcodec_access", "storage_size",
                                     "storage_amortization", "native_se8",
-                                    "pareto_chr1", "finngen_10m",
-                                    "pcodec_10m_threads")) {
+                                    "pareto_chr1")) {
   kind <- match.arg(kind)
   current <- kind %in% c("finngen_10m", "pcodec_10m_threads")
   relative_path <- switch(kind,
