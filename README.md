@@ -1,29 +1,96 @@
 # CompreSSoR <img src="man/figures/logo.png" align="right" height="150" alt="CompreSSoR logo" />
 
-CompreSSoR imports GWAS summary statistics, optionally lifts them to GRCh38,
-harmonises their alleles, and writes a compact store with fast whole-genome,
-regional, and sparse-row reads.
+[![R-CMD-check](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The default format is a self-contained, page-indexed Pcodec store. It does not
-write rsIDs, textual variant IDs, chromosome strings, beta, or p-values for
-every row. Instead it stores a lossless GRCh38 SNV identity key and three
-independent quantised streams: Z9, EAF8, and SE6. Beta and p are reconstructed
-when read.
+**Compact, indexed GWAS summary statistics for R.**
 
-> The identity key is lossless. The standard numeric profile is intentionally
-> approximate. Its precision and exception rules are explicit below and in
-> every store manifest.
+CompreSSoR takes heterogeneous GWAS summary-statistics files, optionally lifts
+and harmonises them to GRCh38, and writes a compact store designed for fast
+whole-genome, regional, and sparse-variant access.
+
+The default `.cpr` format is self-contained. It stores exact GRCh38
+`chromosome:position:REF:ALT` identity plus quantised Z, EAF, and SE streams.
+It does not repeat rsIDs, textual variant IDs, beta, or p-values in every
+study. Beta and p are reconstructed when requested.
+
+> Variant identity is lossless. The standard numeric profile is deliberately
+> lossy and has explicit, tested error bounds. Use the Parquet exact profile
+> when double-precision numerical round trips are required.
+
+## At a glance
+
+Measured on a real 14,923,434-variant FinnGen GWAS on the Mac mini:
+
+| Result | CompreSSoR v0.3 |
+|---|---:|
+| Eight-column source TSV.gz | 201,658,018 bytes |
+| Self-contained `.cpr` store | 58,033,297 bytes |
+| Compression versus TSV.gz | **3.47×** |
+| Compression time | 62.982 s |
+| Whole-GWAS read, core fields | 0.732 s |
+| Whole-GWAS read, including derived beta/p | 0.730 s |
+| 1 Mb region, 4,325 variants | 0.003 s |
+| Random 25-variant request, 100-run median | 0.003 s |
+| Ten sparse reads plus 25 IVW estimates | 0.026 s |
+| Equivalent TSV.gz workflow | 17.120 s |
+
+These are measured engineering results, not universal guarantees. Full
+provenance and individual runs are committed under [`inst/benchmarks`](inst/benchmarks).
+
+## Contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Choose the right workflow](#choose-the-right-workflow)
+- [Input formats and recognised columns](#input-formats-and-recognised-columns)
+- [GRCh38 liftover and harmonisation](#grch38-liftover-and-harmonisation)
+- [The canonical ingestion reference](#the-canonical-ingestion-reference)
+- [Reading compressed GWAS files](#reading-compressed-gwas-files)
+- [Exactly what is stored](#exactly-what-is-stored)
+- [Accuracy and round-trip guarantees](#accuracy-and-round-trip-guarantees)
+- [Integrity and validation](#integrity-and-validation)
+- [Benchmarks](#benchmarks)
+- [FastMR integration](#fastmr-integration)
+- [Optional exact Parquet stores](#optional-exact-parquet-stores)
+- [Troubleshooting and FAQ](#troubleshooting-and-faq)
+- [Development and reproducibility](#development-and-reproducibility)
 
 ## Installation
 
+### 1. Install the R package
+
+The current v0.3 development release is on the pull-request branch:
+
 ```r
-# install.packages("remotes")
+install.packages("remotes")
+remotes::install_github(
+  "gushamilton/CompreSSoR@agent/pcodec-r-package",
+  upgrade = "never"
+)
+```
+
+After that branch is merged, install the main branch with:
+
+```r
 remotes::install_github("gushamilton/CompreSSoR")
 ```
 
-The default backend calls a small Python environment containing `numpy`,
-`pcodec`, and `zstandard`. Python 3.12 is recommended; the release runtime is
-pinned in `inst/python/requirements.txt` in the source repository:
+The package requires R, a C++17 compiler, and the R packages listed in
+[`DESCRIPTION`](DESCRIPTION). The optional capabilities have separate
+dependencies:
+
+| Capability | Additional dependency |
+|---|---|
+| Default Pcodec storage | Python ≥3.10 with `numpy`, `pcodec`, `zstandard` |
+| Parquet exact/interoperable storage | R packages `arrow` and `dplyr` |
+| GRCh37 → GRCh38 liftover | `rtracklayer`, `GenomicRanges`, `IRanges` |
+| Building the EBI reference | R package `arrow` plus downloaded EBI VCFs |
+
+### 2. Install the pinned Pcodec runtime
+
+Python 3.12 is recommended. The exact release pins are in
+[`inst/python/requirements.txt`](inst/python/requirements.txt).
 
 ```bash
 python3.12 -m venv ~/.virtualenvs/compressor
@@ -31,236 +98,722 @@ python3.12 -m venv ~/.virtualenvs/compressor
   numpy==1.26.4 pcodec==1.0.3 zstandard==0.25.0
 ```
 
-From a source checkout, `pip install -r inst/python/requirements.txt` installs
-the same pins.
-
-Point R at that interpreter if it is not the first `python3` on `PATH`:
+Tell R which interpreter to use:
 
 ```r
 options(CompreSSoR.python = "~/.virtualenvs/compressor/bin/python")
-# or set COMPRESSOR_PYTHON before starting R
 ```
 
-The optional Parquet backend and the one-time EBI canonical-reference builder
-require the R package `arrow`. Liftover requires the Bioconductor packages
-`rtracklayer`, `GenomicRanges`, and `IRanges`. Normal QC mode also requires a
-prebuilt, checksum-verified canonical dictionary configured as described below;
-the package does not silently manufacture one from a study.
-Full Pcodec scans transfer compact integer codes and identity bytes into the
-package's compiled reader, which constructs the requested R columns directly;
-they do not serialise a decoded GWAS through temporary text.
+Alternatively, set `COMPRESSOR_PYTHON` before starting R:
 
-## Five-function workflow
+```bash
+export COMPRESSOR_PYTHON="$PWD/.venv/bin/python"
+```
+
+CompreSSoR probes the selected Python version and wrapped Pcodec API before it
+writes or reads a Pcodec store. A missing or incompatible runtime fails with an
+explicit setup error rather than silently switching formats.
+
+### 3. Smoke-test the installation
+
+This example is intentionally reference-free because the bundled fixture is
+already labelled as GRCh38 REF/ALT data:
 
 ```r
 library(CompreSSoR)
 
-# 1. Import a data.frame, TSV/CSV, .gz/.bgz text file, or single-ALT VCF.
-gwas <- import_sumstats("gwas.tsv.gz")
-
-# 2. Optional: lift GRCh37 coordinates and alleles to GRCh38.
-gwas38 <- liftover_sumstats(
-  gwas,
-  input_build = "GRCh37",
-  chain = "hg19ToHg38.over.chain.gz"
+input <- system.file(
+  "extdata", "example-grch38.tsv",
+  package = "CompreSSoR"
 )
+output <- file.path(tempdir(), "example.cpr")
 
-# 3. Match the fixed GRCh38 dictionary and put effects on REF/ALT orientation.
-aligned <- harmonise_sumstats(gwas38, reference = "/refs/ebi-grch38")
-
-# 4. Compress. This one function also performs steps 1-3 when requested.
 store <- compress_sumstats(
-  input = "gwas.tsv.gz",
-  output = "gwas.cpr",
-  input_build = "GRCh37",
-  chain = "hg19ToHg38.over.chain.gz",
-  reference = "/refs/ebi-grch38"
-)
-
-# 5. Read all rows, a genomic interval, or zero-based stored row IDs.
-all_rows <- decompress_sumstats(store)
-region <- read_sumstats(store, region = "chr1:1000000-2000000")
-sparse <- read_sumstats(store, variants = c(0L, 1000L, 100000L))
-validate_compressor(store)
-
-# Pay codec startup once when extracting instruments from several GWAS files.
-panels <- read_sumstats_batch(
-  c(exposure = "exposure.cpr", outcome = "outcome.cpr"),
-  c("1:100000:G:A", "2:200000:C:T")
-)
-```
-
-For data already harmonised to GRCh38, the minimal conversion path is:
-
-```r
-example <- system.file("extdata", "example-grch38.tsv",
-                       package = "CompreSSoR")
-store <- compress_sumstats(
-  example,
-  file.path(tempdir(), "example.cpr"),
+  input,
+  output,
   mode = "convert",
   reference = NULL,
   assume_grch38_ref_alt = TRUE,
   overwrite = TRUE
 )
-read_sumstats(store, columns = c("chromosome", "base_pair_location",
-                                 "beta", "standard_error", "p_value"))
+
+print(store)
+validate_compressor(store, full = TRUE)
+read_sumstats(store, columns = c(
+  "chromosome", "base_pair_location", "effect_allele", "other_allele",
+  "beta", "standard_error", "p_value"
+))
 ```
 
-`compress_sumstats()` writes to a staging directory and only replaces the
-destination after the complete store succeeds, so a failed overwrite leaves
-the previous store intact.
+## Quick start
 
-## Inputs and harmonisation
-
-Common aliases are recognised for chromosome/position, effect and other
-alleles, beta, odds ratio, SE, Z, EAF, p, -log10(p), and rsID. Odds ratios are
-converted to log-odds beta. Missing Z is derived from beta/SE; missing beta is
-derived from Z/SE; SE can be inferred from beta and a two-sided Wald p-value.
-Unknown columns remain available in memory.
-
-The normal `mode = "qc"` path follows the BP pipeline's conservative rules:
-
-- liftover only from an explicitly declared GRCh37/hg19 build to GRCh38;
-- resolve rsID aliases against the fixed reference when coordinates are absent;
-- match the canonical `chrom:pos:REF:ALT` allele identity;
-- flip beta, Z, and EAF when the effect allele is reversed;
-- allow unambiguous strand complements, while always dropping palindromic
-  A/T and C/G matches rather than treating population EAF as strand proof;
-- drop unmatched, incompatible, ambiguous, duplicate, zero-mapped, and
-  multi-mapped rows by default; and
-- record every count and the reference identity/hash in `manifest.json`.
-
-Use `strict = TRUE` to stop instead of dropping unresolved rows. The Parquet
-backend can use `drop_unresolved = FALSE` for an explicit audit; canonical
-Pcodec stores reject unresolved identities. Pcodec currently stores biallelic
-A/C/G/T SNVs on GRCh38 primary chromosomes 1-22, X, and Y. Indels, MNVs,
-alternate-contig and mitochondrial rows are dropped and counted by default, or
-stop conversion under `strict = TRUE`; multiallelic VCF records must first be
-split. The Parquet backend remains available for wider representations.
-
-### Canonical ingestion reference
-
-The harmonisation dictionary is a fixed input, never synthesized from a study.
-Build the EBI/Ensembl release-95 GRCh38 dictionary once from downloaded
-chromosome VCFs:
+For an ordinary GWAS that needs proper GRCh38 QC, the complete workflow is:
 
 ```r
-build_ebi_reference(
-  output = "/refs/ebi-grch38",
-  source = "/refs/ebi-harmonisation-vcfs"
+library(CompreSSoR)
+
+Sys.setenv(
+  COMPRESSOR_CANONICAL_REFERENCE = "/data/reference/ebi-ensembl95-grch38"
 )
-Sys.setenv(COMPRESSOR_CANONICAL_REFERENCE = "/refs/ebi-grch38")
+
+store <- compress_sumstats(
+  input = "gwas.tsv.gz",
+  output = "gwas.cpr",
+  input_build = "GRCh37",
+  chain = "/data/reference/hg19ToHg38.over.chain.gz",
+  reference = "GRCh38",
+  mode = "qc",
+  chrom_threads = 4,
+  overwrite = TRUE
+)
+
+validate_compressor(store)
+
+# Read only what the analysis needs.
+region <- read_sumstats(
+  store,
+  region = "chr1:100000000-101000000",
+  columns = c("chromosome", "base_pair_location", "beta", "standard_error")
+)
+
+instruments <- read_sumstats(
+  store,
+  variants = c("1:109274968:A:G", "6:160589086:C:T"),
+  columns = c("beta", "standard_error", "effect_allele_frequency")
+)
 ```
 
-Thereafter `reference = "GRCh38"` resolves that immutable dictionary. The
-dictionary is used during ingest but is not needed to decode a Pcodec store:
-the per-study key is self-contained.
+`compress_sumstats()` performs import, optional liftover, reference matching,
+allele harmonisation, QC, sorting, compression, manifest creation, integrity
+sealing, and atomic installation of the completed store.
+
+## Choose the right workflow
+
+Most users should choose `mode = "qc"`.
+
+| Workflow | Use when | Reference matching | Variant filtering |
+|---|---|---|---|
+| `mode = "qc"` | Ordinary third-party GWAS; recommended default | Required | Drops unresolved and unsupported rows, recording every count |
+| `mode = "convert"` | Data are already verified GRCh38 REF/ALT and only need encoding | Skipped | Backend restrictions still apply |
+| `mode = "all"` | Backward-compatible spelling of QC mode | Required | Same as `qc` |
+| `mode = "core"` | QC plus a caller-supplied core panel | Required | Keeps panel members |
+| `mode = "hm3"` | QC plus a caller-supplied HapMap3 panel | Required | Keeps panel members |
+
+### Recommended QC conversion
+
+```r
+store <- compress_sumstats(
+  "gwas.tsv.gz",
+  "gwas.cpr",
+  reference = "GRCh38",
+  mode = "qc",
+  strict = FALSE
+)
+```
+
+With `strict = FALSE`, unresolved rows are dropped and counted in
+`manifest.json`. With `strict = TRUE`, the first unsupported, ambiguous,
+duplicated, incompatible, or unmatched condition stops conversion.
+
+### Trusted minimal conversion
+
+```r
+store <- compress_sumstats(
+  "already-harmonised-grch38.tsv.gz",
+  "gwas.cpr",
+  mode = "convert",
+  reference = NULL,
+  assume_grch38_ref_alt = TRUE
+)
+```
+
+Set `assume_grch38_ref_alt = TRUE` only when all of the following are known:
+
+- coordinates are on GRCh38 primary chromosomes;
+- `other_allele` is the GRCh38 REF allele;
+- `effect_allele` is ALT; and
+- beta, Z, and EAF refer to ALT.
+
+Ordinary effect/other allele columns do not prove REF/ALT orientation. If the
+input has explicit `REF` and `ALT` column names, CompreSSoR records that fact
+and does not require the override.
+
+### Panel-restricted conversion
+
+`mode = "core"` and `mode = "hm3"` do not use hidden package panels. Supply
+the exact panel intended for the project:
+
+```r
+store <- compress_sumstats(
+  "gwas.tsv.gz",
+  "gwas-hm3.cpr",
+  reference = "GRCh38",
+  mode = "hm3",
+  variant_set = "/data/reference/hm3.bim"
+)
+```
+
+Delimited, Parquet, and PLINK `.bim` panel files are supported. Panel identity
+can be expressed as canonical keys, rsIDs, or chromosome/position/alleles.
+
+## Input formats and recognised columns
+
+`import_sumstats()` accepts:
+
+- an R `data.frame`;
+- TSV, CSV, and other delimited text accepted by `data.table::fread()`;
+- `.gz` or `.bgz` compressed delimited text;
+- VCF, VCF.gz, or VCF.bgz with one ALT allele and at most one trait/sample
+  column; and
+- common GWAS-VCF fields in INFO or FORMAT.
+
+Multiallelic VCF records must be split before import. Malformed delimited rows,
+conflicting duplicate aliases, nonnumeric values in numeric columns, invalid
+odds ratios, and inconsistent beta/Z/SE values fail explicitly.
+
+Representative recognised aliases are:
+
+| Canonical field | Common input names |
+|---|---|
+| chromosome | `CHR`, `CHROM`, `#CHROM`, `chrom` |
+| base-pair position | `BP`, `POS`, `position`, `base_pair_location` |
+| effect allele | `EA`, `A1`, `ALT`, `effect_allele` |
+| other allele | `NEA`, `OA`, `A2`, `REF`, `other_allele` |
+| beta | `BETA`, `ES`, `LOGOR`, `effect_size`, `estimate` |
+| odds ratio | `OR`, `ODDSRATIO` |
+| standard error | `SE`, `SEBETA`, `STDERR`, `std_err` |
+| Z statistic | `Z`, `ZSCORE`, `ZSTAT`, `z_score` |
+| effect-allele frequency | `EAF`, `AF`, `A1FREQ`, `ALT_AF` |
+| p-value | `P`, `PVAL`, `PVALUE` |
+| −log10(p) | `LP`, `-LOG10P`, `neglog10p` |
+| rsID | `rsid`, `RSID`, `dbsnp` |
+| variant ID | `SNP`, `SNPID`, `ID`, `variant` |
+| sample size | `N`, `SS`, `N_TOTAL`, `TOTALSAMPLESIZE` |
+| imputation information | `INFO`, `INFO_SCORE`, `IMPINFO`, `R2`, `RSQ` |
+
+Only effect and other alleles are universally required at import. Coordinates
+may be resolved from rsID through the configured canonical reference during QC.
+At least one usable association shape must ultimately be available:
+
+- beta and SE;
+- Z and SE; or
+- beta and a two-sided Wald p-value, from which SE can be inferred.
+
+Odds ratios are converted to log-odds beta. Missing beta or Z is reconstructed
+when SE permits it. Input p-values are an ingestion aid and are not preserved
+as an independent physical column.
+
+Unrecognised columns survive `import_sumstats()` in memory. The compact Pcodec
+backend intentionally stores only the core representation; use the Parquet
+backend with `keep_extras = TRUE` when row-level extra columns must remain in
+the durable output.
+
+## GRCh38 liftover and harmonisation
+
+### Liftover
+
+CompreSSoR accepts GRCh37/hg19 or GRCh38/hg38 labels. Other source-build labels
+are rejected rather than guessed.
+
+```r
+imported <- import_sumstats("gwas.tsv.gz")
+
+lifted <- liftover_sumstats(
+  imported,
+  input_build = "GRCh37",
+  chain = "/data/reference/hg19ToHg38.over.chain.gz",
+  drop_unmapped = TRUE
+)
+
+attr(lifted, "liftover_stats")
+```
+
+Liftover uses a caller-supplied chain through `rtracklayer`. It:
+
+- keeps only uniquely mapped primary GRCh38 targets by default;
+- records zero maps, multiple maps, and non-primary targets;
+- reverse-complements both alleles for reverse-strand mappings; and
+- preserves row-level `liftover_status` when called directly.
+
+No jobs or remote services are involved in liftover.
+
+### Allele harmonisation
+
+```r
+aligned <- harmonise_sumstats(
+  lifted,
+  reference = "GRCh38",
+  mode = "qc",
+  strict = FALSE,
+  chrom_threads = 4
+)
+
+attr(aligned, "alignment_stats")
+attr(aligned, "reference_hash")
+```
+
+The QC path follows conservative BP-pipeline behavior:
+
+- coordinates or rsID aliases are resolved against one immutable reference;
+- variants are matched as `chromosome:position:REF:ALT`;
+- beta, Z, and EAF are flipped when the effect allele is reversed;
+- unambiguous strand complements are accepted;
+- palindromic A/T and C/G matches fail closed rather than treating population
+  frequency as strand proof;
+- unmatched, incompatible, ambiguous, duplicated, zero-mapped, and
+  multi-mapped rows are dropped by default; and
+- the reference identity, checksum, and every QC count are written to the
+  store manifest.
+
+The resulting Pcodec contract is always:
+
+```text
+identity: chromosome:position:REF:ALT
+effect allele: ALT
+other allele: REF
+beta/Z/EAF allele: ALT
+```
+
+This common orientation is what makes sparse keys directly comparable across
+independently created stores.
+
+### Current Pcodec variant scope
+
+The default Pcodec backend currently stores biallelic A/C/G/T SNVs on GRCh38
+primary chromosomes 1–22, X, and Y. Indels, MNVs, multiallelic records,
+mitochondrial variants, alternate contigs, and unresolved identities are
+dropped and counted, or cause failure with `strict = TRUE`.
+
+This is an intentional v0.3 scope boundary, not an implication that those
+variants are biologically unimportant. Use an exact Parquet store when they
+must be retained.
+
+## The canonical ingestion reference
+
+The ingestion reference and the compressed study format solve different
+problems:
+
+- the reference is used once during QC to establish GRCh38 identity and
+  orientation;
+- each `.cpr` store then carries its own exact SNV identity and does not need
+  that reference to decode, query, compare, or run MR.
+
+CompreSSoR never manufactures a canonical reference from the study being
+converted.
+
+### Build the EBI/Ensembl reference once
+
+The current standard reference is EBI/Ensembl release 95 GRCh38. Download its
+per-chromosome VCFs separately, then build the bounded-memory dictionary:
+
+```r
+library(CompreSSoR)
+
+build_ebi_reference(
+  output = "/data/reference/ebi-ensembl95-grch38",
+  source = "/data/reference/ebi-release95-vcfs",
+  chromosomes = c(as.character(1:22), "X", "Y", "MT"),
+  overwrite = FALSE
+)
+```
+
+Configure it for subsequent sessions:
+
+```bash
+export COMPRESSOR_CANONICAL_REFERENCE=/data/reference/ebi-ensembl95-grch38
+```
+
+or inside R:
+
+```r
+Sys.setenv(
+  COMPRESSOR_CANONICAL_REFERENCE = "/data/reference/ebi-ensembl95-grch38"
+)
+resolve_reference("GRCh38")
+```
+
+The dictionary is checksum-verified before use. It contains one stable global
+variant index and is shared by every conversion on that installation. The
+default descriptor has no implicit download URL: reference distribution is
+kept explicit so a missing or changed upstream asset cannot silently alter a
+study conversion.
+
+For another authoritative source, `build_canonical_reference()` accepts VCF,
+PLINK BIM/PVAR, delimited, Parquet, or an R data frame and writes an immutable
+GRCh38 Parquet reference.
+
+## Reading compressed GWAS files
+
+### Open and inspect
+
+```r
+store <- open_compressor("gwas.cpr")
+print(store)
+store$manifest$n_rows
+store$manifest$harmonisation
+```
+
+An open `compressor_store` object reuses parsed metadata in hot loops.
+
+### Whole-genome read
+
+```r
+all_core <- read_sumstats(
+  store,
+  columns = c(
+    "chromosome", "base_pair_location", "effect_allele", "other_allele",
+    "z", "standard_error", "effect_allele_frequency"
+  )
+)
+```
+
+`decompress_sumstats()` is an alias for the same decoded read interface:
+
+```r
+all_columns <- decompress_sumstats(store)
+```
+
+### Column projection
+
+Independent physical streams mean unrelated values do not need to be opened:
+
+```r
+z_only <- read_sumstats(store, columns = "z")
+beta_se <- read_sumstats(store, columns = c("beta", "standard_error"))
+```
+
+Beta is derived only when requested. The same is true of p-value.
+
+### Regional read
+
+```r
+region <- read_sumstats(
+  store,
+  region = "chr6:25000000-35000000",
+  columns = c("chromosome", "base_pair_location", "beta", "standard_error")
+)
+```
+
+Page-level genomic bounds restrict decoding to candidate pages; a region does
+not scan the full study.
+
+### Sparse canonical-key read
+
+```r
+keys <- c(
+  "1:109274968:A:G",
+  "6:160589086:C:T",
+  "X:155699751:C:T"
+)
+
+hits <- read_sumstats(
+  store,
+  variants = keys,
+  columns = c(
+    "chromosome", "base_pair_location", "effect_allele", "other_allele",
+    "beta", "standard_error", "effect_allele_frequency"
+  )
+)
+```
+
+Missing keys return no row. Duplicate requested keys return one stored row.
+Canonical keys can be constructed safely with:
+
+```r
+compressor_variant_key(
+  chromosome = "1",
+  position = 109274968,
+  reference_allele = "A",
+  alternate_allele = "G"
+)
+```
+
+Numeric `variants` are zero-based stored row IDs. Canonical keys are preferred
+for portable analysis code because row numbers differ between studies.
+
+### Batch reads across GWAS files
+
+```r
+panels <- read_sumstats_batch(
+  stores = c(
+    exposure = "exposure.cpr",
+    outcome = "outcome.cpr"
+  ),
+  variants = keys,
+  columns = c(
+    "chromosome", "base_pair_location", "effect_allele", "other_allele",
+    "beta", "standard_error"
+  ),
+  threads = 2
+)
+```
+
+The batch API starts the codec runtime once, reuses validated indexes and page
+caches, and coalesces requests with exactly the same normalized path, key
+vector, and projection. Requests to one store are serialized for decoder
+safety; different stores may decode concurrently.
 
 ## Exactly what is stored
 
-Rows are sorted by the identity key before encoding. `A=0`, `C=1`, `G=2`, and
-`T=3`.
+Rows are strictly sorted by a lossless identity key. Bases use `A=0`, `C=1`,
+`G=2`, and `T=3`.
 
-| Logical field | Physical representation | Read-time result |
+```text
+key = (global_GRCh38_primary_position << 4) | (REF << 2) | ALT
+```
+
+The logical and physical representations are:
+
+| Logical field | Stored representation | Read-time behavior |
 |---|---|---|
-| chromosome, position, REF, ALT | `key = (global_GRCh38_position << 4) \| (REF << 2) \| ALT`; global position is stored as a Pcodec `uint32` stream and the complete substitution as a Pcodec `uint8` stream constrained to four bits | Decoded exactly; no external reference |
-| Z | 9-bit semantic codes over `[-3.5, 3.5)`; one missing code and one float32 exception code | Central maximum absolute quantisation error about 0.00687; tails retained as float32 |
-| EAF | 8-bit `asin(sqrt(EAF))` quantisation; invalid/missing values use float32 exceptions | Absolute error bounded by 0.004 in the standard profile |
-| SE | 6-bit block-centred residual of `log2(SE)` after conditioning on decoded EAF; missing and float32 exception codes | Positive SE reconstructed on the original scale; relative precision is data-dependent and recorded by profile |
-| beta | Not stored | `Z * SE` |
-| p-value | Not stored | Two-sided normal p-value from Z |
-| rsID / textual variant ID | Not stored | Not reconstructed; identity is chromosome, position, REF, ALT |
-| arbitrary extra columns | Not in the default Pcodec payload | Use `backend = "parquet", keep_extras = TRUE` when required |
+| chromosome + position | GRCh38 global position, Pcodec `uint32` | Exact |
+| REF + ALT | Four-bit complete substitution in Pcodec `uint8` | Exact |
+| Z | Z9 semantic code in `uint16` | Central bins plus float32 tail exceptions |
+| EAF | EAF8 arcsine-square-root code in `uint8` | Bounded frequency error |
+| SE | SE6 block-centred `log2(SE)` residual in `uint8` | Positive reconstructed SE plus float32 exceptions |
+| beta | Not stored | `Z × SE` |
+| p-value | Not stored | `erfc(abs(Z) / sqrt(2))` |
+| rsID / textual variant ID | Not stored | Use the exact REF/ALT key |
+| arbitrary extra columns | Not in Pcodec | Use Parquet with `keep_extras = TRUE` |
 
-New v0.3 stores use 262,144-row Pcodec chunks divided into independently
-readable 4,096-row pages for every stream. Older v0.2 frame stores remain
-readable. SE centre blocks remain 65,536 rows independently of physical page
-geometry. Z, EAF, and SE are independent streams. Sparse exceptional values
-are held in one Zstandard-compressed float32 sidecar. Page offsets and genomic
-bounds support
-regional, sparse-row, and canonical `chromosome:position:REF:ALT` lookups
-without scanning the whole file. Each header, chunk-metadata record and page
-has an index-protected CRC32; the manifest and every durable file also have
-SHA-256 records. The complete
-layout is specified in [inst/doc/pcodec-format.md](inst/doc/pcodec-format.md).
+A `.cpr` store is a directory, not one opaque file:
 
-For a numerically lossless Z/SE/EAF representation, use
-`profile = "exact", backend = "parquet"`. This does not preserve an input
-p-value that disagrees with Z because p is a derived field in CompreSSoR.
+```text
+gwas.cpr/
+├── manifest.json
+├── manifest.sha256
+├── position.pco
+├── position.index
+├── substitution.pco
+├── substitution.index
+├── z.pco
+├── z.index
+├── eaf.pco
+├── eaf.index
+├── se.pco
+├── se.index
+└── exceptions.zst
+```
 
-## Why Pcodec?
+Every stream uses 262,144-row Pcodec chunks split into independently decodable
+pages of at most 4,096 rows. SE centres use separate 65,536-row blocks. Z, EAF,
+SE, position, and substitution are independent streams. Sparse float32
+exceptions are held in one Zstandard sidecar.
 
-The historical representation sweep below is the archived median summary from
-five full reads of a real 10-million-row GWAS. It was a design experiment—not
-an exported-package benchmark—and its raw run logs and full environment record
-are not part of this repository. Lower access time and higher compression are
-better; the dashed line is its reported Pareto frontier.
+The full binary contract is documented in
+[`inst/doc/pcodec-format.md`](inst/doc/pcodec-format.md).
+
+## Accuracy and round-trip guarantees
+
+### Exact components
+
+- chromosome, position, REF, and ALT;
+- row ordering under the canonical identity key;
+- missing-key behavior;
+- page and file integrity metadata; and
+- v0.2 store readability under the v0.3 reader.
+
+### Standard-profile numeric precision
+
+| Stream | Encoding | Declared precision |
+|---|---|---|
+| Z9 | 510 equal central bins over `[-3.5, 3.5)` | Maximum central absolute error ≈ 0.006863 |
+| EAF8 | `asin(sqrt(EAF))` quantisation over 256 codes | Absolute error bound 0.004 |
+| SE6 | Block-centred residual of `log2(SE)` conditioned on decoded EAF | Central multiplicative half-step ≈ 1.124% |
+| Exceptions | float32 | Finite tail/missing exceptions are not bitwise R doubles |
+
+In the checked 10,000-row real-data audit:
+
+| Audit result | Observed maximum |
+|---|---:|
+| Identity mismatch | 0 |
+| Absolute Z error | 0.0069 |
+| Absolute EAF error | 0.0031 |
+| Relative SE error | 0.0113 |
+| Absolute derived-beta error | 0.0197 |
+
+P-value is exactly derived from decoded Z, not copied from the source. An
+input p-value that disagrees with beta/SE/Z is therefore not independently
+preserved.
+
+### If exact numbers are required
+
+```r
+exact <- compress_sumstats(
+  aligned,
+  "gwas-exact.cpr",
+  backend = "parquet",
+  profile = "exact",
+  mode = "convert",
+  reference = NULL,
+  assume_grch38_ref_alt = TRUE
+)
+```
+
+Do not describe a standard Pcodec store as a bitwise-exact numerical round
+trip. It is an explicitly bounded analysis representation.
+
+## Integrity and validation
+
+Stores are written to a staging directory and atomically moved into place only
+after the complete write succeeds. A failed `overwrite = TRUE` conversion
+therefore leaves the previous completed store intact.
+
+The durable format protects:
+
+- `manifest.json` with a detached SHA-256;
+- every durable file with size and SHA-256 in the manifest;
+- every Pcodec header, chunk-metadata record, and page with CRC32 in a
+  SHA-verified binary index;
+- exception flags, ordering, row bounds, and sentinel relationships; and
+- position ordering, chromosome bounds, and the complete four-bit
+  substitution contract.
+
+Fast validation checks file integrity and index structure:
+
+```r
+validate_compressor("gwas.cpr")
+```
+
+Full validation additionally decodes and semantically checks every page:
+
+```r
+validate_compressor("gwas.cpr", full = TRUE)
+```
+
+The 14.9-million-row release store passed full validation across 18,220 pages.
+
+## Benchmarks
+
+### Why Pcodec was selected
+
+The historical representation sweep below reports medians of five full reads
+of a real 10-million-row GWAS. Lower read time and higher compression are
+better. The dashed line is the measured Pareto frontier.
 
 ![Measured speed versus compression Pareto frontier](inst/figures/compressor-pareto.svg)
 
-That sweep motivated independent quantised numeric streams. Later codec and
-identity experiments selected Pcodec and the self-contained key used by the
-package.
+That experiment motivated independently quantised numeric streams. Subsequent
+identity, page-geometry, Pcodec, Zarr, Parquet, Blosc2, byte-shuffle, delta,
+and exception-layout experiments selected the current wrapped Pcodec store.
+The historical plot is retained as design evidence; the current exported-API
+measurements below are the release evidence.
 
-### Selected-format measurements
+### Release benchmark setup
 
-The current exported R API was measured on the Mac mini against a real
-14,923,434-row FinnGen SNP GWAS. Its eight-column gzip contains
-`chrom/pos/ALT/REF/beta/se/eaf/p`; the canonical Pcodec store was rebuilt with
-the same REF/ALT identity as the indexed VCF and passed full validation across
-all 18,220 pages. Durable inputs and stores remained on the external SSD;
-temporary decoded bridges used the machine's ordinary temporary directory and
-were removed after every call. Access timings are medians of five complete
-exported-API runs after one warm-up.
+- machine: Apple Silicon Mac mini;
+- data: real FinnGen SNP GWAS;
+- rows: 14,923,434;
+- source fields: chromosome, position, ALT, REF, beta, SE, EAF, p;
+- store: self-contained `0.3.0-pcodec`, 4,096-row pages;
+- timings: five complete exported-R-API runs after warm-up;
+- durable data: external SSD;
+- temporary binary bridges: local temporary storage; and
+- validation: all 18,220 pages plus deterministic cross-version parity.
 
-| Storage/write measure | Result |
+### Storage and write time
+
+| Measure | Result |
 |---|---:|
 | Source TSV.gz | 201,658,018 B |
-| Self-contained CompreSSoR store | 58,033,297 B |
-| Compression ratio | 3.47x |
-| Observed canonical rebuild | 62.982 s |
+| Self-contained CompreSSoR | 58,033,297 B |
+| Compression ratio | 3.47× |
+| Compression time | 62.982 s |
+| Indexed VCF.gz + `.tbi` comparison | 228,634,485 B |
 
-| Access workload | Median |
-|---|---:|
-| 25 canonical keys, identity + beta/SE | 0.007 s |
-| chr1 1 Mb region, 4,325 rows | 0.003 s |
-| Full identity + Z/SE/EAF | 0.732 s |
-| Full identity + Z/SE/EAF + reconstructed beta/p | 0.730 s |
+The compressed identity is included in the CompreSSoR size. No external
+variant spine is being hidden from this comparison.
 
-The persistent reader starts Python once per R session, caches validated store
-metadata and a bounded set of decoded pages, and uses a compact binary bridge.
-Across 100 random 25-key sets and 50 random 1-Mb regions, both medians were
-0.003 s and both p95 values were 0.004 s. Analyses spanning several GWAS should
-use `read_sumstats_batch()`, which also coalesces requests that are literally
-identical within a batch. Optimized same-file deduplication and independent-read
-comparisons are reported separately so codec I/O is not confused with a faster
-MR estimator path. In the controlled 5-exposure x 5-outcome IVW benchmark,
-ten explicit Pcodec reads plus the same native grid estimator used by every
-format took 0.026 s, versus 0.176 s for ten Tabix queries and 17.120 s for ten
-TSV.gz scans. The separately labelled optimized same-store batch took 0.013 s
-because its ten identical requests were decoded once. Its individual runs
-ranged from 0.006 to 0.018 s, which is retained rather than hidden at this
-millisecond scale.
+### Access time
 
-The timings include Pcodec decompression, compact binary bridges, compiled
-reconstruction, R data frames, and—for the grid benchmark—the FastMR estimate.
-They are hardware-specific engineering measurements, not universal guarantees.
+| Exported API workload | Median | Range |
+|---|---:|---:|
+| 25 canonical keys, identity + beta/SE | 0.007 s | 0.003–0.008 s |
+| chr1 1 Mb region, 4,325 rows | 0.003 s | 0.003–0.004 s |
+| Full identity + Z/SE/EAF | 0.732 s | 0.710–0.805 s |
+| Full identity + Z/SE/EAF + beta/p | 0.730 s | 0.723–0.756 s |
 
-Machine-readable records:
+The broader stress run used 100 random 25-key requests and 50 random 1-Mb
+regions. Both medians were 0.003 s and both p95 values were 0.004 s.
 
-- [five-run canonical access benchmark](inst/benchmarks/pcodec-canonical-access.json)
-- [individual canonical access runs](inst/benchmarks/pcodec-canonical-access-runs.csv)
-- [random sparse/region stress record](inst/benchmarks/pcodec-v03-stress.json)
+### End-to-end sparse MR access
+
+The controlled benchmark used 25 deterministic genome-wide variants, five
+logical exposures, five logical outcomes, and 25 IVW estimates. The same
+physical FinnGen study was reused for each logical study to isolate access
+cost. Every fair path performed ten explicit reads and then called the same
+FastMR grid estimator.
+
+| Input path | Median | Range | Speedup versus TSV.gz |
+|---|---:|---:|---:|
+| CompreSSoR Pcodec, ten explicit reads | 0.026 s | 0.025–0.027 s | **658.5×** |
+| Optimized identical same-store batch | 0.013 s | 0.006–0.018 s | **1,316.9×** |
+| VCF.gz + Tabix, ten queries | 0.176 s | 0.175–0.185 s | **97.3×** |
+| TSV.gz, ten full scans | 17.120 s | 16.966–17.884 s | 1.0× |
+
+The optimized same-store batch is labelled separately because it is allowed
+to coalesce ten literally identical requests. It is not presented as ten
+independent physical reads. Cross-format canonical keys were exact; numeric
+differences were bounded by the declared lossy profile.
+
+### Machine-readable evidence
+
+- [five-run v0.3 access summary](inst/benchmarks/pcodec-canonical-access.json)
+- [individual v0.3 access repetitions](inst/benchmarks/pcodec-canonical-access-runs.csv)
+- [100-request sparse and 50-region stress test](inst/benchmarks/pcodec-v03-stress.json)
+- [real-data numeric audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
 - [historical v0.2 full API benchmark](inst/benchmarks/pcodec-full-api-benchmark.json)
-- [earlier real-data numerical audit](inst/benchmarks/pcodec-full-api-roundtrip.json)
-- `benchmark_table()` for the shipped historical benchmark tables
+- `benchmark_table("pcodec_access")` for the shipped current access table
+- `benchmark_table()` for deliberately retained historical design tables
 
-## Optional Parquet backend
+## FastMR integration
+
+[`fastMR`](https://github.com/gushamilton/fastMR) can run MR directly from
+canonical-key CompreSSoR stores without loading complete studies:
+
+```r
+library(fastMR)
+
+instruments <- list(
+  bmi = c("1:109274968:A:G", "6:160589086:C:T"),
+  crp = c("1:154426970:C:T", "2:203867921:G:A")
+)
+
+result <- fast_mr_compressed(
+  exposure_files = c(
+    bmi = "bmi.cpr",
+    crp = "crp.cpr"
+  ),
+  outcome_files = c(
+    cad = "cad.cpr",
+    stroke = "stroke.cpr"
+  ),
+  instruments = instruments,
+  methods = "ivw",
+  threads = 4,
+  io_threads = 2
+)
+```
+
+Each exposure is read for its own instruments; each outcome is read for their
+union. The common REF/ALT key and ALT-effect contract remove the need for rsID
+lookup or another allele-orientation pass. Instrument discovery, p-value
+selection, LD clumping, and biological harmonisation decisions remain explicit
+upstream analysis steps.
+
+See the [fastMR compressed-input documentation](https://github.com/gushamilton/fastMR/tree/agent/compressed-gwas-mr#direct-mr-from-compressed-gwas-files)
+for the full interface and benchmark.
+
+## Optional exact Parquet stores
+
+Pcodec is the default because it occupies the preferred compression/access
+region for the core GWAS representation. Parquet remains useful when a project
+needs exact doubles, arbitrary extra columns, non-SNV identity, or direct
+Arrow/DuckDB/Polars interoperability.
 
 ```r
 portable <- compress_sumstats(
-  aligned, # already harmonised to GRCh38 REF/ALT orientation
+  aligned,
   "gwas-parquet.cpr",
   backend = "parquet",
   profile = "exact",
@@ -271,21 +824,173 @@ portable <- compress_sumstats(
 )
 ```
 
-Parquet is useful for Arrow, DuckDB, and Polars interoperability and for exact
-double-precision Z/SE/EAF or non-SNV identity. It is not the default compact
-format. The legacy q8 serving cache only applies to Parquet stores.
+The legacy q8 serving cache applies only to Parquet stores:
 
-## Development
-
-Reusable code lives in `R/`, `src/`, and `inst/python/`. Large GWAS files,
-temporary stores, and timing logs are kept outside the repository; only compact
-CSV/JSON summaries and selected figures are versioned.
-
-```bash
-R CMD build .
-R CMD check CompreSSoR_*.tar.gz --no-manual --as-cran
-python3 scripts/test_pcodec_backend.py
+```r
+build_cache(portable)
 ```
 
-The package is under active development. Format manifests are versioned; do
-not label a standard Pcodec store as a bitwise-exact numerical round trip.
+Pcodec stores are already independently paged; `build_cache()` rejects them.
+
+## Public API
+
+| Function | Purpose |
+|---|---|
+| `import_sumstats()` | Parse and normalise heterogeneous GWAS input |
+| `liftover_sumstats()` | Lift GRCh37 coordinates and alleles to GRCh38 |
+| `harmonise_sumstats()` | Match the canonical reference and align effects |
+| `compress_sumstats()` | Run the pipeline and write a `.cpr` store |
+| `open_compressor()` | Open and inspect a store manifest |
+| `read_sumstats()` | Whole, projected, regional, or sparse read |
+| `read_sumstats_batch()` | Reuse one codec process across several GWAS files |
+| `decompress_sumstats()` | Decode through the same read interface |
+| `compressor_variant_key()` | Construct validated canonical REF/ALT keys |
+| `validate_compressor()` | Verify file/index integrity and semantic correctness |
+| `build_ebi_reference()` | Build the standard partitioned EBI dictionary |
+| `build_canonical_reference()` | Build a custom immutable GRCh38 dictionary |
+| `resolve_reference()` | Resolve and checksum a configured reference |
+| `benchmark_table()` | Read shipped measured benchmark tables |
+
+Use `help(package = "CompreSSoR")` or `?compress_sumstats` for complete
+arguments and return values.
+
+## Troubleshooting and FAQ
+
+### Does every `.cpr` need the large canonical reference beside it?
+
+No. The canonical reference is an ingestion dependency, analogous to the
+reference used to establish a CRAM-compatible coordinate/allele contract. A
+Pcodec `.cpr` carries exact position, REF, and ALT identity and is independently
+decodable after conversion.
+
+### Why is there no rsID column?
+
+rsIDs are aliases rather than unique variant identity. They can be absent,
+merged, or shared by multiple alleles. `chromosome:position:REF:ALT` is the
+stable cross-study key. rsID can be joined from a reference when needed for
+presentation.
+
+### Why are beta and p absent from the stored payload?
+
+They are deterministic from the stored representation:
+
+```text
+beta = Z × SE
+p = erfc(abs(Z) / sqrt(2))
+```
+
+Omitting them removes repeated information and guarantees that decoded beta
+and p agree with decoded Z and SE.
+
+### Can I preserve N, INFO, phenotype-specific fields, or arbitrary columns?
+
+Yes, with `backend = "parquet", keep_extras = TRUE`. The v0.3 Pcodec core
+deliberately stores only exact identity plus Z/SE/EAF. Additional compact
+sidecars are a future extension and are not silently created today.
+
+### Can I preserve indels?
+
+Use the Parquet backend. Pcodec v0.3 is deliberately restricted to biallelic
+primary-chromosome SNVs.
+
+### Can I preserve the original p-value exactly?
+
+Not in the standard Pcodec representation. P is derived from decoded Z. Keep
+the original field in an exact Parquet extras store if it is analytically
+important as an independent value.
+
+### Why was a palindromic variant dropped despite having EAF?
+
+Population EAF is not reliable strand proof across ancestries and cohorts.
+CompreSSoR therefore drops palindromic A/T and C/G matches rather than risking
+a silent sign inversion.
+
+### How do I move temporary bridge files?
+
+Use an R option or environment variable pointing to writable local storage:
+
+```r
+options(CompreSSoR.tempdir = "/fast/local/tmp")
+```
+
+```bash
+export COMPRESSOR_TMPDIR=/fast/local/tmp
+```
+
+The bridge is removed after every call and is not part of the `.cpr` format.
+
+### Should I increase `chrom_threads` or batch `threads`?
+
+`chrom_threads` parallelises chromosome-level harmonisation. Batch `threads`
+can decode different stores concurrently. Same-store requests are serialized
+for decoder safety, and very small sparse reads are often latency-bound, so
+more threads are not automatically faster.
+
+### How do I diagnose a store that will not open?
+
+Run:
+
+```r
+validate_compressor("gwas.cpr", full = TRUE)
+```
+
+Do not bypass checksum or version failures. Readers fail closed on unknown
+format versions, altered headers/pages, malformed indexes, invalid semantic
+codes, and impossible identity values.
+
+## Development and reproducibility
+
+Repository layout:
+
+```text
+R/                  exported R pipeline and reader APIs
+src/                compiled semantic reconstruction and bridge reader
+inst/python/        Pcodec writer/reader and pinned Python runtime
+inst/doc/           durable binary format specification
+inst/extdata/       tiny installed examples
+inst/benchmarks/    compact, versioned benchmark records
+scripts/            reproducible development and benchmark programs
+tests/testthat/     R unit, integration, and adversarial tests
+```
+
+Large source GWAS files, completed benchmark stores, and temporary decoded
+bridges are intentionally kept outside Git. Only compact CSV/JSON evidence and
+selected figures are versioned.
+
+Release checks:
+
+```bash
+python3 scripts/test_pcodec_backend.py
+R CMD build .
+R CMD check CompreSSoR_*.tar.gz --as-cran --no-manual
+```
+
+The v0.3 release gate includes:
+
+- 20 Python backend corruption and edge cases;
+- complete R package tests;
+- clean source-tarball installation and checking;
+- full validation of the 14.9-million-row FinnGen store;
+- exact old-v0.2/new-v0.3 identity and decoded-value parity on a deterministic
+  cross-genome sample;
+- 100 random sparse requests and 50 random regions; and
+- five independent adversarial reviews covering format integrity, ingestion,
+  performance, release engineering, and FastMR integration.
+
+Current writers emit `0.3.0-pcodec`. Current readers retain support for
+`0.2.0-pcodec`; they fail closed on unknown versions.
+
+## Project status
+
+CompreSSoR is an active pre-1.0 research software project. The core v0.3 format,
+reader, harmonisation pipeline, benchmark evidence, and FastMR integration are
+implemented and tested. Before treating it as long-term archival infrastructure,
+pin the package version, Python requirements, reference manifest, and store
+checksums in the analysis environment.
+
+Issues and reproducible examples are welcome at
+[github.com/gushamilton/CompreSSoR/issues](https://github.com/gushamilton/CompreSSoR/issues).
+
+## License
+
+CompreSSoR is released under the [MIT License](LICENSE).
