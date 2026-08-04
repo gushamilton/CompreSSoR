@@ -2,8 +2,8 @@ format,storage_layer,full_read_median_seconds,compression_ratio_vs_source_gzip,p
 Source gzip,source,0.922,1.00,FALSE,10000000,5,first_pareto_10m_full_read
 Raw float32 binary,raw binary,0.0214,2.04,FALSE,10000000,5,first_pareto_10m_full_read
 Raw float32 binary + zstd,raw binary,0.1704,2.67,FALSE,10000000,5,first_pareto_10m_full_read
-Current f16/u8 binary,legacy binary,0.00616,5.44,TRUE,10000000,5,first_pareto_10m_full_read
-Current f16/u8 zstd,legacy binary,0.0744,7.71,FALSE,10000000,5,first_pareto_10m_full_read
+Legacy f16/u8 binary,legacy binary,0.00616,5.44,TRUE,10000000,5,first_pareto_10m_full_read
+Legacy f16/u8 zstd,legacy binary,0.0744,7.71,FALSE,10000000,5,first_pareto_10m_full_read
 Float32 Parquet,Parquet,0.0278,2.57,FALSE,10000000,5,first_pareto_10m_full_read
 Precise Parquet,Parquet,0.0308,2.37,FALSE,10000000,5,first_pareto_10m_full_read
 q9 framed binary,framed binary,0.0696,8.27,FALSE,10000000,5,first_pareto_10m_full_read

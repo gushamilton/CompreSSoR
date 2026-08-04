@@ -12,12 +12,14 @@ test_that("fruity delimited aliases are canonicalised without losing rsids", {
   expect_equal(got$chromosome, c("1", "2"))
   expect_equal(got$variant_id, c("rs101", "rs202"))
   expect_equal(got$rsid, c("rs101", "rs202"))
+  expect_false("rsids" %in% names(got))
   expect_equal(got$beta, c(0.2, -0.3))
   expect_equal(got$annotation, c("x", "y"))
   expect_equal(attr(got, "genome_build"), "unknown")
 })
 
 test_that("delimited files accept comma, whitespace and gzip transport", {
+  skip_if_not_installed("arrow")
   input <- make_fixture(10L)
   comma_path <- tempfile(fileext = ".csv")
   write.csv(input, comma_path, row.names = FALSE)
@@ -29,7 +31,7 @@ test_that("delimited files accept comma, whitespace and gzip transport", {
   close(con)
   for (path in c(comma_path, whitespace_path, gzip_path)) {
     store <- compress_sumstats(path, tempfile(), reference = NULL,
-                               mode = "convert", profile = "exact", overwrite = TRUE)
+                               mode = "convert", profile = "exact", backend = "parquet", overwrite = TRUE)
     expect_true(validate_compressor(store)$valid)
     expect_equal(nrow(decompress_sumstats(store)), 10L)
   }

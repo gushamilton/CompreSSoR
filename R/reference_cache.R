@@ -13,33 +13,59 @@ reference_cache_dir <- function(cache_dir = NULL) {
 
 #' Describe the default GRCh38 reference
 #'
-#' The default is the public GWASLab 1KG dbSNP151 GRCh38 autosomal variant
-#' table. It is deliberately kept outside the package itself, like a CRAM
-#' reference: the first operation that needs it downloads it into the local
-#' CompreSSoR cache and records the URL and checksum in the store manifest.
+#' The default is an external, immutable EBI/Ensembl release-95 GRCh38
+#' reference, like a CRAM reference. Set `COMPRESSOR_CANONICAL_REFERENCE` to
+#' the partitioned dictionary directory produced by `build_ebi_reference()`.
 #'
 #' @param cache_dir Optional cache directory to use when resolving the
 #'   descriptor.
 #' @return A reference descriptor.
 #' @export
 grch38_reference <- function(cache_dir = NULL) {
+  local <- Sys.getenv("COMPRESSOR_CANONICAL_REFERENCE", unset = "")
+  variants <- if (nzchar(local)) {
+    path.expand(local)
+  } else {
+    NULL
+  }
   list(
-    id = "1kg_dbsnp151_hg38_auto",
+    id = "ebi_ensembl95_grch38_all_v1",
     build = "GRCh38",
-    source = "GWASLab reference catalogue",
-    source_url = "https://github.com/Cloufield/gwaslab/blob/main/src/gwaslab/data/reference.json",
+    source = "EBI/Ensembl GRCh38 all-variant reference; build with build_ebi_reference()",
     cache_dir = cache_dir,
-    variants = list(
-      url = "https://www.dropbox.com/s/ouf60n7gdz6cm0g/1kg_dbsnp151_hg38_auto.txt.gz?dl=1",
-      filename = "1kg_dbsnp151_hg38_auto.txt.gz",
-      md5 = "4c7ef2d2415c18c286219e970fdda972",
-      description = "1KG dbSNP151 GRCh38 autosomal variant table"
-    )
+    variants = variants
   )
 }
 
 reference_file_digest <- function(path, algo = "sha256") {
   digest::digest(path, algo = algo, file = TRUE)
+}
+
+.reference_integrity_state <- new.env(parent = emptyenv())
+
+verify_partitioned_reference <- function(path, manifest) {
+  relative <- manifest$variants_file %||% "variants.parquet"
+  master <- file.path(path, relative)
+  expected <- manifest$sha256 %||% ""
+  if (!file.exists(master)) {
+    stop("partitioned reference is missing its master variant file: ", master,
+         call. = FALSE)
+  }
+  if (!is.character(expected) || length(expected) != 1L ||
+      !grepl("^[0-9a-fA-F]{64}$", expected)) {
+    stop("partitioned reference manifest has no valid SHA-256", call. = FALSE)
+  }
+  info <- file.info(master)
+  cache_key <- paste(normalizePath(master, mustWork = TRUE), info$size,
+                     as.numeric(info$mtime), tolower(expected), sep = "\r")
+  if (isTRUE(.reference_integrity_state[[cache_key]])) return(invisible(TRUE))
+  observed <- reference_file_digest(master, "sha256")
+  if (!identical(tolower(observed), tolower(expected))) {
+    stop("partitioned reference master file failed its declared SHA-256: ", master,
+         call. = FALSE)
+  }
+  .reference_integrity_state[[cache_key]] <- TRUE
+  invisible(TRUE)
 }
 
 reference_asset_filename <- function(asset) {
@@ -89,8 +115,12 @@ download_reference_asset <- function(asset, cache_dir, overwrite = FALSE) {
   }
   temporary <- tempfile("compressor-reference-", tmpdir = cache_dir)
   on.exit(unlink(temporary, force = TRUE), add = TRUE)
+  old_timeout <- getOption("timeout")
+  options(timeout = max(3600, old_timeout %||% 60))
+  on.exit(options(timeout = old_timeout), add = TRUE)
   status <- tryCatch(
-    utils::download.file(asset$url, temporary, mode = "wb", quiet = TRUE),
+    utils::download.file(asset$url, temporary, mode = "wb", quiet = TRUE,
+                         method = "libcurl"),
     error = function(e) stop("could not download reference asset: ", conditionMessage(e), call. = FALSE)
   )
   if (!identical(status, 0L) || !file.exists(temporary)) {
@@ -119,16 +149,23 @@ reference_descriptor <- function(reference) {
   }
   if (is.list(reference)) {
     if (is.null(reference$build)) reference$build <- "GRCh38"
-    if (is.null(reference$variants)) stop("reference descriptor needs a variants asset", call. = FALSE)
+    if (is.null(reference$variants) &&
+        is.null(reference$assets) &&
+        !identical(reference$id %||% "", "ebi_ensembl95_grch38_all_v1") &&
+        !identical(reference$id %||% "", "canonical_grch38_snp_v1")) {
+      stop("reference descriptor needs a variants asset", call. = FALSE)
+    }
     return(reference)
   }
   stop("reference must be 'GRCh38', a GRCh38 data.frame/path, or a reference descriptor", call. = FALSE)
 }
 
-#' Download a reference into the CompreSSoR cache
+#' Resolve or download a configured reference into the CompreSSoR cache
 #'
 #' @param reference "GRCh38", a reference descriptor, or a local reference
-#'   path.
+#'   path. The built-in `"GRCh38"` descriptor requires
+#'   `COMPRESSOR_CANONICAL_REFERENCE` to point at a dictionary built by
+#'   [build_ebi_reference()]; it has no implicit remote download URL.
 #' @param cache_dir Optional cache directory.
 #' @param overwrite Re-download assets that are already cached.
 #' @return A resolved reference descriptor containing local asset paths and
@@ -143,6 +180,10 @@ download_reference <- function(reference = "GRCh38", cache_dir = NULL, overwrite
   cache_dir <- cache_dir %||% descriptor$cache_dir %||% reference_cache_dir()
   descriptor$cache_dir <- cache_dir
   assets <- descriptor$variants
+  if (is.null(assets) && !is.null(descriptor$assets)) {
+    stop("EBI reference has remote chromosome assets; call build_ebi_reference() to materialise the dictionary",
+         call. = FALSE)
+  }
   if (is.data.frame(assets)) {
     descriptor$metadata <- descriptor$metadata %||% list(id = descriptor$id %||% "in_memory", build = "GRCh38")
     descriptor$metadata$local_path <- NULL
@@ -150,19 +191,43 @@ download_reference <- function(reference = "GRCh38", cache_dir = NULL, overwrite
     descriptor$variants <- assets
     return(descriptor)
   }
-  if (is.character(assets) && length(assets) == 1L && file.exists(assets)) {
+  if (is.character(assets) && length(assets) == 1L && dir.exists(assets)) {
+    descriptor$variants <- normalizePath(assets, mustWork = TRUE)
+    manifest_path <- file.path(descriptor$variants, "manifest.json")
+    if (!file.exists(manifest_path)) {
+      stop("partitioned reference is missing manifest.json: ", descriptor$variants, call. = FALSE)
+    }
+    manifest <- read_manifest(manifest_path)
+    verify_partitioned_reference(descriptor$variants, manifest)
+    descriptor$id <- manifest$id %||% descriptor$id
+    descriptor$build <- manifest$build %||% descriptor$build
+    descriptor$metadata <- utils::modifyList(descriptor$metadata %||% list(), manifest)
+    descriptor$metadata$local_path <- descriptor$variants
+    descriptor$metadata$filename <- basename(descriptor$variants)
+    return(descriptor)
+  } else if (is.character(assets) && length(assets) == 1L && file.exists(assets)) {
     asset <- list(path = assets)
   } else if (is.character(assets) && length(assets) == 1L) {
     asset <- list(url = assets)
   } else if (is.list(assets) && (!is.null(assets$url) || !is.null(assets$path))) {
     asset <- assets
   } else {
-    stop("reference variants must be a data.frame, local path, URL, or asset descriptor", call. = FALSE)
+    stop("no canonical GRCh38 reference is configured; set COMPRESSOR_CANONICAL_REFERENCE or build the EBI dictionary with build_ebi_reference()",
+         call. = FALSE)
   }
   resolved <- download_reference_asset(asset, cache_dir, overwrite = overwrite)
   descriptor$variants <- resolved$path
   metadata <- descriptor$metadata %||% list()
-  metadata$id <- descriptor$id %||% metadata$id %||% "custom"
+  manifest_path <- if (grepl("[.]parquet$", resolved$path, ignore.case = TRUE)) {
+    sub("[.]parquet$", ".manifest.json", resolved$path, ignore.case = TRUE)
+  } else NULL
+  if (!is.null(manifest_path) && file.exists(manifest_path)) {
+    manifest <- read_manifest(manifest_path)
+    metadata <- utils::modifyList(metadata, manifest)
+    descriptor$id <- manifest$id %||% descriptor$id
+    descriptor$build <- manifest$build %||% descriptor$build
+  }
+  metadata$id <- metadata$id %||% descriptor$id %||% "custom"
   metadata$build <- descriptor$build %||% "GRCh38"
   metadata$source <- descriptor$source %||% NULL
   metadata$source_url <- asset$url %||% descriptor$source_url %||% NULL
@@ -175,10 +240,11 @@ download_reference <- function(reference = "GRCh38", cache_dir = NULL, overwrite
   descriptor
 }
 
-#' Resolve a reference, downloading it when necessary
+#' Resolve a configured reference, downloading an explicit remote asset when necessary
 #'
 #' @param reference "GRCh38", a reference descriptor, or a local reference
-#'   path.
+#'   path. `"GRCh38"` requires a preconfigured local canonical dictionary;
+#'   only descriptors with an explicit URL are downloaded.
 #' @param cache_dir Optional cache directory.
 #' @return A resolved reference descriptor.
 #' @export

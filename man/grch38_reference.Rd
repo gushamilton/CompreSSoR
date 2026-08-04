@@ -8,8 +8,9 @@ grch38_reference(cache_dir = NULL)
   \item{cache_dir}{Optional cache directory to use when resolving the descriptor.}
 }
 \description{
-Returns the external GRCh38 reference descriptor used by the automatic
-reference cache. The reference is downloaded on demand and is not bundled in
-the package.
+Returns the external EBI/Ensembl release-95 GRCh38 reference descriptor.
+Build the complete partitioned dictionary with
+\code{\link{build_ebi_reference}} and set
+\code{COMPRESSOR_CANONICAL_REFERENCE} to its output directory.
 }
 \value{A reference descriptor.}

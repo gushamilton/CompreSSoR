@@ -1,62 +1,50 @@
-# CompreSSoR benchmark record
+# CompreSSoR benchmark records
 
-first-pareto.csv is the underlying data for the first Pareto plot shipped
-with the package at inst/figures/compressor-pareto.svg.
+## Current v0.3 release evidence
 
-This is a measured five-run full-read benchmark on a real 10-million-row GWAS.
-The timing metric is the median wall-clock time to read the complete dataset;
-lower is faster. Compression ratio is relative to the source gzip file; higher
-is smaller. The Pareto flag identifies the points retained by the plot's
-speed/compression frontier.
+The authoritative format/access evidence is split by the question it answers:
 
-These numbers are a design record, not a promise of fixed performance. They
-depend on hardware, filesystem, software versions, data layout and the exact
-read path. They support the package choice of portable q9/SE10 Parquet as the
-standard durable store, with q8/framed representations treated as optional
-serving caches.
+- `cold-mr-final-summary.csv`, `cold-mr-final-runs.csv`, and
+  `cold-mr-final-metadata.json`: five randomized, fresh-R-process repetitions
+  of one-exposure/one-outcome MR, 5x5 MR, 25x25 MR, and complete loads from a
+  real 14,923,434-row FinnGen GWAS. They compare direct CompreSSoR/FastMR,
+  explicit CompreSSoR reads, TSV.gz, and indexed VCF.gz. Same-request
+  coalescing and the software page cache are disabled. Every logical study in
+  every format is a distinct fresh `.noindex` scratch copy written through
+  `F_NOCACHE`; Pcodec read descriptors also use `F_NOCACHE`. This is described
+  as a symmetric cache-controlled cold approximation, not as proof that macOS
+  has no filesystem state. The user-owned `mediaanalysisd` process was paused
+  during timed trials and resumed afterwards; no root service or Spotlight
+  configuration was changed.
+- `reader-profile-r.json`, `reader-profile-python.json`, and
+  `reader-runtime-profile.csv`: five-run operating-system-warm component
+  profiles. These distinguish analysis-ready R/NumPy data from Python's much
+  smaller but still encoded bridge representation.
+- `pcodec-canonical-access.json`, `pcodec-canonical-access-runs.csv`, and
+  `pcodec-v03-stress.json`: earlier v0.3 warm sparse, regional, and full-reader
+  latency checks.
+- `pcodec-full-api-roundtrip.json`: the deterministic real-data numeric audit.
 
-## Conversion/QC modes
+The measured release fixture occupies 58,033,297 bytes as a self-contained
+Pcodec store, versus 201,658,018 bytes for the eight-column TSV.gz and
+228,634,485 bytes for indexed VCF.gz plus `.tbi`. Exact REF/ALT identity is
+included in the Pcodec size; there is no uncounted variant spine.
 
-`modes-edge.csv` records three runs on a balanced 550,000-row, 22-chromosome
-fixture. It checks that serial and chromosome-parallel QC agree, that the
-default QC mode retains every row, and that explicit core-panel filtering is
-accounted for. Median times are 0.374 seconds for serial QC, 0.956 seconds
-for four-worker QC, and 1.130 seconds for four-worker core filtering. The
-small fixture is a correctness/mode record; it is not a claim that the
-current in-memory parallel path accelerates a full GWAS.
+## Pareto design record
 
-## Release-gate real-GWAS benchmark
+`first-pareto.csv` is the data behind `inst/figures/compressor-pareto.svg`.
+It records the original five-repeat representation sweep that selected the
+independent quantised streams. It is a historical design benchmark rather than
+the current exported-package timing. Only its median summary survives here: raw
+run logs, source byte accounting, exact projection schema, and complete runtime
+metadata were not retained, so it must not be used as an independently
+reproducible comparison with the release benchmark.
 
-`release-gate-benchmark.csv` records the Mac mini run on the real
-16,111,549-row FinnGen R2 ANTIDEPRESSANTS GWAS. Five convert-only compression
-runs had a 46.006-second median and five whole-store decompressions had a
-35.577-second median. Three GRCh38 QC compression runs had a 96.003-second
-median and three QC decompressions had a 31.353-second median. The preserve-all
-stores were 892,353,845 and 899,137,039 bytes respectively, and all shape and
-validation checks passed.
+## Earlier engineering records
 
-`release-gate-followup.csv` records five exact/standard round-trip checks,
-five regional reads through the durable store and q8 cache, and three real
-100,000-row serial versus four-worker QC comparisons. The direct-region and
-q8-cache medians were 0.048 and 0.018 seconds; serial and four-worker QC
-medians were 21.244 and 18.985 seconds, with real serial/parallel output
-parity checked separately.
-
-## Storage-size benchmark
-
-`storage-size-benchmark.csv` records absolute on-disk bytes and bytes per row
-for the same 16,111,549-row real GWAS. The source gzip was 391,708,712 bytes,
-the raw TSV stream was 1,273,085,087 bytes, and the standard q9 Parquet store
-was 892,353,845 bytes for convert-only output and 899,137,039 bytes after
-GRCh38 QC. Exact Parquet and q8 cache sizes were measured in temporary stores;
-the q8 cache is reported as an optional serving layer, not as a standalone
-replacement for the q9 variant spine.
-
-## VCF.bgz + Tabix comparison
-
-vcf-tabix.csv and vcf-tabix-runs.csv record a separate comparison against
-an indexed VCF representation of 11,106,737 real sumstats rows. The VCF kept
-REF/ALT plus beta, SE and p-value in INFO fields, was bgzip-compressed,
-bcftools-sorted and Tabix-indexed. It was measured separately because the
-source contains 11.1 million rows and is GRCh37, whereas the first Pareto
-benchmark is a 10-million-row design record and CompreSSoR targets GRCh38.
+`pcodec-full-api-benchmark.json` and `pcodec-full-api-runs.csv` are the old
+0.2.0 release records. The remaining CSV files document earlier Parquet, q8,
+VCF/Tabix, storage, conversion-mode, and release-gate experiments. They are
+retained for reproducibility and are not the headline benchmark for the
+current Pcodec format. Results depend on hardware, filesystem, software
+versions, dataset, and the exact access path.

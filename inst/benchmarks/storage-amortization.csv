@@ -1,0 +1,4 @@
+"benchmark_id","studies","shared_canonical_bytes_per_study","q9_shared_store_bytes_per_study","q9_shared_plus_q8_bytes_per_study","source_gzip_bytes_per_study"
+"compressor_storage_amortization_finngen_16111549",1,142797914,694221274,823102461,391708712
+"compressor_storage_amortization_finngen_16111549",5,28559582.8,579982942.8,708864129.8,391708712
+"compressor_storage_amortization_finngen_16111549",100,1427979.14,552851339.14,681732526.14,391708712

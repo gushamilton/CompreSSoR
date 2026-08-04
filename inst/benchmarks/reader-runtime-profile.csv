@@ -1,0 +1,5 @@
+runtime,path,projection,output_state,runs,median_load_seconds,min_load_seconds,max_load_seconds,median_load_and_touch_seconds
+R,public_api,"z;beta;standard_error;effect_allele_frequency",fully_decoded_R_vectors,5,0.162,0.161,0.330,0.230
+R,public_api,"identity;z;beta;standard_error;effect_allele_frequency",fully_decoded_R_vectors,5,0.463,0.462,0.673,0.889
+Python,direct_numpy,"identity;z;beta;standard_error;effect_allele_frequency",fully_decoded_numpy_arrays,5,1.538988,1.534519,1.623577,1.599795
+Python,binary_bridge,"compact_identity_codes;numeric_semantic_codes",encoded_bridge_not_analysis_ready,5,0.141416,0.140097,0.142093,

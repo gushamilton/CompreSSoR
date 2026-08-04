@@ -1,0 +1,19 @@
+{
+  "benchmark_signature": "79f226980441680a707ecf85f3671ed0c96475622bdad41201c0705caa21fc49",
+  "implementation": {
+    "package": "0.2.0",
+    "git_sha": "1d9087157ccccac6dbd765f5e44a978e877b578f",
+    "git_worktree_dirty": false,
+    "benchmark_script_sha256": "6af3ed87cb693b8318bca56bbf1b89a1758862b866be592a6b2b4bd43a2969c3",
+    "pcodec_backend_sha256": "897c5fc9192df7962b8a5a6f3e830bb163070b3c519169cca65f4d619d07baff",
+    "native_reader_sha256": "11fef293836a5e38f0c65ec893e13d39d2f0b097a13b76e7cd3537f05e182bb7",
+    "source_sha256": "a546fcd0d0ebb1a860e211710523d27cd66f0213b4448090d8068603a4d59003"
+  },
+  "rows_checked": 10000,
+  "identity_exact": true,
+  "max_abs_z_error": 0.0069,
+  "max_abs_eaf_error": 0.0031,
+  "max_relative_se_error": 0.0113,
+  "max_abs_derived_beta_error": 0.0197,
+  "p_is_exactly_derived_from_decoded_z": true
+}
