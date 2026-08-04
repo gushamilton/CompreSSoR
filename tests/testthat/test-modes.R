@@ -73,7 +73,7 @@ test_that("variant-set filtering works in convert mode without harmonisation", {
 
 test_that("named common and tag panels resolve through environment variables", {
   input <- make_edge_case_sumstats()
-  panel_path <- tempfile("common-variants-", fileext = ".tsv.gz")
+  panel_path <- tempfile("common-variants-", fileext = ".tsv")
   panel <- data.frame(variant_id = compressor_variant_key(
     input$chromosome[1:2], input$base_pair_location[1:2],
     input$other_allele[1:2], input$effect_allele[1:2]
