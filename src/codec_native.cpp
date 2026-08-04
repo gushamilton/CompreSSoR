@@ -194,6 +194,13 @@ extern "C" SEXP compressor_decode_native(
   if (centre_count > 0 && centre_values == nullptr) {
     Rf_error("native decoder block centres must be numeric");
   }
+  // The block centre is constant for every row in a block.  Materialise its
+  // multiplicative factor once; calling exp2() in the row loop made the
+  // R-facing decoder materially slower than the historical native reader.
+  std::vector<double> centre_factors(static_cast<std::size_t>(centre_count));
+  for (R_xlen_t i = 0; i < centre_count; ++i) {
+    centre_factors[static_cast<std::size_t>(i)] = std::exp2(centre_values[i]);
+  }
 
   const bool want_beta = Rf_asLogical(include_beta) == TRUE;
   const bool want_p = Rf_asLogical(include_p) == TRUE;
@@ -246,7 +253,7 @@ extern "C" SEXP compressor_decode_native(
       const R_xlen_t centre = std::min<R_xlen_t>(block, centre_count - 1);
       se_out[row] = se_table[static_cast<std::size_t>(se_value) * eaf_width +
                               safe_eaf_value] *
-                    std::exp2(centre_values[centre]);
+                    centre_factors[static_cast<std::size_t>(centre)];
     } else {
       se_out[row] = kNaN;
     }

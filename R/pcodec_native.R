@@ -8,10 +8,10 @@ PCODEC_NATIVE_FORMAT <- "0.4.4-pcodec-native"
 PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native",
                                      "0.4.2-pcodec-native", "0.4.3-pcodec-native",
                                      PCODEC_NATIVE_FORMAT)
-PCODEC_NATIVE_BLOCK_ROWS <- 32768L
-PCODEC_NATIVE_KEY_BLOCK_ROWS <- 8192L
+PCODEC_NATIVE_BLOCK_ROWS <- 65536L
+PCODEC_NATIVE_KEY_BLOCK_ROWS <- 131072L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
-PCODEC_NATIVE_PAGE_ROWS <- 32768L
+PCODEC_NATIVE_PAGE_ROWS <- 131072L
 PCODEC_NATIVE_LEVEL <- 8L
 PCODEC_NATIVE_SE_BITS <- 8L
 PCODEC_NATIVE_SE_COUNT <- 254L
@@ -387,6 +387,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     codec = list(
       name = "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
+      page_rows = PCODEC_NATIVE_PAGE_ROWS,
       compression = paste0("Pcodec standalone streams; ", key_block_rows,
                            "-row key frames and ", block_rows, "-row value frames"),
       z_bits = 9L, eaf_bits = 8L, se_bits = PCODEC_NATIVE_SE_BITS,

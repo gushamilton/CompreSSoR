@@ -6,6 +6,9 @@
   process entirely for ordinary reads and writes.
 - The historical Python Pcodec backend is archived outside the installed
   package; Rust/Cargo is now the sole Pcodec build requirement.
+- BP FinnGen chr1 benchmarks selected 131,072-row identity frames and
+  131,072-row Pcodec pages: 4,297,931 bytes self-contained versus 15,186,281
+  bytes for the source TSV.gz.
 
 # CompreSSoR 0.3.0
 

@@ -27,15 +27,16 @@ The store keeps the variant identity in every file, without repeating rsIDs or
 requiring a study-specific external spine. It stores the core numerical streams
 in Pcodec and derives beta and p-value when requested.
 
-On a real 14,923,434-variant FinnGen GWAS:
+The repository keeps the original full-FinnGen Pareto plot because it records
+the benchmark that motivated the format. Its reference-anchored points exclude
+the shared identity payload; the current package is self-contained and therefore
+must include the identity key in its headline size.
 
-| Measure | Result |
+| Measure | Historical record |
 |---|---:|
-| Source TSV.gz | 201,658,018 bytes |
-| Self-contained `.cpr` | 58,033,297 bytes |
-| Smaller than TSV.gz | **3.47×** |
-| Direct 25×25 MR | **1.274 s** |
-| Same 25×25 workflow from TSV.gz | 165.266 s |
+| Source TSV.gz | 198,128,448 bytes |
+| Reference-anchored Pcodec payload | 34,485,522 bytes |
+| Payload versus TSV.gz | **5.75×** |
 
 The headline Pareto result below preserves the measured historical frontier
 that motivated the Pcodec representation. The legacy native overlay is kept as
@@ -44,11 +45,8 @@ separately while the final full-FinnGen comparison is regenerated.
 
 ![Compression/access Pareto frontier](inst/figures/compressor-pareto.svg)
 
-The current native check uses a deterministic 1-million-row fixture on the Mac
-mini. TSV.gz is 53,154,119 bytes and the self-contained native `.cpr` is
-3,067,151 bytes (17.33× smaller), with five-run warm medians of 0.387 s and
-0.058 s for full reads. A 10 kb region read is 0.008 s and 25 canonical-key
-access is 0.204 s. See the [native SE8 benchmark](inst/benchmarks/native-pcodec-se8-frame.csv).
+The old one-million-row Mac mini fixture remains available as a historical
+engineering record; the current real-data check is run on BP below.
 
 The native-only smoke benchmark on the Mac mini used one million coherent
 rows (`Z ~ N(0, 1)`, `beta = Z × SE`) and five warm full reads:
@@ -66,26 +64,26 @@ Each access number is the median of five runs; the canonical-key test requests
 reproducible engineering check for the installed native backend;
 the historical real-GWAS table above predates the native-only format.
 
-The fresh chr1 FinnGen core benchmark is a like-for-like native check on
-1,124,344 biallelic SNVs and five repetitions per workload. The baseline is an
-eight-column TSV.gz (`chrom`, `pos`, `REF`, `ALT`, `beta`, `SE`, `EAF`, `p`),
-not the wider FinnGen annotation table:
+The current BP chr1 benchmark uses 1,124,344 biallelic SNVs and five repetitions
+per workload. The source is an eight-column TSV.gz (`chrom`, `pos`, `REF`,
+`ALT`, `beta`, `SE`, `EAF`, `p`):
 
-| Workload | Pcodec | TSV.gz | Result |
-|---|---:|---:|---:|
-| Compress end-to-end | 7.038 s | — | — |
-| Full core read | 0.073 s | 0.121 s | 1.66× faster |
-| Full read with beta/p | 0.075 s | 0.121 s | 1.61× faster |
-| 1 Mb region | 0.008 s | 0.132 s | 16.5× faster |
-| 25 canonical keys | 0.212 s | 0.123 s | 1.72× slower |
-| 1,000 canonical keys | 1.458 s | 0.124 s | 11.8× slower |
+| Workload | Best self-contained Pcodec |
+|---|---:|
+| Store size | **4,297,931 bytes** |
+| Write time, median of 5 | **10.258 s** |
+| Full numeric read | **0.060 s** |
+| Full numeric read with beta/p | **0.060 s** |
+| Full identity + numeric read | **0.121 s** |
+| 1 Mb identity + numeric region | **0.021 s** |
 
-The core TSV.gz is 15,186,281 bytes; the self-contained Pcodec store is
-4,371,370 bytes (**3.47× smaller**). This exposes the current trade-off
-honestly: Pcodec wins whole-file and regional access, while the present
-row-by-row sparse-key path still needs optimization. See the [chr1 summary
-record](inst/benchmarks/finngen-chr1-native.csv), [five-run record](inst/benchmarks/finngen-chr1-native-runs.csv),
-and [reproducible script](scripts/benchmark-finngen-chr1.R).
+The source TSV.gz is 15,186,281 bytes, so the best self-contained store is
+**3.53× smaller**. The BP sweep reduced the old 4,371,286-byte store by 1.68%
+using 131,072-row identity frames and 131,072-row Pcodec pages. The
+reference-anchored numeric payload plus native index is 5.92× smaller than the source;
+that is the correct comparison to the old 5.75× historical point. See the
+[BP optimization record](inst/benchmarks/bp-finngen-chr1-optimization.csv),
+[reproducible script](scripts/benchmark-finngen-chr1.R).
 
 See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)
 for all runs and [the technical guide](docs/README-technical.md) for protocol,
@@ -255,9 +253,10 @@ gwas.cpr/
 └── exceptions.bin          sparse higher-precision numeric exceptions
 ```
 
-The native 0.4.4 store uses 8,192-row identity frames and 65,536-row numeric
-frames by default; `block_rows` changes the numeric frame size when a smaller
-random-access frame is preferable. Older 0.2/0.3 stores belong to
+The native 0.4.4 store uses 131,072-row identity frames, 131,072-row Pcodec
+pages, and 65,536-row numeric access frames by default; `block_rows` changes
+the numeric frame size when a smaller random-access frame is preferable. Older
+0.2/0.3 stores belong to
 the archived pre-native implementation and are not read by this release.
 
 | Logical field | Standard storage | Read-time result |

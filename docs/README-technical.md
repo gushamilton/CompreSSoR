@@ -32,7 +32,7 @@ The standard profile stores Z, EAF, and SE in separate numerical streams:
 
 - Z: 9-bit central quantisation, with sparse float32 exceptions;
 - EAF: 8-bit arcsine/square-root quantisation;
-- SE: 6-bit block-centred log2 residual, with sparse exceptions.
+- SE: 8-bit block-centred log2 residual, with sparse exceptions.
 
 This is a bounded-lossy representation. The variant key remains exact, and the
 manifest records the numeric profile and tolerances. A Parquet exact store is
@@ -111,6 +111,35 @@ CompreSSoR follows that rule. Pages are independently decodable and carry
 checksums; the manifest records file checksums, codec constants, identity
 constants, source columns, reference metadata, and harmonisation counts.
 
+The current measured geometry is 131,072-row identity frames, 131,072-row
+Pcodec pages, and 65,536-row value frames. The identity-frame change was tested
+on real FinnGen chr1 rather than inferred from a synthetic estimate: larger
+frames reduced the self-contained store until the gain fell below one percent,
+while 1,048,576-row identity frames made a 1 Mb regional read more than twice
+as slow as the selected 131,072-row frame.
+
+## Benchmark reconciliation
+
+The historical Pareto plot and the current self-contained store measure
+different byte contracts. The historical reference-anchored Pcodec point
+omits the shared identity stream because the canonical reference was counted
+once outside every study. The current `.cpr` store intentionally includes its
+exact global-position plus REF→ALT key, so it can be moved and read without an
+external spine.
+
+On the BP FinnGen chr1 fixture (1,124,344 SNVs; source TSV.gz 15,186,281
+bytes), the numeric streams plus native index are 2,564,910 bytes, or 5.92× smaller
+than the source. The best self-contained store is 4,297,931 bytes, or 3.53×
+smaller. The difference is the identity key, not a missing or malformed
+Parquet/Pcodec numeric payload. The five-run records and candidate sweep are
+in `inst/benchmarks/bp-finngen-chr1-optimization.csv`.
+
+The native R-facing decoder precomputes the block-centre factors once per
+frame, rather than evaluating `exp2()` for every row. A separate direct-file
+C++ prototype was benchmarked on BP but was slower than the existing Pcodec
+stream path, so it is not enabled in the package; issue #7 remains open for a
+proper end-to-end native reader.
+
 ## Optional extra columns
 
 The common use case is to keep the store minimal: identity, Z, EAF, and SE are
@@ -185,9 +214,9 @@ ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
 the package independent of the incomplete upstream wrapped C API while
 retaining Pcodec's numerical codec.
 
-The native format is `0.4.4-pcodec-native`. Identity streams use 8,192-row
-frames and numeric streams use 65,536-row frames by default (`block_rows`
-changes the numeric frame size). The five streams are `uint32` global position,
+The native format is `0.4.4-pcodec-native`. Identity streams use 131,072-row
+frames, Pcodec pages use 131,072 rows, and numeric streams use 65,536-row
+frames by default (`block_rows` changes the numeric frame size). The five streams are `uint32` global position,
 `uint8` substitution code, `uint16` Z code, `uint8` EAF code, and `uint8` SE
 code. SE centres are shared across 65,536 rows, while the SE code now uses all
 eight physical bits: 254 central bins plus missing and exact-exception
@@ -211,7 +240,9 @@ one-million-row SNV fixture and the self-contained identity key. The 0.4.4
 store is 3,067,151 bytes versus 53,154,119 bytes for source TSV.gz and takes
 4.347 s to write. Five-run warm medians are 0.058 s for all-column full load,
 0.008 s for a 10 kb region, and 0.204 s for 25 canonical-key reads. Full
-validation passed. This is an engineering smoke benchmark, not a claim about
+validation passed. This historical smoke store used 8K identity frames and 65K
+value frames; the current defaults are documented above. This is an engineering
+benchmark, not a claim about
 every GWAS or sparse workload; the real-GWAS suite should be regenerated for
 the native format before making a new production headline.
 

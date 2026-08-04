@@ -1,6 +1,17 @@
 # CompreSSoR benchmark records
 
-## Current v0.3 release evidence
+## Current BP chr1 optimisation record
+
+`bp-finngen-chr1-optimization.csv` is the current five-run Linux evidence
+from BluePebble compute nodes, using the real 1,124,344-row FinnGen chr1 core
+SNV file. It records the identity-frame and Pcodec-page sweep, the selected
+131,072-row identity/page geometry, and the explicit reference-anchored versus
+self-contained byte contracts. The selected store is 4,297,931 bytes versus
+15,186,281 bytes for the source TSV.gz (3.53x smaller). The numeric-only
+payload plus native index is 2,564,910 bytes (5.92x smaller) because it excludes the
+self-contained identity streams.
+
+## Earlier release evidence
 
 The authoritative format/access evidence is split by the question it answers:
 
@@ -40,13 +51,12 @@ frames.
 This is an implementation benchmark, not a replacement for the final
 full-FinnGen comparison.
 
-The fresh like-for-like chr1 FinnGen check is recorded in
+The earlier like-for-like chr1 FinnGen check is retained in
 `finngen-chr1-native.csv` and `finngen-chr1-native-runs.csv`. It uses
 1,124,344 biallelic SNVs, an eight-column core TSV.gz baseline, and five runs
-per workload. The 4,371,370-byte self-contained Pcodec store is 3.47x smaller
-than the 15,186,281-byte TSV.gz. Full and 1 Mb regional reads are faster with
-Pcodec; the current many-independent-key path is slower and is reported as a
-known optimization target rather than hidden in a single aggregate score.
+per workload. Its 4,371,370-byte self-contained store is retained as the
+superseded baseline; the current BP result is in
+`bp-finngen-chr1-optimization.csv` above.
 
 The clean Linux portability/threading check is recorded in
 `pcodec-threads-bp-summary.csv`. It ran as separate one-hour Slurm jobs on
