@@ -4,10 +4,12 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.3-pcodec-native"
+PCODEC_NATIVE_FORMAT <- "0.4.4-pcodec-native"
 PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native",
-                                     "0.4.2-pcodec-native", PCODEC_NATIVE_FORMAT)
+                                     "0.4.2-pcodec-native", "0.4.3-pcodec-native",
+                                     PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 32768L
+PCODEC_NATIVE_KEY_BLOCK_ROWS <- 8192L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 32768L
 PCODEC_NATIVE_LEVEL <- 8L
@@ -215,6 +217,38 @@ pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLO
   gaps
 }
 
+pcodec_native_block_template <- function(position, block_rows) {
+  n <- length(position)
+  block_count <- if (n) ceiling(n / block_rows) else 0L
+  lapply(seq_len(block_count), function(block) {
+    start <- (block - 1L) * block_rows
+    stop <- min(n, block * block_rows)
+    list(row_start = start, row_stop = stop,
+         first_position = position[start + 1L],
+         last_position = position[stop])
+  })
+}
+
+pcodec_native_validate_block_rows <- function(value, label) {
+  value <- as.integer(value)
+  if (length(value) != 1L || is.na(value) || value < 1024L ||
+      value != 2^round(log2(value))) {
+    stop(label, " must be a power of two >= 1024", call. = FALSE)
+  }
+  value
+}
+
+pcodec_native_index_blocks <- function(index, kind = c("value", "key")) {
+  kind <- match.arg(kind)
+  if (identical(kind, "key") && !is.null(index$key_blocks)) {
+    return(index$key_blocks)
+  }
+  if (identical(kind, "value") && !is.null(index$value_blocks)) {
+    return(index$value_blocks)
+  }
+  index$blocks
+}
+
 pcodec_native_exception_bytes <- function(exceptions) {
   if (!nrow(exceptions)) return(raw())
   connection <- rawConnection(raw(0), open = "wb")
@@ -285,25 +319,19 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   ordered <- data[order, , drop = FALSE]
   values <- pcodec_native_quantise(ordered)
   n <- nrow(ordered)
-  block_rows <- as.integer(metadata$block_rows %||% PCODEC_NATIVE_BLOCK_ROWS)
-  if (length(block_rows) != 1L || is.na(block_rows) || block_rows < 1024L ||
-      block_rows != 2^round(log2(block_rows))) {
-    stop("native Pcodec block_rows must be a power of two >= 1024", call. = FALSE)
-  }
-  block_count <- if (n) ceiling(n / block_rows) else 0L
-  block_template <- lapply(seq_len(block_count), function(block) {
-    start <- (block - 1L) * block_rows
-    stop <- min(n, block * block_rows)
-    list(row_start = start, row_stop = stop,
-         first_position = ordered_position[start + 1L],
-         last_position = ordered_position[stop])
-  })
+  block_rows <- pcodec_native_validate_block_rows(
+    metadata$block_rows %||% PCODEC_NATIVE_BLOCK_ROWS, "native Pcodec block_rows")
+  key_block_rows <- pcodec_native_validate_block_rows(
+    metadata$key_block_rows %||% PCODEC_NATIVE_KEY_BLOCK_ROWS,
+    "native Pcodec key_block_rows")
+  block_template <- pcodec_native_block_template(ordered_position, block_rows)
+  key_block_template <- pcodec_native_block_template(ordered_position, key_block_rows)
   streams <- list(
     position = pcodec_native_append_stream(
-      pcodec_native_position_gaps(ordered_position, block_rows),
-      file.path(output, "position.pco"), "u32", block_rows),
+      pcodec_native_position_gaps(ordered_position, key_block_rows),
+      file.path(output, "position.pco"), "u32", key_block_rows),
     substitution = pcodec_native_append_stream(
-      ordered_substitution, file.path(output, "substitution.pco"), "u8", block_rows),
+      ordered_substitution, file.path(output, "substitution.pco"), "u8", key_block_rows),
     z = pcodec_native_append_stream(
       values$z, file.path(output, "z.pco"), "u16", block_rows),
     eaf = pcodec_native_append_stream(
@@ -313,10 +341,12 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   )
   exception_stream <- pcodec_native_write_exceptions(values$exceptions, output, block_template)
   index <- list(
-    format = "CompreSSoR-native-index", version = 2L,
+    format = "CompreSSoR-native-index", version = 3L,
     position_encoding = "delta_u32_within_block",
     rows = n, block_rows = block_rows,
-    blocks = block_template,
+    key_block_rows = key_block_rows, value_block_rows = block_rows,
+    blocks = block_template, key_blocks = key_block_template,
+    value_blocks = block_template,
     streams = streams, exceptions = exception_stream
   )
   jsonlite::write_json(index, file.path(output, "native.index.json"),
@@ -331,7 +361,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   manifest <- list(
     format = "CompreSSoR", format_version = PCODEC_NATIVE_FORMAT,
     backend = "pcodec", profile = "standard", rows = n, n_rows = n,
-    block_rows = block_rows, key_block_rows = block_rows,
+    block_rows = block_rows, key_block_rows = key_block_rows,
     value_block_rows = block_rows,
     identity = list(
       encoding = "native_global_position_plus_full_ref_alt_code",
@@ -357,7 +387,8 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     codec = list(
       name = "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
-      compression = paste0("Pcodec standalone stream per ", block_rows, "-row block"),
+      compression = paste0("Pcodec standalone streams; ", key_block_rows,
+                           "-row key frames and ", block_rows, "-row value frames"),
       z_bits = 9L, eaf_bits = 8L, se_bits = PCODEC_NATIVE_SE_BITS,
       se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
       p_storage = "omitted; derived from z",
@@ -402,7 +433,7 @@ pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
   index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
   if (!identical(index$format, "CompreSSoR-native-index") ||
-      !as.integer(index$version) %in% c(1L, 2L)) {
+      !as.integer(index$version) %in% c(1L, 2L, 3L)) {
     stop("invalid native Pcodec index", call. = FALSE)
   }
   index
@@ -427,7 +458,8 @@ pcodec_native_read_stream_block <- function(store, index, stream, block) {
                            if (stream %in% c("position")) "u32" else
                              if (stream %in% c("z")) "u16" else "u8")
   if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
-    values <- cumsum(values) + as.numeric(index$blocks[[block]]$first_position)
+    key_blocks <- pcodec_native_index_blocks(index, "key")
+    values <- cumsum(values) + as.numeric(key_blocks[[block]]$first_position)
   }
   values
 }
@@ -446,7 +478,8 @@ pcodec_native_read_stream_all <- function(store, index, stream) {
     values <- pcodec_native_decompress(blob, as.integer(location$values),
       if (stream == "position") "u32" else if (stream == "z") "u16" else "u8")
     if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
-      values <- cumsum(values) + as.numeric(index$blocks[[block]]$first_position)
+      key_blocks <- pcodec_native_index_blocks(index, "key")
+      values <- cumsum(values) + as.numeric(key_blocks[[block]]$first_position)
     }
     values
   })
@@ -545,9 +578,10 @@ pcodec_native_read_exception_block <- function(store, index, block) {
   pcodec_native_read_exception_bytes(blob, as.integer(location$count))
 }
 
-pcodec_native_block_ids_for_rows <- function(index, rows) {
+pcodec_native_block_ids_for_rows <- function(index, rows, kind = "value") {
   if (!length(rows)) return(integer())
-  stops <- vapply(index$blocks, function(block) as.numeric(block$row_stop), numeric(1))
+  blocks <- pcodec_native_index_blocks(index, kind)
+  stops <- vapply(blocks, function(block) as.numeric(block$row_stop), numeric(1))
   unique(findInterval(as.numeric(rows), stops) + 1L)
 }
 
@@ -697,24 +731,6 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     lower <- offsets[match(chromosome, names(compressor_grch38_chromosome_lengths))] + bounds$start - 1
     upper <- offsets[match(chromosome, names(compressor_grch38_chromosome_lengths))] + bounds$end - 1
   }
-  block_count <- length(index$blocks)
-  candidate_blocks <- seq_len(block_count)
-  if (!is.null(lower)) {
-    candidate_blocks <- candidate_blocks[vapply(index$blocks, function(block) {
-      as.numeric(block$last_position) >= lower && as.numeric(block$first_position) <= upper
-    }, logical(1))]
-  }
-  if (!is.null(key_targets)) {
-    target_positions <- as.numeric(key_targets$position)
-    candidate_blocks <- candidate_blocks[vapply(index$blocks, function(block) {
-      any(target_positions >= as.numeric(block$first_position) &
-            target_positions <= as.numeric(block$last_position))
-    }, logical(1))]
-  }
-  if (!is.null(row_targets)) candidate_blocks <- intersect(candidate_blocks,
-    pcodec_native_block_ids_for_rows(index, row_targets))
-  if (!length(candidate_blocks)) return(pcodec_native_empty_result(columns))
-
   if (is.null(region) && is.null(variants)) {
     output <- pcodec_native_full_read(store, index, requested, identity_needed,
                                       need_z, need_se, need_eaf)
@@ -722,19 +738,38 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     return(output)
   }
 
-  results <- list()
   source_bytes <- 0
-  for (block in candidate_blocks) {
-    meta <- index$blocks[[block]]
-    row_start <- as.integer(meta$row_start)
-    row_stop <- as.integer(meta$row_stop)
-    rows <- row_start:(row_stop - 1L)
-    position <- substitution <- NULL
-    if (identity_needed) {
-      position <- pcodec_native_read_stream_block(store, index, "position", block)
-      substitution <- pcodec_native_read_stream_block(store, index, "substitution", block)
-      source_bytes <- source_bytes + as.numeric(index$streams$position$blocks[[block]]$length) +
-        as.numeric(index$streams$substitution$blocks[[block]]$length)
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  selected_rows <- selected_position <- selected_substitution <- NULL
+  if (identity_needed) {
+    key_blocks <- pcodec_native_index_blocks(index, "key")
+    key_candidates <- seq_along(key_blocks)
+    if (!is.null(lower)) {
+      key_candidates <- key_candidates[vapply(key_blocks, function(block) {
+        as.numeric(block$last_position) >= lower &&
+          as.numeric(block$first_position) <= upper
+      }, logical(1))]
+    }
+    if (!is.null(key_targets)) {
+      target_positions <- as.numeric(key_targets$position)
+      key_candidates <- key_candidates[vapply(key_blocks, function(block) {
+        any(target_positions >= as.numeric(block$first_position) &
+              target_positions <= as.numeric(block$last_position))
+      }, logical(1))]
+    }
+    if (!is.null(row_targets)) {
+      key_candidates <- intersect(key_candidates,
+                                  pcodec_native_block_ids_for_rows(index, row_targets, "key"))
+    }
+    key_parts <- list()
+    for (key_block in key_candidates) {
+      meta <- key_blocks[[key_block]]
+      rows <- as.integer(meta$row_start):(as.integer(meta$row_stop) - 1L)
+      position <- pcodec_native_read_stream_block(store, index, "position", key_block)
+      substitution <- pcodec_native_read_stream_block(store, index, "substitution", key_block)
+      source_bytes <- source_bytes +
+        as.numeric(index$streams$position$blocks[[key_block]]$length) +
+        as.numeric(index$streams$substitution$blocks[[key_block]]$length)
       keep <- rep(TRUE, length(rows))
       if (!is.null(lower)) keep <- keep & position >= lower & position <= upper
       if (!is.null(row_targets)) keep <- keep & rows %in% row_targets
@@ -742,6 +777,35 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         keep <- keep & paste(position, substitution, sep = ":") %in%
           paste(key_targets$position, key_targets$substitution, sep = ":")
       }
+      if (any(keep)) {
+        key_parts[[length(key_parts) + 1L]] <- data.frame(
+          row = rows[keep], position = position[keep],
+          substitution = substitution[keep], stringsAsFactors = FALSE)
+      }
+    }
+    if (!length(key_parts)) return(pcodec_native_empty_result(columns))
+    selected <- do.call(rbind, key_parts)
+    selected <- selected[order(selected$row), , drop = FALSE]
+    selected_rows <- as.integer(selected$row)
+    selected_position <- as.numeric(selected$position)
+    selected_substitution <- as.integer(selected$substitution)
+    candidate_blocks <- pcodec_native_block_ids_for_rows(index, selected_rows, "value")
+  } else {
+    candidate_blocks <- seq_along(value_blocks)
+    if (!is.null(row_targets)) {
+      candidate_blocks <- pcodec_native_block_ids_for_rows(index, row_targets, "value")
+    }
+  }
+  if (!length(candidate_blocks)) return(pcodec_native_empty_result(columns))
+
+  results <- list()
+  for (block in candidate_blocks) {
+    meta <- value_blocks[[block]]
+    row_start <- as.integer(meta$row_start)
+    row_stop <- as.integer(meta$row_stop)
+    rows <- row_start:(row_stop - 1L)
+    if (identity_needed) {
+      keep <- rows %in% selected_rows
     } else {
       keep <- if (is.null(row_targets)) rep(TRUE, length(rows)) else rows %in% row_targets
     }
@@ -766,7 +830,9 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)
     if (identity_needed) {
-      identity_part <- pcodec_native_key_columns(position[keep], substitution[keep])
+      selected_index <- match(rows[keep], selected_rows)
+      identity_part <- pcodec_native_key_columns(
+        selected_position[selected_index], selected_substitution[selected_index])
       part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
     }
     if ("z" %in% names(decoded)) part$z <- decoded$z

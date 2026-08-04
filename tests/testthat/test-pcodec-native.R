@@ -19,8 +19,10 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
   path <- tempfile("pcodec-native-")
   store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  expect_equal(store$manifest$format_version, "0.4.3-pcodec-native")
+  expect_equal(store$manifest$format_version, "0.4.4-pcodec-native")
   expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions")
+  expect_equal(store$manifest$key_block_rows, 8192L)
+  expect_equal(store$manifest$value_block_rows, 65536L)
   expect_false(file.exists(file.path(path, "variants.parquet")))
   expect_true(validate_compressor(store, full = TRUE)$valid)
 
