@@ -85,6 +85,7 @@ q_encode <- function(beta, se, eaf, z = NULL, z_bits = 9L, se_bits = 6L,
     z_bits = as.integer(z_bits), eaf_bits = as.integer(eaf_bits), se_bits = as.integer(se_bits),
     z_min = z_min, z_max = z_max, z_count = z_count,
     eaf_count = eaf_max - 1L, se_count = se_count,
+    se_residual_min = -1, se_residual_max = 1,
     block_rows = as.integer(block_rows), block_centers_log2_residual = unname(centers),
     z_exceptions = sum(z_exception), se_exceptions = sum(se_exception),
     eaf_exceptions = sum(eaf_exception), exception_rows = nrow(exceptions),
@@ -127,6 +128,8 @@ q_decode <- function(main, exceptions, metadata, include_beta = TRUE, include_p 
                  as.numeric(native_exceptions$eaf_value),
                  as.integer(native_exceptions$flags),
                  isTRUE(include_beta), isTRUE(include_p),
+                 as.numeric(metadata$se_residual_min %||% -1),
+                 as.numeric(metadata$se_residual_max %||% 1),
                  PACKAGE = "CompreSSoR"))
   }
 
@@ -157,7 +160,9 @@ q_decode <- function(main, exceptions, metadata, include_beta = TRUE, include_p 
   se_eaf <- eaf_table
   se_eaf[is.na(se_eaf)] <- 0.5
   safe_eaf <- pmin(1 - 1e-12, pmax(1e-12, se_eaf))
-  se_residual <- (seq_len(se_count) - 0.5) * (2 / se_count) - 1
+  se_min <- as.numeric(metadata$se_residual_min %||% -1)
+  se_max <- as.numeric(metadata$se_residual_max %||% 1)
+  se_residual <- se_min + (seq_len(se_count) - 0.5) * ((se_max - se_min) / se_count)
   eaf_correction <- -0.5 * log2(2 * safe_eaf * (1 - safe_eaf))
   se_table <- matrix(NA_real_, nrow = 2^as.integer(metadata$se_bits),
                      ncol = length(se_eaf))

@@ -4,12 +4,16 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.2-pcodec-native"
-PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native", PCODEC_NATIVE_FORMAT)
+PCODEC_NATIVE_FORMAT <- "0.4.3-pcodec-native"
+PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native",
+                                     "0.4.2-pcodec-native", PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 32768L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 32768L
 PCODEC_NATIVE_LEVEL <- 8L
+PCODEC_NATIVE_SE_BITS <- 8L
+PCODEC_NATIVE_SE_COUNT <- 254L
+PCODEC_NATIVE_SE_RESIDUAL_RANGE <- c(-4, 4)
 
 pcodec_native_available <- function() {
   is.loaded("compressor_pcodec_native_available", PACKAGE = "CompreSSoR") &&
@@ -123,9 +127,16 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   residual[residual_ready] <- log2(se[residual_ready]) +
     0.5 * log2(2 * safe_eaf_for_se[residual_ready] *
                  (1 - safe_eaf_for_se[residual_ready]))
-  se_count <- 62L
-  se_missing <- 62L
-  se_exception <- 63L
+  # The physical stream is already uint8. The previous native format used
+  # only six semantic bits and therefore turned ordinary, non-template SEs
+  # into exceptions. Use the full byte domain: 254 central bins plus one
+  # missing and one exact-exception sentinel.
+  se_count <- PCODEC_NATIVE_SE_COUNT
+  se_missing <- se_count
+  se_exception <- se_count + 1L
+  se_min <- PCODEC_NATIVE_SE_RESIDUAL_RANGE[1]
+  se_max <- PCODEC_NATIVE_SE_RESIDUAL_RANGE[2]
+  se_step <- (se_max - se_min) / se_count
   se_codes <- rep.int(se_missing, n)
   centres <- numeric(if (n) ceiling(n / block_rows) else 0L)
   se_central <- is.finite(residual) & valid_se & valid_eaf
@@ -137,9 +148,9 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
       good <- inside[se_central[inside]]
       centres[block] <- if (length(good)) stats::median(residual[good], na.rm = TRUE) else 0
       delta <- residual[inside] - centres[block]
-      in_range <- se_central[inside] & delta >= -1 & delta < 1
+      in_range <- se_central[inside] & delta >= se_min & delta < se_max
       local <- rep.int(se_missing, length(inside))
-      local[in_range] <- as.integer(floor((delta[in_range] + 1) / (2 / se_count)))
+      local[in_range] <- as.integer(floor((delta[in_range] - se_min) / se_step))
       local[se_central[inside] & !in_range] <- se_exception
       local[valid_se[inside] & !valid_eaf[inside]] <- se_exception
       se_codes[inside] <- local
@@ -323,8 +334,12 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       effect_allele_is_alt = TRUE, other_allele_is_ref = TRUE
     ),
     semantic_codec = list(
-      name = "z9/eaf8/se6", z_bits = 9L, eaf_bits = 8L,
-      se_bits = 6L, z_range = c(-3.5, 3.5),
+      name = "z9/eaf8/se8", z_bits = 9L, eaf_bits = 8L,
+      se_bits = PCODEC_NATIVE_SE_BITS, z_range = c(-3.5, 3.5),
+      se_count = PCODEC_NATIVE_SE_COUNT,
+      se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
+      se_missing = PCODEC_NATIVE_SE_COUNT,
+      se_exception = PCODEC_NATIVE_SE_COUNT + 1L,
       se_center_block_rows = PCODEC_NATIVE_SE_CENTER_ROWS,
       block_centers_log2_residual = values$centres,
       exception_rows = nrow(values$exceptions), exception_precision = "float32",
@@ -332,10 +347,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       p_value = "derived as 2 * pnorm(-abs(z))"
     ),
     codec = list(
-      name = "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions",
+      name = "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
       compression = "Pcodec standalone stream per 32768-row block",
-      z_bits = 9L, eaf_bits = 8L, se_bits = 6L,
+      z_bits = 9L, eaf_bits = 8L, se_bits = PCODEC_NATIVE_SE_BITS,
+      se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
       p_storage = "omitted; derived from z",
       beta_storage = "omitted; derived from z and standard_error",
       exception_storage = "zstd level 19, 17-byte float32 records"
@@ -452,28 +468,39 @@ pcodec_native_read_all_exceptions <- function(store, index) {
 pcodec_native_full_read <- function(store, index, requested, need_identity,
                                      need_z, need_se, need_eaf) {
   n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  semantic <- store$manifest$semantic_codec %||% list()
+  z_count <- as.integer(semantic$z_count %||% 510L)
+  se_count <- as.integer(semantic$se_count %||% 62L)
+  eaf_count <- as.integer(semantic$eaf_count %||% 255L)
+  z_bits <- as.integer(semantic$z_bits %||% 9L)
+  se_bits <- as.integer(semantic$se_bits %||% 6L)
+  eaf_bits <- as.integer(semantic$eaf_bits %||% 8L)
+  z_range <- as.numeric(unlist(semantic$z_range %||% c(-3.5, 3.5)))
+  se_range <- as.numeric(unlist(semantic$se_residual_range %||% c(-1, 1)))
   needed <- unique(c(if (need_z) "z", if (need_se) "se", if (need_eaf) "eaf"))
   if (need_se) needed <- unique(c(needed, "eaf"))
   codes <- list()
   for (stream in needed) {
     codes[[stream]] <- pcodec_native_read_stream_all(store, index, stream)
   }
-  if ("z" %in% needed) z_code <- codes$z else z_code <- rep.int(510L, n)
-  if ("se" %in% needed) se_code <- codes$se else se_code <- rep.int(62L, n)
+  if ("z" %in% needed) z_code <- codes$z else z_code <- rep.int(z_count, n)
+  if ("se" %in% needed) se_code <- codes$se else se_code <- rep.int(se_count, n)
   if ("eaf" %in% needed) eaf_code <- codes$eaf else eaf_code <- rep.int(0L, n)
   exceptions <- if (length(needed)) pcodec_native_read_all_exceptions(store, index) else
     data.frame(row = integer(), z = numeric(), log2se = numeric(),
                eaf = numeric(), flags = integer())
   decoded <- if (length(needed)) {
     .Call("compressor_decode_native", as.integer(z_code), as.integer(se_code),
-      as.integer(eaf_code), -3.5, 3.5, 510L, 62L, 255L, 9L, 6L, 8L,
-      as.integer(store$manifest$semantic_codec$se_center_block_rows %||%
+      as.integer(eaf_code), z_range[1], z_range[2], z_count, se_count, eaf_count,
+      z_bits, se_bits, eaf_bits,
+      as.integer(semantic$se_center_block_rows %||%
                    PCODEC_NATIVE_SE_CENTER_ROWS),
-      as.numeric(unlist(store$manifest$semantic_codec$block_centers_log2_residual)),
+      as.numeric(unlist(semantic$block_centers_log2_residual)),
       as.integer(exceptions$row), as.numeric(exceptions$z),
       as.numeric(2^exceptions$log2se), as.numeric(exceptions$eaf),
       as.integer(exceptions$flags), isTRUE("beta" %in% requested),
-      isTRUE("p_value" %in% requested), PACKAGE = "CompreSSoR")
+      isTRUE("p_value" %in% requested), se_range[1], se_range[2],
+      PACKAGE = "CompreSSoR")
   } else list(z = numeric(n), standard_error = numeric(n),
               effect_allele_frequency = numeric(n))
   output <- data.frame(row = seq_len(n) - 1L, stringsAsFactors = FALSE)
@@ -551,24 +578,30 @@ pcodec_native_target_keys <- function(variants) {
 }
 
 pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
-                                         row_start, n, needed) {
+                                         row_start, n, needed,
+                                         semantic_codec = list()) {
   output <- list()
+  z_count <- as.integer(semantic_codec$z_count %||% 510L)
+  eaf_count <- as.integer(semantic_codec$eaf_count %||% 255L)
+  se_count <- as.integer(semantic_codec$se_count %||% 62L)
+  se_range <- as.numeric(unlist(semantic_codec$se_residual_range %||% c(-1, 1)))
+  if (length(se_range) != 2L || !all(is.finite(se_range)) || se_range[2] <= se_range[1]) {
+    stop("invalid native semantic SE residual range", call. = FALSE)
+  }
   if ("z" %in% needed) {
-    z_count <- 510L
     z <- rep(NA_real_, n)
     ok <- codes$z < z_count
     z[ok] <- -3.5 + (codes$z[ok] + 0.5) * (7 / z_count)
     output$z <- z
   }
   if ("eaf" %in% needed || "se" %in% needed) {
-    output$eaf <- sin(pi * as.numeric(codes$eaf) / (2 * 255))^2
+    output$eaf <- sin(pi * as.numeric(codes$eaf) / (2 * eaf_count))^2
   }
   if ("se" %in% needed) {
-    se_count <- 62L
     se <- rep(NA_real_, n)
     ok <- codes$se < se_count
     safe <- pmin(1 - 1e-12, pmax(1e-12, output$eaf))
-    residual <- -1 + (codes$se + 0.5) * (2 / se_count)
+    residual <- se_range[1] + (codes$se + 0.5) * diff(se_range) / se_count
     se[ok] <- 2^(residual[ok] + centres[centre_id] -
       0.5 * log2(2 * safe[ok] * (1 - safe[ok])))
     output$se <- se
@@ -713,7 +746,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     decoded <- pcodec_native_decode_values(
       value_codes, exceptions, centre_id,
       as.numeric(unlist(manifest$semantic_codec$block_centers_log2_residual)),
-      row_start, length(rows), needed
+      row_start, length(rows), needed, manifest$semantic_codec
     )
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)

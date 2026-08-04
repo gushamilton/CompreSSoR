@@ -108,7 +108,9 @@ extern "C" SEXP compressor_decode_native(
     SEXP exception_eaf,
     SEXP exception_flags,
     SEXP include_beta,
-    SEXP include_p) {
+    SEXP include_p,
+    SEXP se_residual_min,
+    SEXP se_residual_max) {
   if (TYPEOF(z_code) != INTSXP || TYPEOF(se_code) != INTSXP ||
       TYPEOF(eaf_code) != INTSXP) {
     Rf_error("native decoder requires integer code vectors");
@@ -124,10 +126,16 @@ extern "C" SEXP compressor_decode_native(
   const int z_count_value = Rf_asInteger(z_count);
   const int se_count_value = Rf_asInteger(se_count);
   const int eaf_count_value = Rf_asInteger(eaf_count);
+  const double se_residual_min_value = Rf_asReal(se_residual_min);
+  const double se_residual_max_value = Rf_asReal(se_residual_max);
   const int block_rows_value = std::max(1, Rf_asInteger(block_rows));
   if (z_bits_value <= 0 || se_bits_value <= 0 || eaf_bits_value <= 0 ||
       z_count_value <= 0 || se_count_value <= 0 || eaf_count_value <= 0) {
     Rf_error("native decoder metadata contains invalid code domains");
+  }
+  if (!R_FINITE(se_residual_min_value) || !R_FINITE(se_residual_max_value) ||
+      se_residual_max_value <= se_residual_min_value) {
+    Rf_error("native decoder metadata contains an invalid SE residual range");
   }
   if (z_bits_value > 16 || se_bits_value > 16 || eaf_bits_value > 16) {
     Rf_error("native decoder code domains exceed the supported 16-bit limit");
@@ -167,8 +175,9 @@ extern "C" SEXP compressor_decode_native(
   const double fallback_eaf = 0.5;
   std::vector<double> se_table(se_width * eaf_width, kNaN);
   for (int se_value = 0; se_value < se_count_value; ++se_value) {
-    const double residual = -1.0 +
-      (static_cast<double>(se_value) + 0.5) * (2.0 / se_count_value);
+    const double residual = se_residual_min_value +
+      (static_cast<double>(se_value) + 0.5) *
+        ((se_residual_max_value - se_residual_min_value) / se_count_value);
     for (std::size_t eaf_value = 0; eaf_value < eaf_width; ++eaf_value) {
       const double decoded_eaf = R_FINITE(eaf_table[eaf_value])
         ? eaf_table[eaf_value] : fallback_eaf;
