@@ -1,0 +1,3 @@
+access_seconds,storage_ratio,label,label_group,pareto_frontier
+0.0560000000000001,3.53316897010938,Current native numeric path,Native reader,TRUE
+0.100810004,3.53316897010938,,Native reader,FALSE

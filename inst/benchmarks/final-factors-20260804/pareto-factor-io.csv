@@ -1,0 +1,4 @@
+geometry,access_seconds,storage_bytes,storage_ratio,label,label_group,pareto_frontier
+b65536,0.0440000000000005,4269317,3.55707505439395,Pcodec b65536-row key blocks,I/O geometry,TRUE
+b131072,0.0455000000000077,4269746,3.55671765955165,,I/O geometry,FALSE
+b262144,0.046000000000003,4269237,3.55714170939678,Pcodec b262144-row key blocks,I/O geometry,TRUE

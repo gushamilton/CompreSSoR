@@ -28,12 +28,13 @@ requiring a study-specific external spine. It stores the core numerical streams
 in Pcodec and derives beta and p-value when requested.
 
 The headline plot below is the final same-data BP benchmark on 1,124,344
-FinnGen chr1 SNVs. It measures 34 concrete keyed formats, with five independent
-Slurm runs per format. Every candidate stores the exact position plus directed
-REF→ALT identity; no external spine is counted. Storage is relative to the
-same TSV.gz, so higher is smaller and left is faster.
+FinnGen chr1 SNVs. It shows the 34-format keyed screen, with the CompreSSoR
+point replaced by a fresh five-run rerun of the locked implementation. Every
+candidate stores the exact position plus directed REF→ALT identity; no external
+spine is counted. Storage is relative to the same TSV.gz, so higher is smaller
+and left is faster.
 
-![Compression/access Pareto frontier](inst/figures/compressor-pareto-final-keyed.png)
+![Compression/access Pareto frontier](inst/figures/compressor-pareto-summary.png)
 
 | Pareto point | Access median | Storage relative to TSV.gz |
 |---|---:|---:|
@@ -41,20 +42,32 @@ same TSV.gz, so higher is smaller and left is faster.
 | Parquet exact self-contained | 0.069 s | 0.75× |
 | Parquet q8 self-contained | 0.126 s | 1.61× |
 | Parquet q8 + Gzip | 0.271 s | 1.88× |
-| **CompreSSoR native Pcodec (default)** | **0.321 s** | **3.53×** |
+| **CompreSSoR native Pcodec (locked default)** | **0.507 s** | **3.53×** |
 | TSV.gz baseline | 0.607 s | 1.00× |
 
 The standard Pcodec store is the compression-first choice: it is 3.53× smaller
-than TSV.gz and its full-file read was 1.9× faster on this BP run. Its measured
-conversion median was 12.18 s; conversion is intentionally secondary to repeated
-read/access cost. All 34 candidates passed identity and numeric round-trip
-validation. The complete 170-observation table, medians, frontier, and measured
-/unavailable registry are in [`inst/benchmarks/final-keyed-20260804/`](inst/benchmarks/final-keyed-20260804/).
+than TSV.gz and its final user-facing full-file read was 1.2× faster in the
+five-run rerun. Its measured conversion median was 11.49 s; conversion is
+intentionally secondary to repeated read/access cost. All 34 candidates passed
+identity and numeric round-trip validation. The original 170-observation table,
+the locked five-run rerun, medians, frontier, and measured/unavailable registry
+are in [`inst/benchmarks/final-keyed-20260804/`](inst/benchmarks/final-keyed-20260804/)
+and [`inst/benchmarks/final-factors-20260804/`](inst/benchmarks/final-factors-20260804/).
+The five-lane decision record is [`inst/benchmarks/final-factors-20260804/decision-record.md`](inst/benchmarks/final-factors-20260804/decision-record.md).
 
-The final benchmark script is [`scripts/benchmark-final-keyed.R`](scripts/benchmark-final-keyed.R)
-and the five-task Slurm wrapper is [`scripts/benchmark-final-keyed.sbatch`](scripts/benchmark-final-keyed.sbatch).
+The final benchmark script is [`scripts/benchmark-final-keyed.R`](scripts/benchmark-final-keyed.R),
+with [`scripts/benchmark-final-selected.sbatch`](scripts/benchmark-final-selected.sbatch)
+as the five-task selected-only rerun.
 Zarr, Blosc2, Vortex, and Python-only Pcodec bindings were recorded as unavailable
 on BP rather than guessed or plotted.
+
+The locked access profile is deliberately small: portable Rust build flags;
+131,072-row identity frames and Pcodec pages; 65,536-row value frames; four
+threads by default for whole-store reads and one for regional or canonical-key
+reads. Explicit `threads=` and `options(CompreSSoR.pcodec.threads = n)` remain
+available. Direct destination buffers did not improve the actual stored streams,
+and the fused keyed prototype did not pass validation, so neither is part of the
+standard path.
 
 The old one-million-row Mac mini fixture remains available as a historical
 engineering record; the current real-data check is run on BP below.
@@ -81,8 +94,8 @@ The final BP chr1 check uses the same eight-column source (`chrom`, `pos`, `REF`
 | Measure | CompreSSoR Pcodec |
 |---|---:|
 | Store size | **4,298,204 bytes** |
-| Conversion median | **12.178 s** |
-| Full-file read median | **0.321 s** |
+| Conversion median | **11.491 s** |
+| Full-file read median | **0.507 s** |
 
 The source TSV.gz is 15,186,281 bytes, so the self-contained store is
 **3.53× smaller**. The selected geometry uses 131,072-row identity frames and

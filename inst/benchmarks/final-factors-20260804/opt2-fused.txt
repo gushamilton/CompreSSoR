@@ -1,0 +1,1 @@
+RESULT rows=1124344 numeric_checksum=2403438.2153834179 keyed_checksum=nan seconds=0.10081000399999999

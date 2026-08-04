@@ -443,6 +443,17 @@ candidates <- list(
             file.path(format_root, "compressor.cpr"), write_pcodec, read_pcodec)
 )
 
+# A final-candidate rerun can select exactly one already-defined format.  This
+# keeps the measurement contract identical to the full matrix while avoiding
+# another expensive rebuild of every historical comparator.
+selected_id <- Sys.getenv("COMPRESSOR_FINAL_ONLY", unset = "")
+if (nzchar(selected_id)) {
+  candidates <- Filter(function(item) identical(item$id, selected_id), candidates)
+  if (!length(candidates)) {
+    stop("COMPRESSOR_FINAL_ONLY did not match a candidate: ", selected_id)
+  }
+}
+
 validate <- function(value) {
   if (nrow(value) != n) stop("row count mismatch")
   source_key <- paste(source_data$pos, source_sub, sep = ":")
