@@ -40,6 +40,14 @@ frames.
 This is an implementation benchmark, not a replacement for the final
 full-FinnGen comparison.
 
+The fresh like-for-like chr1 FinnGen check is recorded in
+`finngen-chr1-native.csv` and `finngen-chr1-native-runs.csv`. It uses
+1,124,344 biallelic SNVs, an eight-column core TSV.gz baseline, and five runs
+per workload. The 4,371,370-byte self-contained Pcodec store is 3.47x smaller
+than the 15,186,281-byte TSV.gz. Full and 1 Mb regional reads are faster with
+Pcodec; the current many-independent-key path is slower and is reported as a
+known optimization target rather than hidden in a single aggregate score.
+
 ## Pareto design record
 
 `first-pareto.csv` is the data behind `inst/figures/compressor-pareto.svg`.

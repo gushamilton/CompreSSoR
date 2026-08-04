@@ -66,6 +66,27 @@ Each access number is the median of five runs; the canonical-key test requests
 reproducible engineering check for the installed native backend;
 the historical real-GWAS table above predates the native-only format.
 
+The fresh chr1 FinnGen core benchmark is a like-for-like native check on
+1,124,344 biallelic SNVs and five repetitions per workload. The baseline is an
+eight-column TSV.gz (`chrom`, `pos`, `REF`, `ALT`, `beta`, `SE`, `EAF`, `p`),
+not the wider FinnGen annotation table:
+
+| Workload | Pcodec | TSV.gz | Result |
+|---|---:|---:|---:|
+| Compress end-to-end | 7.038 s | — | — |
+| Full core read | 0.073 s | 0.121 s | 1.66× faster |
+| Full read with beta/p | 0.075 s | 0.121 s | 1.61× faster |
+| 1 Mb region | 0.008 s | 0.132 s | 16.5× faster |
+| 25 canonical keys | 0.212 s | 0.123 s | 1.72× slower |
+| 1,000 canonical keys | 1.458 s | 0.124 s | 11.8× slower |
+
+The core TSV.gz is 15,186,281 bytes; the self-contained Pcodec store is
+4,371,370 bytes (**3.47× smaller**). This exposes the current trade-off
+honestly: Pcodec wins whole-file and regional access, while the present
+row-by-row sparse-key path still needs optimization. See the [chr1 summary
+record](inst/benchmarks/finngen-chr1-native.csv), [five-run record](inst/benchmarks/finngen-chr1-native-runs.csv),
+and [reproducible script](scripts/benchmark-finngen-chr1.R).
+
 See [the detailed benchmark record](inst/benchmarks/cold-mr-final-summary.csv)
 for all runs and [the technical guide](docs/README-technical.md) for protocol,
 limitations, and historical comparisons.
