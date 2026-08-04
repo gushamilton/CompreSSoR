@@ -133,6 +133,13 @@ test_that("batched canonical reads equal independent reads", {
   })
   expect_named(observed, c("first", "second"))
   expect_equal(unname(observed), expected, tolerance = 1e-12)
+  old_report <- getOption("CompreSSoR.report_source_bytes")
+  options(CompreSSoR.report_source_bytes = TRUE)
+  reported <- read_sumstats_batch(
+    path, variants[1L], columns = columns, threads = 1L
+  )
+  options(CompreSSoR.report_source_bytes = old_report)
+  expect_gt(attr(reported, "source_bytes_read"), 0)
   old_coalesce <- getOption("CompreSSoR.coalesce_batch_reads")
   options(CompreSSoR.coalesce_batch_reads = FALSE)
   uncoalesced <- read_sumstats_batch(
@@ -233,6 +240,7 @@ test_that("Pcodec validation detects corruption in a payload", {
   result <- validate_compressor(path)
   expect_false(result$valid)
   expect_match(result$errors, "checksum")
+  expect_error(read_sumstats(path, columns = "z"), "checksum mismatch|corrupt")
 })
 
 test_that("Pcodec rejects unsupported exact and extras requests clearly", {
@@ -418,4 +426,17 @@ test_that("native bridge fails closed on hostile codec domains", {
   for (i in seq_len(20L)) {
     expect_error(hostile_call(), "codec constants are invalid")
   }
+  malformed_count <- function(value) .Call(
+    "compressor_read_pcodec_bridge", normalizePath(bridge), "standard_error",
+    value, 0, -3.5, 3.5, 510L, 62L, 255L, 65536L, numeric(),
+    PACKAGE = "CompreSSoR"
+  )
+  expect_error(malformed_count(NA_real_), "row count is invalid")
+  expect_error(malformed_count(Inf), "row count is invalid")
+  expect_error(malformed_count(1.5), "row count is invalid")
+  expect_error(.Call(
+    "compressor_read_pcodec_bridge", normalizePath(bridge), NA_character_,
+    1, 0, -3.5, 3.5, 510L, 62L, 255L, 65536L, numeric(),
+    PACKAGE = "CompreSSoR"
+  ), "requested columns contain NA")
 })

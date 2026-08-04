@@ -77,7 +77,11 @@ std::vector<T> read_bridge_vector(const std::string& path,
 bool requested_has(SEXP requested, const char* target) {
   const R_xlen_t n = XLENGTH(requested);
   for (R_xlen_t i = 0; i < n; ++i) {
-    if (std::string(CHAR(STRING_ELT(requested, i))) == target) return true;
+    SEXP value = STRING_ELT(requested, i);
+    if (value == NA_STRING) {
+      throw std::runtime_error("native Pcodec bridge requested columns contain NA");
+    }
+    if (std::string(CHAR(value)) == target) return true;
   }
   return false;
 }
@@ -308,9 +312,18 @@ SEXP compressor_read_pcodec_bridge_impl(
       TYPEOF(chromosome_lengths) != REALSXP) {
     throw std::runtime_error("malformed arguments to native Pcodec bridge reader");
   }
+  if (STRING_ELT(directory, 0) == NA_STRING) {
+    throw std::runtime_error("native Pcodec bridge directory is NA");
+  }
   const std::string root = CHAR(STRING_ELT(directory, 0));
-  const R_xlen_t n = static_cast<R_xlen_t>(Rf_asReal(row_count));
-  if (n < 0) throw std::runtime_error("Pcodec bridge row count is negative");
+  const double row_count_value = Rf_asReal(row_count);
+  if (!R_FINITE(row_count_value) || row_count_value < 0.0 ||
+      row_count_value != std::floor(row_count_value) ||
+      static_cast<long double>(row_count_value) >
+        static_cast<long double>(std::numeric_limits<R_xlen_t>::max())) {
+    throw std::runtime_error("Pcodec bridge row count is invalid");
+  }
+  const R_xlen_t n = static_cast<R_xlen_t>(row_count_value);
   const std::size_t rows = static_cast<std::size_t>(n);
   const int z_count_value = Rf_asInteger(z_count);
   const int se_count_value = Rf_asInteger(se_count);

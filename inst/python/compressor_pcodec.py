@@ -165,12 +165,24 @@ def _read_fd_bytes(fd: int, size: int, path: Path) -> bytes:
     chunks = []
     offset = 0
     while offset < size:
-        chunk = os.pread(fd, min(8 * 1024 * 1024, size - offset), offset)
+        chunk = _pread(fd, min(8 * 1024 * 1024, size - offset), offset)
         if not chunk:
             raise ValueError(f"could not read complete file: {path}")
         chunks.append(chunk)
         offset += len(chunk)
     return b"".join(chunks)
+
+
+def _pread(fd: int, size: int, offset: int) -> bytes:
+    """Portable positioned read; callers serialize access to each descriptor."""
+    if hasattr(os, "pread"):
+        return os.pread(fd, size, offset)
+    current = os.lseek(fd, 0, os.SEEK_CUR)  # pragma: no cover - Windows
+    try:
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.read(fd, size)
+    finally:
+        os.lseek(fd, current, os.SEEK_SET)
 
 
 def chromosome_offsets():
@@ -1032,7 +1044,7 @@ class WrappedStreamReader:
         self.fd = None
         try:
             self.fd = _open_read_fd(self.data_path)
-            header = os.pread(self.fd, self.header_length, 0)
+            header = _pread(self.fd, self.header_length, 0)
             self.bytes_read += len(header)
             if (len(header) != self.header_length or
                     zlib.crc32(header) != int(header_crc)):
@@ -1061,7 +1073,7 @@ class WrappedStreamReader:
             self.page_cache.clear()
 
     def _read_blob(self, offset: int, length: int, crc: int) -> bytes:
-        blob = os.pread(self.fd, int(length), int(offset))
+        blob = _pread(self.fd, int(length), int(offset))
         self.bytes_read += len(blob)
         if len(blob) != int(length) or zlib.crc32(blob) != int(crc):
             raise ValueError(f"wrapped {self.name} page or metadata is corrupt")
@@ -1326,6 +1338,14 @@ class WrappedStoreReader:
             self._exceptions = np.frombuffer(raw, dtype=dtype)
             if len(self._exceptions) != int(self.manifest["semantic_codec"]["exception_rows"]):
                 raise ValueError("wrapped exception count differs from the manifest")
+            if len(self._exceptions):
+                rows = self._exceptions["row"].astype(np.int64)
+                flags = self._exceptions["flags"].astype(np.uint16)
+                if (np.any(rows < 0) or np.any(rows >= int(self.manifest["rows"])) or
+                        np.any(rows[1:] <= rows[:-1])):
+                    raise ValueError("wrapped exception rows are invalid")
+                if np.any(flags == 0) or np.any((flags & np.uint16(0xF8)) != 0):
+                    raise ValueError("wrapped exception flags are invalid")
         return self._exceptions
 
     @property
@@ -2504,7 +2524,10 @@ def read_stores_batch_payload(
     reads = payload.get("reads") if isinstance(payload, dict) else None
     if not isinstance(reads, list) or not reads:
         raise ValueError("batch request must contain a non-empty reads list")
-    coalesce = bool(payload.get("coalesce", True))
+    coalesce = payload.get("coalesce", True)
+    reload_contexts = payload.get("reload_contexts", False)
+    if not isinstance(coalesce, bool) or not isinstance(reload_contexts, bool):
+        raise ValueError("batch coalesce and reload_contexts must be booleans")
     output.mkdir(parents=True, exist_ok=False)
     if cache is None:
         cache = {}
@@ -2532,7 +2555,9 @@ def read_stores_batch_payload(
                 any(not isinstance(column, str) or not column for column in columns)):
             raise ValueError(f"batch read {index} columns must be non-empty strings")
         cache_key = str(store)
-        manifest, key_index, value_index = _load_cached_store(store, cache)
+        manifest, key_index, value_index = _load_cached_store(
+            store, None if reload_contexts else cache
+        )
         signature = (cache_key, tuple(keys), tuple(columns))
         if coalesce and signature in seen_requests:
             bridge_for[index] = seen_requests[signature]
@@ -2573,13 +2598,17 @@ def read_stores_batch_payload(
         except Exception as exc:
             raise RuntimeError(f"failed to read {store}: {exc}") from exc
         finally:
-            retained = any(
+            retained = (not reload_contexts) and any(
                 cached[2] is key_index for cached in cache.values()
             )
             if isinstance(key_index, WrappedStoreReader) and not retained:
                 key_index.close()
         bridge_manifest = json.loads((bridge / "bridge.json").read_text())
-        return {"index": index, "rows": int(bridge_manifest["rows"])}
+        return {
+            "index": index,
+            "rows": int(bridge_manifest["rows"]),
+            "source_bytes_read": int(bridge_manifest.get("source_bytes_read", 0)),
+        }
 
     workers = min(int(threads), len(prepared))
     if workers == 1:
@@ -2600,6 +2629,9 @@ def read_stores_batch_payload(
         "format": "CompreSSoR-batch-bridge",
         "version": 1,
         "reads": results,
+        "source_bytes_read": sum(
+            int(item.get("source_bytes_read", 0)) for item in unique_results.values()
+        ),
     }
     if write_response:
         temporary = output / "batch.json.tmp"

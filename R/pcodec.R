@@ -99,7 +99,10 @@ pcodec_invocation <- function(refresh = FALSE) {
 }
 
 pcodec_worker_enabled <- function() {
-  isTRUE(getOption("CompreSSoR.persistent_worker", TRUE)) &&
+  owner <- .pcodec_state$worker_owner_pid %||% NULL
+  same_process <- is.null(owner) || identical(owner, Sys.getpid())
+  isTRUE(same_process) &&
+    isTRUE(getOption("CompreSSoR.persistent_worker", TRUE)) &&
     requireNamespace("processx", quietly = TRUE)
 }
 
@@ -116,6 +119,8 @@ pcodec_stop_worker <- function() {
     .pcodec_state$worker <- NULL
     .pcodec_state$worker_key <- NULL
     .pcodec_state$worker_checked_at <- NULL
+    .pcodec_state$worker_owner_pid <- NULL
+    .pcodec_state$worker_buffer <- ""
   }
   invisible(NULL)
 }
@@ -123,7 +128,7 @@ pcodec_stop_worker <- function() {
 pcodec_worker_read_line <- function(worker, timeout = 30000L) {
   deadline <- unname(proc.time()[["elapsed"]]) + as.numeric(timeout) / 1000
   connection <- worker$get_output_connection()
-  buffer <- ""
+  buffer <- .pcodec_state$worker_buffer %||% ""
   # Read and frame the response on one low-level connection API. The explicit
   # accumulator handles replies split across arbitrary pipe chunks.
   spin_ms <- getOption("CompreSSoR.worker_spin_ms", 0)
@@ -134,7 +139,13 @@ pcodec_worker_read_line <- function(worker, timeout = 30000L) {
     if (length(chunk) && nzchar(chunk[[1L]])) {
       buffer <- paste0(buffer, paste0(chunk, collapse = ""))
       newline <- regexpr("\n", buffer, fixed = TRUE)[[1L]]
-      if (newline > 0L) return(substr(buffer, 1L, newline - 1L))
+      if (newline > 0L) {
+        line <- substr(buffer, 1L, newline - 1L)
+        .pcodec_state$worker_buffer <- substr(
+          buffer, newline + 1L, nchar(buffer)
+        )
+        return(line)
+      }
     }
     if (!worker$is_alive()) {
       error <- paste(worker$read_error_lines(), collapse = "\n")
@@ -196,6 +207,8 @@ pcodec_worker <- function() {
   .pcodec_state$worker <- worker
   .pcodec_state$worker_key <- worker_key
   .pcodec_state$worker_checked_at <- now
+  .pcodec_state$worker_owner_pid <- Sys.getpid()
+  .pcodec_state$worker_buffer <- ""
   .pcodec_state$worker_request <- 0L
   worker
 }
@@ -382,10 +395,9 @@ read_pcodec_binary_bridge <- function(path) {
   compact_identity <- identical(
     identity_encoding, "global_position_substitution"
   )
-  native_bridge <- (
+  native_bridge <- isTRUE(getOption("CompreSSoR.native_bridge", TRUE)) && (
     compact_identity || (
-      identical(metadata$codec$encoding %||% NULL, "semantic_codes") &&
-        isTRUE(getOption("CompreSSoR.native_bridge", TRUE))
+      identical(metadata$codec$encoding %||% NULL, "semantic_codes")
     )
   ) &&
     is.loaded("compressor_read_pcodec_bridge", PACKAGE = "CompreSSoR")
@@ -402,14 +414,20 @@ read_pcodec_binary_bridge <- function(path) {
     } else {
       numeric()
     }
-    return(.Call(
+    out <- .Call(
       "compressor_read_pcodec_bridge",
       normalizePath(path, mustWork = TRUE), as.character(requested), as.numeric(n),
       as.numeric(unlist(codec$block_centers_log2_residual, use.names = FALSE)),
       as.numeric(codec$z_min), as.numeric(codec$z_max),
       as.integer(codec$z_count), as.integer(codec$se_count), as.integer(codec$eaf_count),
       as.integer(codec$block_rows), chromosome_lengths, PACKAGE = "CompreSSoR"
-    ))
+    )
+    if (isTRUE(getOption("CompreSSoR.report_source_bytes", FALSE))) {
+      attr(out, "source_bytes_read") <- as.numeric(
+        metadata$source_bytes_read %||% NA_real_
+      )
+    }
+    return(out)
   }
   read_column <- function(spec) {
     connection <- file(file.path(path, spec$file), open = "rb")
@@ -477,6 +495,11 @@ read_pcodec_binary_bridge <- function(path) {
   out <- as.data.frame(values[requested], stringsAsFactors = FALSE,
                        check.names = FALSE)
   row.names(out) <- NULL
+  if (isTRUE(getOption("CompreSSoR.report_source_bytes", FALSE))) {
+    attr(out, "source_bytes_read") <- as.numeric(
+      metadata$source_bytes_read %||% NA_real_
+    )
+  }
   out
 }
 
@@ -563,12 +586,18 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL, columns = N
     }
     out <- read_pcodec_binary_bridge(output_path)
   }
+  source_bytes_read <- attr(out, "source_bytes_read", exact = TRUE)
   if ("row" %in% names(out)) out <- out[order(out$row), , drop = FALSE]
   if ("row" %in% names(out)) out$row <- NULL
-  if (is.null(columns)) return(out)
+  if (is.null(columns)) {
+    attr(out, "source_bytes_read") <- source_bytes_read
+    return(out)
+  }
   missing <- setdiff(columns, names(out))
   if (length(missing)) stop("requested columns are not present: ", paste(missing, collapse = ", "), call. = FALSE)
-  out[columns]
+  out <- out[columns]
+  attr(out, "source_bytes_read") <- source_bytes_read
+  out
 }
 
 pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
@@ -607,6 +636,9 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     )
   })
   coalesce <- isTRUE(getOption("CompreSSoR.coalesce_batch_reads", TRUE))
+  reload_contexts <- isTRUE(
+    getOption("CompreSSoR.reload_batch_contexts", FALSE)
+  )
   # A batch gets one Python process and one binary bridge for all reads.  The
   # persistent processx worker is ideal for single requests, but large JSON
   # writes to its stdin can stall on macOS before Python receives the command.
@@ -614,7 +646,10 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
                            fileext = ".json")
   on.exit(unlink(request_path, force = TRUE), add = TRUE)
   jsonlite::write_json(
-    list(reads = reads, coalesce = coalesce), request_path,
+    list(
+      reads = reads, coalesce = jsonlite::unbox(coalesce),
+      reload_contexts = jsonlite::unbox(reload_contexts)
+    ), request_path,
     auto_unbox = FALSE
   )
   pcodec_run(c("batch-read", "--request", request_path, "--output", output_path,
@@ -639,7 +674,7 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     read_pcodec_binary_bridge(file.path(output_path, bridge))
   })
   names(decoded) <- as.character(unique_bridges)
-  lapply(bridge_ids, function(bridge) {
+  result <- lapply(bridge_ids, function(bridge) {
     out <- decoded[[as.character(bridge)]]
     if ("row" %in% names(out)) {
       out <- out[order(out$row), , drop = FALSE]
@@ -652,6 +687,12 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
     }
     out[columns]
   })
+  if (isTRUE(getOption("CompreSSoR.report_source_bytes", FALSE))) {
+    attr(result, "source_bytes_read") <- as.numeric(
+      response$source_bytes_read %||% NA_real_
+    )
+  }
+  result
 }
 
 pcodec_validate_store <- function(store, full = FALSE) {
