@@ -4,7 +4,8 @@
 \description{
   Writes a compact CompreSSoR store from already-prepared summary statistics.
   The input must contain chromosome, position, explicit REF and ALT,
-  effect/non-effect alleles, beta, and standard error. The core performs
+  effect/non-effect alleles, beta and standard error, or a positive OR and
+  standard error that resolve to log-OR. The core performs
   structural QC and compression only: it does not look up a reference, flip
   alleles, resolve rsIDs, or liftover coordinates. GRCh37 and GRCh38 are
   supported when the input and store builds are the same.

@@ -40,17 +40,9 @@ validate_core_schema <- function(data, source_columns = names(data),
     stop("strict compression core requires explicit effect_allele and other_allele columns",
          call. = FALSE)
   }
-  if (!core_source_has_alias(source_columns,
-                             c("beta", "BETA", "effect", "effect_size", "estimate",
-                               "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM")) ||
-      !core_source_has_alias(source_columns,
-                             c("standard_error", "SE", "se", "sebeta", "SEBETA",
-                               "stderr", "std_err"))) {
-    stop("strict compression core requires beta and standard_error columns", call. = FALSE)
-  }
   missing <- setdiff(required_sumstats_columns(), names(data))
   if (length(missing)) {
-    stop("strict compression core is missing canonical fields: ",
+    stop("strict compression core is missing canonical resolved fields: ",
          paste(missing, collapse = ", "), call. = FALSE)
   }
   invisible(TRUE)

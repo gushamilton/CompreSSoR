@@ -59,14 +59,14 @@ sumstats_resolution_matrix <- function() {
       "explicit beta alias",
       "explicit standard_error alias",
       "explicit z alias checked against beta/standard_error, otherwise derived",
-      "not a strict-core field",
+      "positive OR alias resolved to log(OR) when beta is absent",
       "input aid only; never stored"
     ),
     strict_fallback = c(
       "positive OR -> log(OR) only at the boundary when beta is absent",
       "none",
       "beta / standard_error",
-      "none",
+      "positive OR -> log(OR) when beta is absent; SE remains required",
       "none; p-to-SE inference is disabled"
     ),
     stringsAsFactors = FALSE
@@ -78,7 +78,7 @@ sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
   list(
     id = "beta_se_primary_v1",
     beta = "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
-    standard_error = "explicit_standard_error_alias_only",
+    standard_error = "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
     z = "explicit_z_checked_against_beta_over_standard_error_or_derived",
     odds_ratio = "positive_OR_to_log_OR_only_when_beta_is_absent",
     p_value = "input_aid_only;_never_stored",
@@ -92,14 +92,18 @@ sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
   )
 }
 
-sumstats_projection_aliases <- function(core_only = FALSE) {
+sumstats_projection_aliases <- function(core_only = FALSE,
+                                        allow_p_to_se = FALSE) {
   alias_map <- sumstats_column_alias_map()
   if (isTRUE(core_only)) {
     alias_map <- alias_map[c(
       "chromosome", "base_pair_location", "reference_allele",
       "alternate_allele", "effect_allele", "other_allele", "beta",
-      "standard_error", "effect_allele_frequency", "z"
+      "standard_error", "effect_allele_frequency", "z", "odds_ratio"
     )]
+  }
+  if (isTRUE(allow_p_to_se) && isTRUE(core_only)) {
+    alias_map$p_value <- sumstats_column_alias_map()$p_value
   }
   unique(c(
     if (isTRUE(core_only)) character() else
@@ -108,10 +112,13 @@ sumstats_projection_aliases <- function(core_only = FALSE) {
   ))
 }
 
-sumstats_projection_indices <- function(source_columns, core_only = FALSE) {
+sumstats_projection_indices <- function(source_columns, core_only = FALSE,
+                                        allow_p_to_se = FALSE) {
   source_columns <- as.character(source_columns %||% character())
   indices <- which(alias_key(source_columns) %in%
-                     alias_key(sumstats_projection_aliases(core_only = core_only)))
+                     alias_key(sumstats_projection_aliases(
+                       core_only = core_only, allow_p_to_se = allow_p_to_se
+                     )))
   # Retain one source field when no recognized names exist. This preserves the
   # row count so the normal schema validator can issue its precise missing-
   # column diagnostic without materialising the rest of a wide input.
@@ -532,18 +539,23 @@ looks_like_vcf <- function(input) {
 }
 
 read_sumstats_input <- function(input, parse_policy = c("error", "report"),
-                                project_columns = FALSE, core_only = FALSE) {
+                                project_columns = FALSE, core_only = FALSE,
+                                allow_p_to_se = FALSE) {
   parse_policy <- match.arg(parse_policy)
   if (length(project_columns) != 1L || !is.logical(project_columns) || is.na(project_columns) ||
       length(core_only) != 1L || !is.logical(core_only) || is.na(core_only)) {
     stop("project_columns and core_only must be TRUE or FALSE", call. = FALSE)
+  }
+  if (length(allow_p_to_se) != 1L || !is.logical(allow_p_to_se) || is.na(allow_p_to_se)) {
+    stop("allow_p_to_se must be TRUE or FALSE", call. = FALSE)
   }
   started <- unname(proc.time()[["elapsed"]])
   if (is.data.frame(input)) {
     data <- clean_input_names(input)
     source_columns <- names(data)
     selected <- if (isTRUE(project_columns)) {
-      sumstats_projection_indices(source_columns, core_only = core_only)
+      sumstats_projection_indices(source_columns, core_only = core_only,
+                                  allow_p_to_se = allow_p_to_se)
     } else {
       seq_along(source_columns)
     }
@@ -576,7 +588,8 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
   header <- read_delimited_header(input)
   source_columns <- names(header)
   selected <- if (isTRUE(project_columns)) {
-    sumstats_projection_indices(source_columns, core_only = core_only)
+    sumstats_projection_indices(source_columns, core_only = core_only,
+                                allow_p_to_se = allow_p_to_se)
   } else {
     seq_along(source_columns)
   }
@@ -673,18 +686,26 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   if (any(bad_or) && identical(parse_policy, "error")) {
     stop("odds_ratio must be finite and positive when supplied", call. = FALSE)
   }
+  if (beta_source_present && odds_ratio_source_present) {
+    comparable <- is.finite(data$beta) & is.finite(data$odds_ratio) &
+      data$odds_ratio > 0
+    if (any(comparable)) {
+      beta_from_or <- log(data$odds_ratio[comparable])
+      tolerance <- 1e-6 + 0.01 * pmax(abs(data$beta[comparable]),
+                                       abs(beta_from_or))
+      conflict <- abs(data$beta[comparable] - beta_from_or) > tolerance
+      if (any(conflict)) {
+        rows <- which(comparable)[conflict]
+        stop("beta and odds_ratio are inconsistent at row(s): ",
+             paste(utils::head(rows, 5L), collapse = ", "), call. = FALSE)
+      }
+    }
+  }
   beta_from_or <- integer()
   if (!beta_source_present && odds_ratio_source_present) {
     beta_from_or <- which(is.na(data$beta) & is.finite(data$odds_ratio) &
                             data$odds_ratio > 0)
     if (length(beta_from_or)) data$beta[beta_from_or] <- log(data$odds_ratio[beta_from_or])
-  }
-  if (identical(parse_policy, "error")) {
-    unresolved <- setdiff(missing, if (length(beta_from_or)) "beta" else character())
-    if (length(unresolved)) {
-      stop("Missing required summary-statistics columns: ", paste(unresolved, collapse = ", "),
-           call. = FALSE)
-    }
   }
   if (!"effect_allele_frequency" %in% names(data)) data$effect_allele_frequency <- NA_real_
   assign_parsed("effect_allele_frequency",
@@ -721,6 +742,17 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     }
     p_to_se_rows <- which(p_to_se_candidate & !supplied_se)
     if (length(p_to_se_rows)) data$standard_error[p_to_se_rows] <- derived_se[p_to_se_rows]
+  }
+  if (identical(parse_policy, "error")) {
+    resolved_missing <- missing
+    if (length(beta_from_or)) resolved_missing <- setdiff(resolved_missing, "beta")
+    if (isTRUE(allow_p_to_se) && length(p_to_se_rows)) {
+      resolved_missing <- setdiff(resolved_missing, "standard_error")
+    }
+    if (length(resolved_missing)) {
+      stop("Missing required summary-statistics columns: ",
+           paste(resolved_missing, collapse = ", "), call. = FALSE)
+    }
   }
   z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
   data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
@@ -778,6 +810,8 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   }
   attr(data, "resolution_provenance")$standard_error_route <- if (standard_error_source_present) {
     "explicit_standard_error_alias"
+  } else if (length(p_to_se_rows)) {
+    "explicit_opt_in_p_value_to_standard_error_conversion"
   } else {
     "missing"
   }

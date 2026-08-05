@@ -26,6 +26,12 @@ test_that("conflicting Z is rejected and OR conversion stays at the boundary", {
   expect_error(import_sumstats(conflicting, row_policy = "error"),
                "beta, z and standard_error are inconsistent")
 
+  ambiguous <- conflicting
+  ambiguous$Z <- 2
+  ambiguous$OR <- 1.5
+  expect_error(import_sumstats(ambiguous, row_policy = "error"),
+               "beta and odds_ratio are inconsistent")
+
   odds_ratio <- conflicting[c("chr", "pos", "REF", "ALT", "EA", "OA", "SE")]
   odds_ratio$SE <- 0.1
   odds_ratio$OR <- 1.2
@@ -33,6 +39,26 @@ test_that("conflicting Z is rejected and OR conversion stays at the boundary", {
   expect_equal(imported$beta, log(1.2))
   expect_identical(attr(imported, "resolution_provenance")$beta_route,
                    "positive_OR_to_log_OR_boundary_conversion")
+})
+
+test_that("direct compression accepts OR plus SE and records resolution provenance", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- data.frame(
+    CHR = "1", GENPOS = 101L, REF = "A", ALT = "G",
+    ALLELE1 = "G", ALLELE0 = "A", OR = 1.2, SE = 0.1,
+    stringsAsFactors = FALSE
+  )
+  path <- tempfile("or-se-native-")
+  store <- compress_sumstats(input, path, overwrite = TRUE, row_policy = "error")
+  got <- read_sumstats(store, columns = c("beta", "standard_error", "z"))
+
+  expect_equal(got$beta, log(1.2), tolerance = 0.02)
+  expect_equal(got$standard_error, 0.1, tolerance = 0.01)
+  expect_identical(store$manifest$source$resolution$beta_route,
+                   "positive_OR_to_log_OR_boundary_conversion")
+  expect_true(all(c("OR", "SE") %in% unlist(store$manifest$source_columns_read)))
+  expect_true(validate_compressor(store, full = TRUE)$valid)
 })
 
 test_that("p-value to SE inference is explicit, bounded, and conflict checked", {
@@ -54,6 +80,29 @@ test_that("p-value to SE inference is explicit, bounded, and conflict checked", 
   conflict$SE <- 0.25
   expect_error(import_sumstats(conflict, allow_p_to_se = TRUE),
                "standard_error conflicts")
+})
+
+test_that("explicit p-to-SE resolves an absent SE column and remains opt-in", {
+  input <- data.frame(
+    chr = "1", pos = 101L, REF = "A", ALT = "G", EA = "G", OA = "A",
+    beta = 0.2, P = 0.0455, stringsAsFactors = FALSE
+  )
+  expect_error(import_sumstats(input, row_policy = "error"),
+               "Missing required summary-statistics columns: standard_error")
+
+  enabled <- import_sumstats(input, allow_p_to_se = TRUE, row_policy = "error")
+  expect_true(is.finite(enabled$standard_error))
+  expect_identical(attr(enabled, "resolution_provenance")$standard_error_route,
+                   "explicit_opt_in_p_value_to_standard_error_conversion")
+
+  disabled_projection <- CompreSSoR:::read_sumstats_input(
+    input, project_columns = TRUE, core_only = TRUE
+  )
+  enabled_projection <- CompreSSoR:::read_sumstats_input(
+    input, project_columns = TRUE, core_only = TRUE, allow_p_to_se = TRUE
+  )
+  expect_false(any(toupper(names(disabled_projection)) == "P"))
+  expect_true(any(toupper(names(enabled_projection)) == "P"))
 })
 
 test_that("compact QC retains aggregates but not row-level audit vectors", {

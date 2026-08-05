@@ -51,7 +51,8 @@ import_sumstats_impl <- function(input, strict = FALSE,
     input,
     parse_policy = if (identical(row_policy, "error")) "error" else "report",
     project_columns = project_columns,
-    core_only = core_only
+    core_only = core_only,
+    allow_p_to_se = allow_p_to_se
   )
   read_seconds <- phase_seconds(read_started)
   if (!nrow(raw)) {

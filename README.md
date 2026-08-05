@@ -103,7 +103,8 @@ package.
 The installed compressor accepts a prepared table only. It must contain:
 `chromosome`, `base_pair_location`, explicit `reference_allele`/`REF`,
 explicit `alternate_allele`/`ALT`, `effect_allele`, `other_allele`, `beta`,
-and `standard_error`/`SE`. The prepared orientation is `other_allele = REF`
+and `standard_error`/`SE`, or a positive `OR`/`odds_ratio` plus `SE` that is
+resolved to log-OR. The prepared orientation is `other_allele = REF`
 and `effect_allele = ALT`; the compressor never flips alleles or resolves an
 ID against a reference. Input and store builds must match, and both GRCh37
 (`hg19`) and GRCh38 (`hg38`) are supported:
@@ -126,9 +127,9 @@ read_sumstats(
 ```
 
 The boundary importer recognises common aliases through a deterministic
-resolution matrix: explicit beta plus `SE` is the primary route; an optional
-`Z` is checked against `beta / SE` or derived from it; a positive OR may be
-converted to log-OR only at the import boundary when beta is absent. P-values
+resolution matrix: explicit beta plus `SE` is the primary route; an `OR` plus
+`SE` is also accepted directly and resolves beta to log-OR when beta is absent;
+an optional `Z` is checked against `beta / SE` or derived from it. P-values
 are not silently converted to SE in the strict writer. The standalone
 `import_sumstats(..., allow_p_to_se = TRUE)` opt-in is conflict-checked and
 records its bounded conversion rows in resolution provenance; it is not used
