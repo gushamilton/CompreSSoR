@@ -30,6 +30,10 @@ import_sumstats <- function(input, strict = FALSE,
   raw <- read_sumstats_input(
     input, parse_policy = if (identical(row_policy, "error")) "error" else "report"
   )
+  if (!nrow(raw)) {
+    stop("input contains zero rows; CompreSSoR requires at least one prepared summary-statistics row",
+         call. = FALSE)
+  }
   source_columns <- attr(raw, "source_columns") %||% names(raw)
   provenance <- if (is.data.frame(input)) {
     list(
