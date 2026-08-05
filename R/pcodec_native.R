@@ -585,6 +585,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     preparation = metadata$preparation %||% list(method = "strict_prepared_input"),
     selection = selection_manifest,
     source_columns = metadata$source_columns %||% names(data),
+    source_columns_read = metadata$source_columns_read %||% names(data),
     source = metadata$source %||% NULL,
     metadata = {
       manifest_metadata <- metadata

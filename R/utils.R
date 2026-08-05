@@ -16,6 +16,63 @@ required_sumstats_columns <- function() {
     "standard_error")
 }
 
+sumstats_column_alias_map <- function() {
+  list(
+    chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
+    base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
+    reference_allele = c("reference_allele", "reference", "ref", "REF"),
+    alternate_allele = c("alternate_allele", "alternate", "alt", "ALT"),
+    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1",
+                      "ALLELE1", "alleleB", "ALLELEB"),
+    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2",
+                     "ALLELE0", "alleleA", "ALLELEA"),
+    # A single-letter B is used by some sources for expected non-reference
+    # counts. It must not compete with an exact beta column (or be silently
+    # interpreted as an effect size when its meaning is schema-dependent).
+    beta = c("beta", "BETA", "effect", "effect_size", "estimate",
+             "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM"),
+    z = c("z", "Z", "zscore", "Z_SCORE", "z_stat", "ZSTAT", "zstatistic",
+          "Z_STATISTIC", "Z_BOLT_LMM"),
+    odds_ratio = c("odds_ratio", "OR", "ODDSRATIO", "oddsratio"),
+    standard_error = c("standard_error", "SE", "se", "sebeta", "SEBETA", "stderr", "std_err"),
+    effect_allele_frequency = c("effect_allele_frequency", "eaf", "EAF", "af", "AF",
+                                "effect_af", "A1FREQ", "ALT_FREQ", "ALT_AF", "EAF_ALT"),
+    p_value = c("p_value", "P", "p", "pval", "pvalue", "P_VALUE", "P_BOLT_LMM"),
+    minus_log10_p = c("minus_log10_p", "LP", "lp", "neglog10p", "-LOG10P", "LOG10P"),
+    variant_id = c("variant_id", "SNPID", "SNP_ID", "SNP", "snp", "variant", "ID"),
+    sample_size = c("sample_size", "N", "n", "SS", "N_TOTAL", "TOTALSAMPLESIZE", "N_SUMMARY"),
+    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP"),
+    expected_count = c("expected_count", "B", "expected_nonref_count", "nonref_count")
+  )
+}
+
+sumstats_projection_aliases <- function(core_only = FALSE) {
+  alias_map <- sumstats_column_alias_map()
+  if (isTRUE(core_only)) {
+    alias_map <- alias_map[c(
+      "chromosome", "base_pair_location", "reference_allele",
+      "alternate_allele", "effect_allele", "other_allele", "beta",
+      "standard_error", "effect_allele_frequency"
+    )]
+  }
+  unique(c(
+    if (isTRUE(core_only)) character() else
+      c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"),
+    unlist(alias_map, use.names = FALSE)
+  ))
+}
+
+sumstats_projection_indices <- function(source_columns, core_only = FALSE) {
+  source_columns <- as.character(source_columns %||% character())
+  indices <- which(alias_key(source_columns) %in%
+                     alias_key(sumstats_projection_aliases(core_only = core_only)))
+  # Retain one source field when no recognized names exist. This preserves the
+  # row count so the normal schema validator can issue its precise missing-
+  # column diagnostic without materialising the rest of a wide input.
+  if (!length(indices) && length(source_columns)) indices <- 1L
+  indices
+}
+
 sumstats_primary_chromosomes <- function() {
   c(as.character(seq_len(22L)), "X", "Y")
 }
@@ -277,7 +334,27 @@ input_probe_lines <- function(input, n = 32L) {
   readLines(connection, n = n, warn = FALSE)
 }
 
-read_delimited_file <- function(input, skip = NULL) {
+read_delimited_header <- function(input, skip = NULL) {
+  compression <- input_compression(input)
+  probe <- if (!identical(compression, "zst")) {
+    tryCatch(input_probe_lines(input), error = function(e) character())
+  } else {
+    character()
+  }
+  separator <- detect_delimited_separator(probe)
+  arguments <- list(data.table = FALSE, showProgress = FALSE, check.names = FALSE,
+                    fill = FALSE, nrows = 0L)
+  if (nzchar(separator)) arguments$sep <- separator
+  if (!is.null(skip)) arguments$skip <- skip
+  if (identical(compression, "none")) {
+    arguments$file <- input
+  } else {
+    arguments$cmd <- compressed_read_command(input)
+  }
+  clean_input_names(do.call(strict_fread, arguments))
+}
+
+read_delimited_file <- function(input, skip = NULL, select = NULL) {
   compression <- input_compression(input)
   probe <- if (!identical(compression, "zst")) {
     tryCatch(input_probe_lines(input), error = function(e) character())
@@ -289,6 +366,7 @@ read_delimited_file <- function(input, skip = NULL) {
                     fill = FALSE)
   if (nzchar(separator)) arguments$sep <- separator
   if (!is.null(skip)) arguments$skip <- skip
+  if (!is.null(select)) arguments$select <- select
   if (identical(compression, "none")) {
     arguments$file <- input
   } else {
@@ -407,16 +485,65 @@ looks_like_vcf <- function(input) {
     any(grepl("^#CHROM(?:\\t|\\s)", probe, ignore.case = TRUE))
 }
 
-read_sumstats_input <- function(input, parse_policy = c("error", "report")) {
+read_sumstats_input <- function(input, parse_policy = c("error", "report"),
+                                project_columns = FALSE, core_only = FALSE) {
   parse_policy <- match.arg(parse_policy)
-  if (is.data.frame(input)) return(clean_input_names(input))
+  if (length(project_columns) != 1L || !is.logical(project_columns) || is.na(project_columns) ||
+      length(core_only) != 1L || !is.logical(core_only) || is.na(core_only)) {
+    stop("project_columns and core_only must be TRUE or FALSE", call. = FALSE)
+  }
+  started <- unname(proc.time()[["elapsed"]])
+  if (is.data.frame(input)) {
+    data <- clean_input_names(input)
+    source_columns <- names(data)
+    selected <- if (isTRUE(project_columns)) {
+      sumstats_projection_indices(source_columns, core_only = core_only)
+    } else {
+      seq_along(source_columns)
+    }
+    data <- data[, selected, drop = FALSE]
+    attr(data, "source_columns") <- source_columns
+    attr(data, "source_columns_read") <- names(data)
+    attr(data, "input_read_metadata") <- list(
+      projected = isTRUE(project_columns),
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(selected)),
+      elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+    )
+    return(data)
+  }
   if (length(input) != 1L || !is.character(input) || !file.exists(input)) {
     stop("input must be a data.frame or an existing delimited file path", call. = FALSE)
   }
   if (looks_like_vcf(input)) {
-    return(read_vcf_input(input, parse_policy = parse_policy))
+    data <- read_vcf_input(input, parse_policy = parse_policy)
+    source_columns <- attr(data, "source_columns") %||% names(data)
+    attr(data, "source_columns_read") <- source_columns
+    attr(data, "input_read_metadata") <- list(
+      projected = FALSE,
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(source_columns)),
+      elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+    )
+    return(data)
   }
-  clean_input_names(read_delimited_file(input))
+  header <- read_delimited_header(input)
+  source_columns <- names(header)
+  selected <- if (isTRUE(project_columns)) {
+    sumstats_projection_indices(source_columns, core_only = core_only)
+  } else {
+    seq_along(source_columns)
+  }
+  data <- clean_input_names(read_delimited_file(input, select = selected))
+  attr(data, "source_columns") <- source_columns
+  attr(data, "source_columns_read") <- names(data)
+  attr(data, "input_read_metadata") <- list(
+    projected = isTRUE(project_columns),
+    columns_before = as.integer(length(source_columns)),
+    columns_read = as.integer(length(selected)),
+    elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+  )
+  data
 }
 
 rename_first_alias <- function(data, target, aliases) {
@@ -455,33 +582,7 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   }
   data <- rename_first_alias(data, "rsid",
                              c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"))
-  alias_map <- list(
-    chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
-    base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
-    reference_allele = c("reference_allele", "reference", "ref", "REF"),
-    alternate_allele = c("alternate_allele", "alternate", "alt", "ALT"),
-    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1",
-                      "ALLELE1", "alleleB", "ALLELEB"),
-    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2",
-                     "ALLELE0", "alleleA", "ALLELEA"),
-    # A single-letter B is used by some sources for expected non-reference
-    # counts. It must not compete with an exact beta column (or be silently
-    # interpreted as an effect size when its meaning is schema-dependent).
-    beta = c("beta", "BETA", "effect", "effect_size", "estimate",
-             "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM"),
-    z = c("z", "Z", "zscore", "Z_SCORE", "z_stat", "ZSTAT", "zstatistic",
-          "Z_STATISTIC", "Z_BOLT_LMM"),
-    odds_ratio = c("odds_ratio", "OR", "ODDSRATIO", "oddsratio"),
-    standard_error = c("standard_error", "SE", "se", "sebeta", "SEBETA", "stderr", "std_err"),
-    effect_allele_frequency = c("effect_allele_frequency", "eaf", "EAF", "af", "AF",
-                                "effect_af", "A1FREQ", "ALT_FREQ", "ALT_AF", "EAF_ALT"),
-    p_value = c("p_value", "P", "p", "pval", "pvalue", "P_VALUE", "P_BOLT_LMM"),
-    minus_log10_p = c("minus_log10_p", "LP", "lp", "neglog10p", "-LOG10P", "LOG10P"),
-    variant_id = c("variant_id", "SNPID", "SNP_ID", "SNP", "snp", "variant", "ID"),
-    sample_size = c("sample_size", "N", "n", "SS", "N_TOTAL", "TOTALSAMPLESIZE", "N_SUMMARY"),
-    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP"),
-    expected_count = c("expected_count", "B", "expected_nonref_count", "nonref_count")
-  )
+  alias_map <- sumstats_column_alias_map()
   for (target in names(alias_map)) data <- rename_first_alias(data, target, alias_map[[target]])
   missing <- setdiff(required_sumstats_columns(), names(data))
   if (length(missing)) {

@@ -164,6 +164,10 @@ compress_sumstats <- function(input, output,
   }
   profile <- match.arg(profile)
   backend <- match.arg(backend)
+  if (identical(backend, "pcodec") && isTRUE(keep_extras)) {
+    stop("backend='pcodec' currently stores only the core summary-statistics "
+         , "columns; use backend='parquet' to retain extras", call. = FALSE)
+  }
   if (selection %in% c("core", "hm3", "core_plus") && is.null(variant_set)) {
     variant_set <- if (selection == "hm3") "hm3" else "core"
   }
@@ -181,8 +185,13 @@ compress_sumstats <- function(input, output,
   }, add = TRUE)
   output <- transaction$staging
 
-  raw <- import_sumstats(input, input_build = input_build)
+  raw <- import_sumstats_impl(
+    input, input_build = input_build,
+    project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
+    core_only = identical(backend, "pcodec")
+  )
   source_columns <- attr(raw, "source_columns")
+  source_columns_read <- attr(raw, "source_columns_read")
   source_provenance <- attr(raw, "source_provenance")
   validate_core_schema(raw, source_columns = source_columns,
                        input_build = input_build, store_build = store_build)
@@ -206,6 +215,7 @@ compress_sumstats <- function(input, output,
   }
   raw <- canonicalize_core_identity(raw, build = store_build)
   attr(raw, "source_columns") <- source_columns
+  attr(raw, "source_columns_read") <- source_columns_read
   attr(raw, "source_provenance") <- source_provenance
   prepared <- prepare_core_sumstats_data(
     raw, selection = selection, variant_set = variant_set,
@@ -226,10 +236,6 @@ compress_sumstats <- function(input, output,
     if (isTRUE(cache)) {
       stop("backend='pcodec' is already block-framed for regional access; "
            , "cache=TRUE is not needed", call. = FALSE)
-    }
-    if (isTRUE(keep_extras)) {
-      stop("backend='pcodec' currently stores only the core summary-statistics "
-           , "columns; use backend='parquet' to retain extras", call. = FALSE)
     }
     supported_chromosome <- as.character(data$chromosome) %in%
       names(compressor_chromosome_lengths(store_build))
@@ -273,6 +279,7 @@ compress_sumstats <- function(input, output,
         preparation = preparation
       ),
       source_columns = attr(raw, "source_columns") %||% names(raw),
+      source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
       source = attr(raw, "source_provenance") %||% NULL,
       selection = selection
     )
@@ -386,6 +393,7 @@ compress_sumstats <- function(input, output,
     logical_columns = logical_columns,
     derived_columns = list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))"),
     source_columns = attr(raw, "source_columns") %||% names(raw),
+    source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
     source = attr(raw, "source_provenance") %||% NULL,
     codec = codec,
     variant_storage = "inline",

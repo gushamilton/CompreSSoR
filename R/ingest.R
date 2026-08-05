@@ -22,24 +22,44 @@
 import_sumstats <- function(input, strict = FALSE,
                             row_policy = c("report", "error"),
                             input_build = "GRCh38") {
+  import_sumstats_impl(
+    input, strict = strict, row_policy = row_policy,
+    input_build = input_build, project_columns = FALSE
+  )
+}
+
+import_sumstats_impl <- function(input, strict = FALSE,
+                                 row_policy = c("report", "error"),
+                                 input_build = "GRCh38",
+                                 project_columns = FALSE,
+                                 core_only = FALSE) {
   if (length(strict) != 1L || !is.logical(strict) || is.na(strict)) {
     stop("strict must be TRUE or FALSE", call. = FALSE)
   }
   row_policy <- match.arg(row_policy)
   if (isTRUE(strict)) row_policy <- "error"
   raw <- read_sumstats_input(
-    input, parse_policy = if (identical(row_policy, "error")) "error" else "report"
+    input,
+    parse_policy = if (identical(row_policy, "error")) "error" else "report",
+    project_columns = project_columns,
+    core_only = core_only
   )
   if (!nrow(raw)) {
     stop("input contains zero rows; CompreSSoR requires at least one prepared summary-statistics row",
          call. = FALSE)
   }
   source_columns <- attr(raw, "source_columns") %||% names(raw)
+  source_columns_read <- attr(raw, "source_columns_read") %||% names(raw)
+  input_read_metadata <- attr(raw, "input_read_metadata") %||% list()
   provenance <- if (is.data.frame(input)) {
     list(
       kind = "data.frame",
       rows = nrow(input),
-      sha256 = digest::digest(input, algo = "sha256", serialize = TRUE)
+      sha256 = digest::digest(input, algo = "sha256", serialize = TRUE),
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(source_columns_read)),
+      projected = isTRUE(input_read_metadata$projected),
+      read_elapsed_seconds = as.numeric(input_read_metadata$elapsed_seconds %||% NA_real_)
     )
   } else {
     path <- normalizePath(input, mustWork = TRUE)
@@ -47,7 +67,11 @@ import_sumstats <- function(input, strict = FALSE,
       kind = "file",
       file = basename(path),
       bytes = unname(file.info(path)$size),
-      sha256 = digest::digest(path, algo = "sha256", file = TRUE)
+      sha256 = digest::digest(path, algo = "sha256", file = TRUE),
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(source_columns_read)),
+      projected = isTRUE(input_read_metadata$projected),
+      read_elapsed_seconds = as.numeric(input_read_metadata$elapsed_seconds %||% NA_real_)
     )
   }
   out <- normalise_sumstats_columns(
@@ -59,6 +83,7 @@ import_sumstats <- function(input, strict = FALSE,
     stop(format_structural_qc_failure(qc_report), call. = FALSE)
   }
   attr(out, "source_columns") <- source_columns
+  attr(out, "source_columns_read") <- source_columns_read
   attr(out, "source_provenance") <- provenance
   attr(out, "input_build") <- normalise_build_name(input_build)
   attr(out, "structural_qc_report") <- qc_report
@@ -97,6 +122,7 @@ preflight_sumstats <- function(input, input_build = "GRCh38", strict = FALSE,
                                 require_statistics = require_statistics,
                                 max_examples = max_examples)
   attr(result$data, "source_columns") <- attr(imported, "source_columns")
+  attr(result$data, "source_columns_read") <- attr(imported, "source_columns_read")
   attr(result$data, "source_provenance") <- attr(imported, "source_provenance")
   attr(result$data, "input_build") <- attr(imported, "input_build")
   result

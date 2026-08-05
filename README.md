@@ -125,6 +125,13 @@ read_sumstats(
 )
 ```
 
+For delimited-file input, the native Pcodec path discovers the header first and
+projects only columns that can affect the strict identity/statistical core
+before canonicalisation and QC. The complete source header and read-column
+counts remain in provenance. Parquet with `keep_extras = TRUE` intentionally
+reads and retains the full input table; use that mode when arbitrary source
+columns are required.
+
 For a prepared GRCh37 table, write a native GRCh37 store directly:
 
 ```r
