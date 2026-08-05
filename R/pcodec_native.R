@@ -585,13 +585,16 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       manifest_metadata
     }
   )
+  integrity_files <- stats::setNames(lapply(unname(unlist(files)), function(relative) {
+    path <- file.path(output, relative)
+    list(bytes = as.numeric(file.info(path)$size),
+         sha256 = digest::digest(path, algo = "sha256", file = TRUE))
+  }), unname(unlist(files)))
   manifest$integrity <- list(
     algorithm = "sha256",
-    files = stats::setNames(lapply(files, function(relative) {
-      path <- file.path(output, relative)
-      list(bytes = as.numeric(file.info(path)$size),
-           sha256 = digest::digest(path, algo = "sha256", file = TRUE))
-    }), unname(unlist(files)))
+    files = integrity_files,
+    payload_sha256 = pcodec_payload_sha256(integrity_files),
+    payload_definition = "sha256 over sorted relative payload paths, byte counts, and file sha256 values"
   )
   manifest$created_utc <- now_utc()
 manifest$tolerances <- list(

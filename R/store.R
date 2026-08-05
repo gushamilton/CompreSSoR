@@ -276,6 +276,7 @@ compress_sumstats <- function(input, output, reference = NULL,
   raw <- import_sumstats(input)
   source_columns <- attr(raw, "source_columns")
   source_provenance <- attr(raw, "source_provenance")
+  hm_diagnostic <- attr(raw, "gwas_catalog_hm_diagnostic")
   imported_explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt"))
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
@@ -287,6 +288,7 @@ compress_sumstats <- function(input, output, reference = NULL,
   attr(raw, "source_columns") <- source_columns
   attr(raw, "source_provenance") <- source_provenance
   attr(raw, "explicit_ref_alt") <- imported_explicit_ref_alt
+  attr(raw, "gwas_catalog_hm_diagnostic") <- hm_diagnostic
   source_keys <- alias_key(source_columns %||% character())
   explicit_ref_alt <- imported_explicit_ref_alt ||
     isTRUE(attr(input, "compressor_identity_verified")) ||
@@ -295,7 +297,9 @@ compress_sumstats <- function(input, output, reference = NULL,
     )
   if (identical(backend, "pcodec") && mode %in% c("convert", "pvalue_regions") &&
       !isTRUE(assume_grch38_ref_alt) && !explicit_ref_alt) {
-    stop("Pcodec mode='convert' needs explicit REF/ALT columns or assume_grch38_ref_alt=TRUE; ordinary effect/other alleles do not prove REF/ALT orientation",
+    message <- gwas_catalog_hm_orientation_message(hm_diagnostic)
+    stop(message %||%
+           "Pcodec mode='convert' needs explicit REF/ALT columns or assume_grch38_ref_alt=TRUE; ordinary effect/other alleles do not prove REF/ALT orientation",
          call. = FALSE)
   }
   prepared <- prepare_sumstats_data(raw, reference, mode = mode, variant_set = variant_set,
@@ -386,6 +390,7 @@ compress_sumstats <- function(input, output, reference = NULL,
         drop_unresolved = isTRUE(drop_unresolved),
         input_build = as.character(input_build),
         liftover_chain = chain_manifest_metadata(chain),
+        gwas_catalog_hm = hm_diagnostic,
         alignment = alignment$alignment_stats
       ),
       source_columns = attr(raw, "source_columns") %||% names(raw),

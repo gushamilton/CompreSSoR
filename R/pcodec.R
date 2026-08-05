@@ -7,7 +7,37 @@ pcodec_manifest_checksum_path <- function(path) {
   file.path(dirname(path), "manifest.sha256")
 }
 
+pcodec_payload_sha256 <- function(files) {
+  if (!length(files)) return(digest::digest("", algo = "sha256", serialize = FALSE))
+  file_names <- names(files)
+  if (is.null(file_names) || anyNA(file_names) || any(!nzchar(file_names))) {
+    stop("Pcodec payload hash inputs must be named", call. = FALSE)
+  }
+  entries <- vapply(sort(file_names), function(name) {
+    item <- files[[name]]
+    paste(name, item$bytes, item$sha256, sep = "\t")
+  }, character(1))
+  digest::digest(paste(entries, collapse = "\n"), algo = "sha256", serialize = FALSE)
+}
+
+pcodec_canonical_manifest_sha256 <- function(manifest) {
+  canonical <- manifest
+  canonical$created_utc <- NULL
+  if (!is.null(canonical$integrity)) {
+    canonical$integrity$canonical_sha256 <- NULL
+  }
+  payload <- jsonlite::toJSON(canonical, auto_unbox = TRUE, pretty = FALSE,
+                              null = "null", digits = 17)
+  digest::digest(payload, algo = "sha256", serialize = FALSE)
+}
+
 seal_pcodec_manifest <- function(path) {
+  manifest <- read_manifest(path)
+  if (!is.null(manifest$integrity$files) &&
+      !is.null(manifest$integrity$payload_sha256)) {
+    manifest$integrity$canonical_sha256 <- pcodec_canonical_manifest_sha256(manifest)
+    write_manifest(manifest, path)
+  }
   checksum <- digest::digest(path, algo = "sha256", file = TRUE)
   writeLines(checksum, pcodec_manifest_checksum_path(path), useBytes = TRUE)
   invisible(checksum)

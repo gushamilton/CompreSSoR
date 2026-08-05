@@ -59,6 +59,42 @@ test_that("conflicting aliases and effect statistics fail closed", {
   expect_error(import_sumstats(inconsistent), "inconsistent")
 })
 
+test_that("schema-aware aliases separate MalariaGEN B from exact beta", {
+  input <- data.frame(
+    chromosome = "1", position = 100L, alleleA = "A", alleleB = "C",
+    beta = 0.2, B = 12, SE = 0.1, EAF = 0.2,
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+  got <- import_sumstats(input)
+  expect_equal(got$effect_allele, "C")
+  expect_equal(got$other_allele, "A")
+  expect_equal(got$beta, 0.2)
+  expect_equal(got$expected_count, 12)
+  expect_false("B" %in% names(got))
+})
+
+test_that("GWAS Catalog hm fields produce an orientation diagnostic", {
+  input <- data.frame(
+    chromosome = "1", position = 100L, effect_allele = "C", other_allele = "A",
+    beta = 0.2, standard_error = 0.1, effect_allele_frequency = 0.2,
+    hm_chrom = "1", hm_pos = 100L, hm_other_allele = "A",
+    hm_effect_allele = "C", hm_beta = 0.2,
+    hm_effect_allele_frequency = 0.2, hm_code = 10L,
+    stringsAsFactors = FALSE
+  )
+  imported <- import_sumstats(input)
+  diagnostic <- attr(imported, "gwas_catalog_hm_diagnostic")
+  expect_equal(diagnostic$schema, "gwas_catalog_harmonised")
+  expect_equal(diagnostic$fields[["other_allele"]], "hm_other_allele")
+  expect_equal(diagnostic$fields[["code"]], "hm_code")
+  expect_false(isTRUE(attr(imported, "explicit_ref_alt")))
+  expect_error(
+    compress_sumstats(input, tempfile(), reference = NULL, mode = "convert",
+                      overwrite = TRUE),
+    "GWAS Catalog harmonised hm_.*identity safety guard"
+  )
+})
+
 test_that("convert mode still validates supplied numeric values", {
   bad <- data.frame(
     chromosome = "1", position = 100L, effect_allele = "C", other_allele = "A",

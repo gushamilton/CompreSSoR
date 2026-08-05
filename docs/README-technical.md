@@ -67,6 +67,23 @@ to be GRCh38 with `other_allele = REF`, `effect_allele = ALT`, and matching
 beta/Z/EAF orientation. It requires explicit REF/ALT columns or
 `assume_grch38_ref_alt = TRUE`.
 
+GWAS Catalog harmonised files commonly contain `hm_*` columns alongside their
+ordinary columns. CompreSSoR reports those fields in a structured orientation
+diagnostic, but does not infer REF/ALT identity from the prefix alone. Callers
+must verify `hm_code` (codes 1--13 are oriented; 14--18 are not) and explicitly
+copy `hm_other_allele` to `other_allele`, `hm_effect_allele` to
+`effect_allele`, and the matching harmonised coordinates/statistics before
+using `assume_grch38_ref_alt = TRUE`. This keeps a malformed or non-oriented
+GWAS Catalog row from bypassing the identity safety guard.
+
+Native stores expose two reproducibility hashes in
+`manifest$integrity`. `payload_sha256` is deterministic for identical indexed
+payload bytes and excludes the manifest and its provenance fields.
+`canonical_sha256` is deterministic for the canonical manifest with the
+volatile `created_utc` field removed. The detached `manifest.sha256` remains a
+byte-integrity check for the actual manifest and may therefore differ between
+runs; a whole-directory byte hash is not promised.
+
 The current Pcodec identity scope is biallelic A/C/G/T SNVs on chromosomes
 1–22, X, and Y. Indels, unsupported alleles, unresolved reference matches, and
 ambiguous rows are handled by the ingestion/QC contract and are not silently

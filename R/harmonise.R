@@ -77,6 +77,7 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
   raw <- import_sumstats(input)
   source_provenance <- attr(raw, "source_provenance")
   source_columns <- attr(raw, "source_columns")
+  hm_diagnostic <- attr(raw, "gwas_catalog_hm_diagnostic")
   imported_explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt"))
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
@@ -91,6 +92,7 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
   attr(raw, "source_provenance") <- source_provenance
   attr(raw, "source_columns") <- source_columns
   attr(raw, "explicit_ref_alt") <- imported_explicit_ref_alt
+  attr(raw, "gwas_catalog_hm_diagnostic") <- hm_diagnostic
   source_keys <- alias_key(attr(raw, "source_columns") %||% character())
   explicit_ref_alt <- imported_explicit_ref_alt ||
     (any(source_keys %in% c("ref", "referenceallele")) &&
@@ -134,6 +136,7 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
   alignment_stats <- prepared$alignment$alignment_stats
   alignment_stats$structural_qc <- compact_structural_qc_report(structural$report)
   alignment_stats$source_provenance <- source_provenance
+  if (!is.null(hm_diagnostic)) alignment_stats$gwas_catalog_hm <- hm_diagnostic
   alignment_stats$input_build <- input_build
   alignment_stats$target_build <- prepared$genome_build
   attr(out, "reference_hash") <- prepared$alignment$reference_hash
@@ -146,6 +149,7 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
   attr(out, "explicit_ref_alt") <- explicit_ref_alt
   attr(out, "source_columns") <- source_columns
   attr(out, "source_provenance") <- source_provenance
+  attr(out, "gwas_catalog_hm_diagnostic") <- hm_diagnostic
   attr(out, "harmonisation_qc") <- qc_config
   attr(out, "diagnostics") <- alignment_stats$diagnostics %||% list(
     counts = alignment_stats$counts %||% list(),

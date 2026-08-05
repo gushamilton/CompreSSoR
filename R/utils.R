@@ -203,6 +203,55 @@ alias_values_equal <- function(x, y) {
 
 alias_key <- function(x) gsub("[^a-z0-9#]", "", tolower(as.character(x)), perl = TRUE)
 
+gwas_catalog_hm_diagnostic <- function(columns) {
+  columns <- as.character(columns %||% character())
+  keys <- alias_key(columns)
+  hm_fields <- grep("^hm_", tolower(trimws(columns)), value = TRUE)
+  if (!length(hm_fields)) return(NULL)
+  source_column <- function(name) {
+    hit <- which(keys == alias_key(name))
+    if (length(hit)) columns[hit[1L]] else NA_character_
+  }
+  fields <- stats::setNames(vapply(c(
+    "hm_chrom", "hm_pos", "hm_other_allele", "hm_effect_allele",
+    "hm_beta", "hm_odds_ratio", "hm_effect_allele_frequency", "hm_code"
+  ), source_column, character(1)), c(
+    "chromosome", "position", "other_allele", "effect_allele",
+    "beta", "odds_ratio", "effect_allele_frequency", "code"
+  ))
+  required <- c("chromosome", "position", "other_allele", "effect_allele", "code")
+  list(
+    schema = "gwas_catalog_harmonised",
+    detected = sort(unique(hm_fields)),
+    fields = fields,
+    required = required,
+    missing = required[is.na(fields[required])],
+    orientation_codes = 1:13,
+    non_oriented_codes = 14:18
+  )
+}
+
+gwas_catalog_hm_orientation_message <- function(diagnostic) {
+  if (is.null(diagnostic)) return(NULL)
+  detected <- paste(diagnostic$detected, collapse = ", ")
+  fields <- diagnostic$fields
+  mapping <- paste(names(fields)[!is.na(fields)], fields[!is.na(fields)],
+                   sep = " <- ", collapse = ", ")
+  missing <- diagnostic$missing
+  suffix <- if (length(missing)) {
+    paste0(" Required harmonised fields are missing: ", paste(missing, collapse = ", "), ".")
+  } else ""
+  paste0(
+    "GWAS Catalog harmonised hm_* fields detected (", detected, "). ",
+    "They are not used implicitly for REF/ALT orientation; the reference-free ",
+    "identity safety guard remains active. Detected mapping: ", mapping, ". ",
+    "Verify hm_code is in 1-13 (codes 14-18 are not oriented), then explicitly ",
+    "copy hm_chrom/hm_pos, hm_other_allele -> other_allele, hm_effect_allele -> ",
+    "effect_allele, and the matching hm effect fields before calling ",
+    "compress_sumstats(..., assume_grch38_ref_alt = TRUE).", suffix
+  )
+}
+
 normalise_chromosome <- function(x) {
   out <- toupper(trimws(sub("^chr", "", as.character(x), ignore.case = TRUE)))
   out[out == "23"] <- "X"
@@ -457,9 +506,14 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   alias_map <- list(
     chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
     base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
-    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1", "alt", "ALT", "ALLELE1"),
-    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2", "ref", "REF", "ALLELE0"),
-    beta = c("beta", "BETA", "b", "effect", "effect_size", "estimate",
+    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1", "alt", "ALT",
+                      "ALLELE1", "alleleB", "ALLELEB"),
+    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2", "ref", "REF",
+                     "ALLELE0", "alleleA", "ALLELEA"),
+    # A single-letter B is used by some sources for expected non-reference
+    # counts. It must not compete with an exact beta column (or be silently
+    # interpreted as an effect size when its meaning is schema-dependent).
+    beta = c("beta", "BETA", "effect", "effect_size", "estimate",
              "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM"),
     z = c("z", "Z", "zscore", "Z_SCORE", "z_stat", "ZSTAT", "zstatistic",
           "Z_STATISTIC", "Z_BOLT_LMM"),
@@ -471,7 +525,8 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     minus_log10_p = c("minus_log10_p", "LP", "lp", "neglog10p", "-LOG10P", "LOG10P"),
     variant_id = c("variant_id", "SNPID", "SNP_ID", "SNP", "snp", "variant", "ID"),
     sample_size = c("sample_size", "N", "n", "SS", "N_TOTAL", "TOTALSAMPLESIZE", "N_SUMMARY"),
-    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP")
+    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP"),
+    expected_count = c("expected_count", "B", "expected_nonref_count", "nonref_count")
   )
   for (target in names(alias_map)) data <- rename_first_alias(data, target, alias_map[[target]])
   missing <- setdiff(required_sumstats_columns(), names(data))

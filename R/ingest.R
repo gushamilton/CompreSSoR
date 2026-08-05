@@ -31,6 +31,7 @@ import_sumstats <- function(input, strict = FALSE,
   )
   source_columns <- attr(raw, "source_columns") %||% names(raw)
   explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt"))
+  hm_diagnostic <- gwas_catalog_hm_diagnostic(source_columns)
   provenance <- if (is.data.frame(input)) {
     list(
       kind = "data.frame",
@@ -57,6 +58,7 @@ import_sumstats <- function(input, strict = FALSE,
   attr(out, "source_columns") <- source_columns
   attr(out, "source_provenance") <- provenance
   attr(out, "explicit_ref_alt") <- explicit_ref_alt
+  attr(out, "gwas_catalog_hm_diagnostic") <- hm_diagnostic
   attr(out, "input_build") <- normalise_build_name(input_build)
   attr(out, "structural_qc_report") <- qc_report
   out
@@ -96,6 +98,8 @@ preflight_sumstats <- function(input, input_build = "GRCh38", strict = FALSE,
   attr(result$data, "source_columns") <- attr(imported, "source_columns")
   attr(result$data, "source_provenance") <- attr(imported, "source_provenance")
   attr(result$data, "explicit_ref_alt") <- attr(imported, "explicit_ref_alt")
+  attr(result$data, "gwas_catalog_hm_diagnostic") <-
+    attr(imported, "gwas_catalog_hm_diagnostic")
   attr(result$data, "input_build") <- attr(imported, "input_build")
   result
 }

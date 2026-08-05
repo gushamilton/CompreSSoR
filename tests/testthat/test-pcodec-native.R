@@ -83,10 +83,18 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   input$z <- input$beta / input$standard_error
   path1 <- tempfile("pcodec-native-batch-a-")
   path2 <- tempfile("pcodec-native-batch-b-")
-  compress_sumstats(input, path1, reference = NULL, mode = "convert",
-                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  compress_sumstats(input, path2, reference = NULL, mode = "convert",
-                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  first_store <- compress_sumstats(input, path1, reference = NULL, mode = "convert",
+                                   assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  second_store <- compress_sumstats(input, path2, reference = NULL, mode = "convert",
+                                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  expect_identical(first_store$manifest$integrity$payload_sha256,
+                   second_store$manifest$integrity$payload_sha256)
+  expect_identical(first_store$manifest$integrity$canonical_sha256,
+                   second_store$manifest$integrity$canonical_sha256)
+  expect_identical(
+    CompreSSoR:::pcodec_canonical_manifest_sha256(first_store$manifest),
+    first_store$manifest$integrity$canonical_sha256
+  )
   expect_true(validate_compressor(path1, full = TRUE)$valid)
   keys <- compressor_variant_key(input$chromosome, input$base_pair_location,
                                  input$other_allele, input$effect_allele)

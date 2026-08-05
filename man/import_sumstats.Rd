@@ -33,6 +33,11 @@ xz, and zstd transports. Simple single-trait VCF inputs are converted from
 fixed columns plus INFO/FORMAT values. Common aliases, including UKB-PPP
 \code{GENPOS}, \code{ALLELE0}, \code{ALLELE1}, and \code{LOG10P}, are mapped onto
 CompreSSoR's canonical in-memory schema and unrecognised columns are retained.
+MalariaGEN-style \code{alleleA}/\code{alleleB} are mapped to the other/effect
+alleles, while a single-letter \code{B} is retained as \code{expected_count}
+and is never treated as a beta alias when an exact \code{beta} column is
+present. GWAS Catalog \code{hm_*} fields are detected for a structured
+orientation diagnostic but are not inferred as REF/ALT automatically.
 Chromosome prefixes and 23/24 are normalised to 1--22/X/Y. This function does
 not change genome build or allele orientation; use \code{liftover_sumstats()}
 and \code{harmonise_sumstats()} for those operations.
