@@ -308,6 +308,13 @@ variant_panel_read_blocks <- function(store, index, stream, block_ids) {
   }), use.names = FALSE)
 }
 
+variant_panel_stream_bytes <- function(index, stream, block_ids = NULL) {
+  blocks <- index$streams[[stream]]$blocks
+  if (is.null(block_ids)) block_ids <- seq_along(blocks)
+  if (!length(block_ids)) return(0)
+  sum(vapply(blocks[block_ids], function(block) as.numeric(block$length), numeric(1)))
+}
+
 read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NULL,
                                hm3_only = FALSE, verify_payload = FALSE) {
   store <- if (inherits(panel, "compressor_variant_panel")) panel else {
@@ -320,6 +327,7 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
   key_blocks <- index$key_blocks
   flag_blocks <- index$flag_blocks
   key_block_ids <- seq_along(key_blocks)
+  flag_block_ids <- seq_along(flag_blocks)
   if (!is.null(rows)) {
     rows <- as.numeric(rows)
     if (anyNA(rows) || any(rows < 1 | rows > n | rows != floor(rows))) {
@@ -357,6 +365,7 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
     substitution <- integer()
     hm3 <- integer()
     source_rows <- integer()
+    flag_block_ids <- integer()
   } else {
     position <- variant_panel_read_blocks(store, index, "position", key_block_ids)
     substitution <- as.integer(variant_panel_read_blocks(store, index, "substitution", key_block_ids))
@@ -393,6 +402,20 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
   if (isTRUE(hm3_only)) keep <- keep & hm3 == 1L
   out <- data.frame(variant_id = variant_id[keep], hm3 = hm3[keep],
                     stringsAsFactors = FALSE)
+  payload_bytes_read <- variant_panel_stream_bytes(index, "position", key_block_ids) +
+    variant_panel_stream_bytes(index, "substitution", key_block_ids) +
+    variant_panel_stream_bytes(index, "hm3", flag_block_ids)
+  payload_bytes_total <- variant_panel_stream_bytes(index, "position") +
+    variant_panel_stream_bytes(index, "substitution") +
+    variant_panel_stream_bytes(index, "hm3")
+  attr(out, "variant_panel_read") <- list(
+    selective = !is.null(chromosomes) || !is.null(rows) || !is.null(keys),
+    key_blocks = as.integer(key_block_ids), flag_blocks = as.integer(flag_block_ids),
+    key_blocks_total = as.integer(length(key_blocks)),
+    flag_blocks_total = as.integer(length(flag_blocks)),
+    payload_bytes_read = as.numeric(payload_bytes_read),
+    payload_bytes_total = as.numeric(payload_bytes_total)
+  )
   attr(out, "variant_set_normalized_ids") <- TRUE
   attr(out, "variant_set_canonical") <- TRUE
   attr(out, "variant_set_metadata") <- list(
