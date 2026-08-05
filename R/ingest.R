@@ -100,6 +100,7 @@ import_sumstats_impl <- function(input, strict = FALSE,
   normalise_seconds <- phase_seconds(normalise_started)
   provenance$resolution <- attr(out, "resolution_provenance") %||%
     sumstats_resolution_contract(allow_p_to_se = allow_p_to_se)
+  provenance$eaf <- eaf_coverage_metadata(out$effect_allele_frequency)
   qc_report <- NULL
   qc_seconds <- NULL
   if (isTRUE(run_qc)) {
@@ -115,6 +116,7 @@ import_sumstats_impl <- function(input, strict = FALSE,
   attr(out, "source_columns") <- source_columns
   attr(out, "source_columns_read") <- source_columns_read
   attr(out, "source_provenance") <- provenance
+  attr(out, "eaf_provenance") <- provenance$eaf
   attr(out, "input_build") <- normalise_build_name(input_build)
   attr(out, "structural_qc_report") <- qc_report
   attr(out, "phase_timings") <- list(

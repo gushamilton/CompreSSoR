@@ -130,6 +130,23 @@ validate_qc_none_statistics <- function(data) {
     if (field == "z" && any(!is.na(value) & !is.finite(value))) {
       stop("qc='none' requires finite z values when supplied", call. = FALSE)
     }
+    if (field == "z") {
+      supplied <- attr(data, "z_supplied")
+      if (is.null(supplied) || length(supplied) != length(value)) {
+        supplied <- !is.na(value)
+      }
+      supplied <- !is.na(supplied) & as.logical(supplied)
+      expected <- beta / standard_error
+      comparable <- supplied & is.finite(value) & is.finite(expected)
+      tolerance <- 1e-6 + 0.01 * pmax(abs(value), abs(expected))
+      conflict <- comparable & abs(value - expected) > tolerance
+      if (any(conflict)) {
+        stop(
+          "qc='none' supplied z is inconsistent with beta / standard_error at row(s): ",
+          paste(utils::head(which(conflict), 5L), collapse = ", "), call. = FALSE
+        )
+      }
+    }
     if (field == "effect_allele_frequency" && any(
       !is.na(value) & (!is.finite(value) | value < 0 | value > 1)
     )) {

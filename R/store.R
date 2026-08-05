@@ -324,6 +324,28 @@ compress_sumstats <- function(input, output,
   }
   data <- prepared$data
   selection <- prepared$selection
+  eaf_values <- suppressWarnings(as.numeric(as.character(data$effect_allele_frequency)))
+  se_values <- suppressWarnings(as.numeric(as.character(data$standard_error)))
+  eaf_predictor_rows <- sum(
+    is.finite(se_values) & se_values > 0 &
+      !(is.finite(eaf_values) & eaf_values >= 0 & eaf_values <= 1)
+  )
+  preparation$eaf <- list(
+    input = source_provenance$eaf %||% eaf_coverage_metadata(raw$effect_allele_frequency),
+    output = eaf_coverage_metadata(data$effect_allele_frequency),
+    missing_policy = "stored_EAF_remains_missing; no_source_EAF_imputation",
+    predictor_imputation = list(
+      value = as.numeric(PCODEC_NATIVE_MISSING_EAF_PREDICTOR),
+      source_seed = as.numeric(PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED),
+      eaf_code = as.integer(PCODEC_NATIVE_MISSING_EAF_CODE),
+      rows = if (identical(profile, "standard")) as.integer(eaf_predictor_rows) else 0L,
+      policy = if (identical(profile, "standard")) {
+        "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+      } else {
+        "not_used_by_exact_profile"
+      }
+    )
+  )
   if (identical(qc, "compact")) validate_sumstats_values(data, require_identity = TRUE)
   if (identical(backend, "pcodec")) {
     if (!identical(profile, "standard")) {

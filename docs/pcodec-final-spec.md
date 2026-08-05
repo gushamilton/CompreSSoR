@@ -52,6 +52,19 @@ with the historical SE8 semantic experiment. Current manifests identify this
 distinction with `se_bits = 6`, `se_count = 62`, `se_missing = 62`,
 `se_exception = 63`, and `se_physical_dtype = "uint8"`.
 
+The input statistics remain independent: a supplied finite standard error is
+the authoritative SE value and is never replaced by a value derived from EAF.
+EAF is used both for its own stream and as the predictor in the SE residual
+transform. If EAF is missing, the writer uses the quantised decoded fallback
+for an internal SE predictor only; it does not write an imputed biological EAF.
+The missing EAF is restored on read through an EAF exception and the manifest
+records the predictor fallback and affected-row count. Exception flags are
+bitwise: `1 = Z`, `2 = SE`, and `4 = EAF`; a missing-EAF row with valid SE
+therefore needs only the EAF flag when its SE residual is in range.
+For the current EAF8 domain, the `0.5` seed is code `128`, whose decoded
+predictor is approximately `0.50307997331906917`; the manifest records this
+code and decoded value rather than treating the seed as the stored EAF.
+
 ## Variant identity
 
 Every row has an unambiguous identity key:

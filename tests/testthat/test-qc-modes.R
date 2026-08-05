@@ -133,6 +133,14 @@ test_that("none mode requires exact canonical columns and refuses QC policies", 
     compress_sumstats(malformed_se, tempfile("none-malformed-se-"), qc = "none"),
     "requires positive finite standard_error"
   )
+
+  inconsistent_z <- input
+  inconsistent_z$z <- inconsistent_z$beta / inconsistent_z$standard_error
+  inconsistent_z$z[1L] <- inconsistent_z$z[1L] + 0.5
+  expect_error(
+    compress_sumstats(inconsistent_z, tempfile("none-inconsistent-z-"), qc = "none"),
+    "supplied z is inconsistent"
+  )
 })
 
 test_that("none mode retains native duplicate safety without structural QC", {

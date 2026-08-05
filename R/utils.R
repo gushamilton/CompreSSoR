@@ -278,6 +278,27 @@ parse_numeric_column <- function(x, name, invalid = c("error", "report")) {
   out
 }
 
+eaf_coverage_metadata <- function(values) {
+  if (is.null(values)) values <- numeric()
+  values <- if (is.numeric(values) && !is.factor(values)) {
+    as.numeric(values)
+  } else {
+    suppressWarnings(as.numeric(as.character(values)))
+  }
+  present <- is.finite(values) & values >= 0 & values <= 1
+  missing <- is.na(values) | !is.finite(values)
+  invalid <- is.finite(values) & (values < 0 | values > 1)
+  rows <- length(values)
+  list(
+    rows = as.integer(rows),
+    present = as.integer(sum(present)),
+    missing = as.integer(sum(missing)),
+    invalid = as.integer(sum(invalid)),
+    coverage = if (rows) as.numeric(sum(present) / rows) else NA_real_,
+    definition = "present means finite EAF in [0, 1]; missing is non-finite EAF"
+  )
+}
+
 parse_integer_column <- function(x, name, invalid = c("error", "report")) {
   invalid <- match.arg(invalid)
   value <- parse_numeric_column(x, name, invalid = invalid)
@@ -859,7 +880,9 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   if (!"effect_allele_frequency" %in% names(out)) {
     out$effect_allele_frequency <- rep(NA_real_, nrow(out))
   }
+  z_supplied <- "z" %in% names(out)
   if (!"z" %in% names(out)) out$z <- rep(NA_real_, nrow(out))
+  z_supplied <- z_supplied & !is.na(out$z)
   derive_z <- is.na(out$z) & is.finite(out$beta) & is.finite(out$standard_error) &
     out$standard_error > 0
   out$z[derive_z] <- out$beta[derive_z] / out$standard_error[derive_z]
@@ -867,6 +890,7 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   out$p_value <- numeric_fast(out$p_value)
   attr(out, "missing_columns") <- character()
   attr(out, "parse_failures") <- list()
+  attr(out, "z_supplied") <- z_supplied
   attr(out, "resolution_provenance") <- sumstats_resolution_contract(allow_p_to_se = FALSE)
   attr(out, "resolution_provenance")$beta_route <- "explicit_beta_canonical"
   attr(out, "resolution_provenance")$standard_error_route <- "explicit_standard_error_canonical"
@@ -1256,7 +1280,9 @@ store_path <- function(store) {
 manifest_path <- function(store) file.path(store_path(store), "manifest.json")
 
 write_manifest <- function(manifest, path) {
-  jsonlite::write_json(manifest, path, auto_unbox = TRUE, pretty = TRUE, null = "null")
+  jsonlite::write_json(
+    manifest, path, auto_unbox = TRUE, pretty = TRUE, null = "null", digits = 17
+  )
   invisible(path)
 }
 

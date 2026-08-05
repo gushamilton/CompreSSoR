@@ -22,6 +22,15 @@ PCODEC_NATIVE_SE_PHYSICAL_DTYPE <- "uint8"
 PCODEC_NATIVE_SE_PHYSICAL_BITS <- 8L
 PCODEC_NATIVE_SE_RESIDUAL_RANGE <- c(-1, 1)
 PCODEC_NATIVE_CODEC_NAME <- "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions"
+PCODEC_NATIVE_EAF_COUNT <- 255L
+PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED <- 0.5
+PCODEC_NATIVE_MISSING_EAF_CODE <- as.integer(round(
+  PCODEC_NATIVE_EAF_COUNT * (2 / pi) *
+    asin(sqrt(PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED))
+))
+PCODEC_NATIVE_MISSING_EAF_PREDICTOR <- sin(
+  pi * PCODEC_NATIVE_MISSING_EAF_CODE / (2 * PCODEC_NATIVE_EAF_COUNT)
+)^2
 
 pcodec_native_available <- function() {
   is.loaded("compressor_pcodec_native_available", PACKAGE = "CompreSSoR") &&
@@ -168,9 +177,22 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   se <- as.numeric(data$standard_error)
   eaf <- as.numeric(data$effect_allele_frequency)
   valid_eaf <- is.finite(eaf) & eaf >= 0 & eaf <= 1
-  safe_eaf <- pmin(1 - 1e-12, pmax(1e-12, ifelse(valid_eaf, eaf, 0.5)))
-  eaf_codes <- as.integer(round(255 * (2 / pi) * asin(sqrt(safe_eaf))))
-  eaf_decoded <- sin(pi * eaf_codes / (2 * 255))^2
+  safe_eaf <- pmin(
+    1 - 1e-12, pmax(1e-12,
+      ifelse(valid_eaf, eaf, PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED)
+    )
+  )
+  eaf_codes <- as.integer(round(
+    PCODEC_NATIVE_EAF_COUNT * (2 / pi) * asin(sqrt(safe_eaf))
+  ))
+  eaf_decoded <- sin(
+    pi * eaf_codes / (2 * PCODEC_NATIVE_EAF_COUNT)
+  )^2
+  # Missing EAF uses the deterministic 0.5 predictor only for the SE
+  # residual. The EAF code remains exception-backed so the logical EAF stays
+  # missing; supplied SE is still the value being quantised.
+  eaf_predictor <- ifelse(valid_eaf, eaf_decoded,
+                          PCODEC_NATIVE_MISSING_EAF_PREDICTOR)
 
   z_min <- -3.5
   z_max <- 3.5
@@ -184,10 +206,10 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   z_codes[z_central] <- as.integer(floor((z[z_central] - z_min) / z_step))
   z_codes[!z_central & z_valid] <- z_exception
 
-  safe_eaf_for_se <- pmin(1 - 1e-12, pmax(1e-12, eaf_decoded))
+  safe_eaf_for_se <- pmin(1 - 1e-12, pmax(1e-12, eaf_predictor))
   valid_se <- is.finite(se) & se > 0
   residual <- rep(NA_real_, n)
-  residual_ready <- valid_se & valid_eaf
+  residual_ready <- valid_se
   residual[residual_ready] <- log2(se[residual_ready]) +
     0.5 * log2(2 * safe_eaf_for_se[residual_ready] *
                  (1 - safe_eaf_for_se[residual_ready]))
@@ -202,7 +224,7 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   se_step <- (se_max - se_min) / se_count
   se_codes <- rep.int(se_missing, n)
   centres <- numeric(if (n) ceiling(n / block_rows) else 0L)
-  se_central <- is.finite(residual) & valid_se & valid_eaf
+  se_central <- is.finite(residual) & valid_se
   if (n) {
     for (block in seq_along(centres)) {
       start <- (block - 1L) * block_rows + 1L
@@ -215,7 +237,6 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
       local <- rep.int(se_missing, length(inside))
       local[in_range] <- as.integer(floor((delta[in_range] - se_min) / se_step))
       local[se_central[inside] & !in_range] <- se_exception
-      local[valid_se[inside] & !valid_eaf[inside]] <- se_exception
       se_codes[inside] <- local
     }
   }
@@ -236,8 +257,82 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   )
   list(
     z = as.integer(z_codes), eaf = as.integer(eaf_codes),
-    se = as.integer(se_codes), centres = centres, exceptions = exceptions
+    se = as.integer(se_codes), centres = centres, exceptions = exceptions,
+    eaf_predictor_rows = as.integer(sum(valid_se & !valid_eaf))
   )
+}
+
+pcodec_native_eaf_observability <- function(eaf, exceptions = NULL,
+                                            predictor_rows = 0L) {
+  coverage <- eaf_coverage_metadata(eaf)
+  exception_flags <- if (is.null(exceptions) || !nrow(exceptions)) {
+    integer()
+  } else {
+    as.integer(exceptions$flags)
+  }
+  exception_eaf <- if (length(exception_flags)) as.numeric(exceptions$eaf) else numeric()
+  nonrepresentable <- coverage$missing + coverage$invalid
+  eaf_flagged <- bitwAnd(exception_flags, 4L) != 0L
+  eaf_missing_flagged <- eaf_flagged & !is.finite(exception_eaf)
+  eaf_invalid_flagged <- eaf_flagged & is.finite(exception_eaf)
+  eaf_missing_exception_rows <- sum(eaf_missing_flagged)
+  eaf_invalid_exception_rows <- sum(eaf_invalid_flagged)
+  eaf_missing_se_exception_rows <- if (length(exception_flags)) {
+    sum(eaf_missing_flagged & bitwAnd(exception_flags, 2L) != 0L)
+  } else {
+    0L
+  }
+  eaf_missing_only_exception_rows <- if (length(exception_flags)) {
+    sum(eaf_missing_flagged & exception_flags == 4L)
+  } else {
+    0L
+  }
+  coverage$eaf_missing_exception_rows <- as.integer(eaf_missing_exception_rows)
+  coverage$eaf_invalid_exception_rows <- as.integer(eaf_invalid_exception_rows)
+  coverage$eaf_nonrepresentable_exception_rows <- as.integer(
+    eaf_missing_exception_rows + eaf_invalid_exception_rows
+  )
+  coverage$eaf_missing_se_exception_rows <- as.integer(eaf_missing_se_exception_rows)
+  coverage$eaf_missing_only_exception_rows <- as.integer(eaf_missing_only_exception_rows)
+  coverage$eaf_missing_exception_density <- if (coverage$rows) {
+    as.numeric(eaf_missing_exception_rows / coverage$rows)
+  } else {
+    NA_real_
+  }
+  coverage$eaf_nonrepresentable_exception_density <- if (coverage$rows) {
+    as.numeric((eaf_missing_exception_rows + eaf_invalid_exception_rows) /
+                 coverage$rows)
+  } else {
+    NA_real_
+  }
+  coverage$predictor_imputation <- list(
+    value = as.numeric(PCODEC_NATIVE_MISSING_EAF_PREDICTOR),
+    source_seed = as.numeric(PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED),
+    eaf_code = as.integer(PCODEC_NATIVE_MISSING_EAF_CODE),
+    rows = as.integer(predictor_rows),
+    policy = "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+  )
+  coverage$missing_policy <- "stored_EAF_remains_missing; no_source_EAF_imputation"
+  coverage$log <- if (nonrepresentable) {
+    paste0(
+      "Native Pcodec received ", nonrepresentable,
+      " non-representable EAF value(s); the decoded EAF8 fallback predictor was ",
+      "used for SE quantisation on ", predictor_rows,
+      " row(s), while stored EAF remains missing and is not imputed."
+    )
+  } else {
+    "Native Pcodec received complete canonical EAF; no EAF-missing exception records were created."
+  }
+  coverage$warning <- if (nonrepresentable) {
+    paste0(
+      "Native Pcodec received ", nonrepresentable,
+      " missing or invalid EAF value(s); EAF-missing flag-only exception records ",
+      "are expected and stored EAF is not imputed."
+    )
+  } else {
+    NULL
+  }
+  coverage
 }
 
 pcodec_native_append_stream <- function(values, path, dtype,
@@ -444,6 +539,10 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   encode_started <- phase_clock()
   values <- pcodec_native_quantise(ordered)
   n <- nrow(ordered)
+  eaf_observability <- pcodec_native_eaf_observability(
+    ordered$effect_allele_frequency, values$exceptions,
+    predictor_rows = values$eaf_predictor_rows
+  )
   block_rows <- pcodec_native_validate_block_rows(
     metadata$block_rows %||% PCODEC_NATIVE_BLOCK_ROWS, "native Pcodec block_rows")
   key_block_rows <- pcodec_native_validate_block_rows(
@@ -578,6 +677,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       se_center_block_rows = PCODEC_NATIVE_SE_CENTER_ROWS,
       block_centers_log2_residual = values$centres,
       exception_rows = nrow(values$exceptions), exception_precision = "float32",
+      eaf_missing_exception_rows = eaf_observability$eaf_missing_exception_rows,
+      eaf_invalid_exception_rows = eaf_observability$eaf_invalid_exception_rows,
+      eaf_nonrepresentable_exception_rows =
+        eaf_observability$eaf_nonrepresentable_exception_rows,
+      eaf_missing_se_exception_rows = eaf_observability$eaf_missing_se_exception_rows,
       beta = "derived as z * standard_error",
       p_value = "derived as 2 * pnorm(-abs(z))"
     ),
@@ -609,6 +713,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     source_columns = metadata$source_columns %||% names(data),
     source_columns_read = metadata$source_columns_read %||% names(data),
     source = metadata$source %||% NULL,
+    eaf_observability = eaf_observability,
     timings = phase_timings,
     metadata = {
       manifest_metadata <- metadata
