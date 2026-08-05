@@ -237,6 +237,8 @@ compress_sumstats <- function(input, output,
   phase_timings$phases <- phase_timings$phases %||% list()
   qc_started <- phase_clock()
   structural <- NULL
+  identity_safety <- NULL
+  input_rows_before_identity_safety <- nrow(raw)
   if (identical(qc, "none")) {
     required_fast <- required_sumstats_columns()
     missing_fast <- setdiff(required_fast, names(raw))
@@ -244,7 +246,14 @@ compress_sumstats <- function(input, output,
       stop("qc='none' requires already-canonical columns: ",
            paste(missing_fast, collapse = ", "), call. = FALSE)
     }
-    phase_timings$phases$qc <- 0
+    validate_qc_none_statistics(raw)
+    identity_safety <- filter_pcodec_identity_safety(raw, build = store_build)
+    raw <- identity_safety$data
+    phase_timings$phases$qc <- phase_seconds(qc_started)
+    if (!nrow(raw)) {
+      stop("no supported biallelic primary-chromosome SNVs remain for the Pcodec store",
+           call. = FALSE)
+    }
   } else {
     validate_core_schema(raw, source_columns = source_columns,
                          input_build = input_build, store_build = store_build)
@@ -288,7 +297,9 @@ compress_sumstats <- function(input, output,
   prepared <- prepare_core_sumstats_data(
     raw, selection = selection, variant_set = variant_set,
     pvalue_threshold = pvalue_threshold, region_padding = region_padding,
-    build = store_build
+    build = store_build,
+    input_rows = if (identical(qc, "none")) input_rows_before_identity_safety else nrow(raw),
+    identity_safety = identity_safety$report %||% NULL
   )
   phase_timings$phases$selection <- phase_seconds(selection_started)
   preparation <- prepared$preparation
@@ -303,6 +314,14 @@ compress_sumstats <- function(input, output,
   } else {
     compact_structural_qc_report(structural$report)
   }
+  if (!is.null(identity_safety)) {
+    preparation$unsupported_identity_rows <- identity_safety$report$dropped_rows
+    preparation$dropped_unsupported_identity <- identity_safety$report$dropped_rows
+    # Preserve the earlier Pcodec-specific field names for manifest readers
+    # while exposing the clearer identity-safety names above.
+    preparation$unsupported_pcodec_rows <- identity_safety$report$dropped_rows
+    preparation$dropped_unsupported_pcodec <- identity_safety$report$dropped_rows
+  }
   data <- prepared$data
   selection <- prepared$selection
   if (identical(qc, "compact")) validate_sumstats_values(data, require_identity = TRUE)
@@ -314,27 +333,6 @@ compress_sumstats <- function(input, output,
     if (isTRUE(cache)) {
       stop("backend='pcodec' is already block-framed for regional access; "
            , "cache=TRUE is not needed", call. = FALSE)
-    }
-    supported_chromosome <- as.character(data$chromosome) %in%
-      names(compressor_chromosome_lengths(store_build))
-    bad_allele <- !supported_chromosome |
-      is.na(data$effect_allele) | is.na(data$other_allele) |
-      is.na(nchar(data$effect_allele)) | is.na(nchar(data$other_allele)) |
-      nchar(data$effect_allele) != 1L | nchar(data$other_allele) != 1L |
-      !data$effect_allele %in% c("A", "C", "G", "T") |
-      !data$other_allele %in% c("A", "C", "G", "T") |
-      data$effect_allele == data$other_allele
-    unsupported_rows <- sum(bad_allele)
-    if (unsupported_rows && isTRUE(strict)) {
-      stop("Pcodec identity supports biallelic A/C/G/T SNVs on chromosomes 1-22, X and Y; ",
-           unsupported_rows, " unsupported row(s) were found", call. = FALSE)
-    }
-    if (unsupported_rows) {
-      data <- data[!bad_allele, , drop = FALSE]
-      stats <- preparation %||% list()
-      stats$unsupported_pcodec_rows <- as.integer(unsupported_rows)
-      stats$dropped_unsupported_pcodec <- as.integer(unsupported_rows)
-      preparation <- stats
     }
     if (!nrow(data)) {
       stop("no supported biallelic primary-chromosome SNVs remain for the Pcodec store", call. = FALSE)

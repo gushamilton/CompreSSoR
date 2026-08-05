@@ -38,6 +38,48 @@ test_that("none mode filters through the numeric identity panel", {
   expect_identical(store$manifest$selection$dropped_rows, 2L)
 })
 
+test_that("none mode drops unsupported identity rows before canonicalization", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(7L)
+  lengths <- CompreSSoR:::compressor_chromosome_lengths("GRCh38")
+  input$chromosome[1L] <- "15"
+  input$base_pair_location[1L] <- lengths[["15"]] + 1
+  input$base_pair_location[2L] <- Inf
+  input$base_pair_location[3L] <- input$base_pair_location[3L] + 0.5
+  input$chromosome[4L] <- "MT"
+  input$reference_allele[5L] <- "N"
+  input$other_allele[5L] <- "N"
+  input$reference_allele[6L] <- input$alternate_allele[6L]
+  input$other_allele[6L] <- input$reference_allele[6L]
+
+  store <- compress_sumstats(input, tempfile("none-identity-filter-"),
+                             qc = "none", overwrite = TRUE)
+  expect_equal(store$manifest$n_rows, 1L)
+
+  preparation <- store$manifest$preparation$preparation
+  safety <- preparation$identity_safety
+  expect_equal(preparation$input_rows, 7L)
+  expect_equal(preparation$rows_after_identity_safety, 1L)
+  expect_equal(preparation$unsupported_identity_rows, 6L)
+  expect_equal(preparation$dropped_unsupported_identity, 6L)
+  expect_equal(safety$input_rows, 7L)
+  expect_equal(safety$kept_rows, 1L)
+  expect_equal(safety$dropped_rows, 6L)
+  expect_equal(safety$counts$invalid_primary_chromosome, 1L)
+  expect_equal(safety$counts$nonfinite_coordinate, 1L)
+  expect_equal(safety$counts$noninteger_coordinate, 1L)
+  expect_equal(safety$counts$coordinate_out_of_range, 1L)
+  expect_equal(safety$counts$invalid_allele, 1L)
+  expect_equal(safety$counts$same_alleles, 1L)
+
+  expect_equal(store$manifest$selection$input_rows, 1L)
+  expect_equal(store$manifest$selection$kept_rows, 1L)
+  expect_equal(store$manifest$selection$dropped_rows, 0L)
+  expect_equal(read_sumstats(store)$base_pair_location, input$base_pair_location[7L])
+  expect_true(isTRUE(validate_compressor(store, full = TRUE)$valid))
+})
+
 test_that("HM3 selection honours flags in a combined custom panel", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")
@@ -78,18 +120,32 @@ test_that("none mode requires exact canonical columns and refuses QC policies", 
                       row_policy = "error"),
     "cannot be combined"
   )
+
+  malformed_beta <- input
+  malformed_beta$beta[1L] <- NA_real_
+  expect_error(
+    compress_sumstats(malformed_beta, tempfile("none-malformed-beta-"), qc = "none"),
+    "requires finite beta"
+  )
+  malformed_se <- input
+  malformed_se$standard_error[1L] <- 0
+  expect_error(
+    compress_sumstats(malformed_se, tempfile("none-malformed-se-"), qc = "none"),
+    "requires positive finite standard_error"
+  )
 })
 
-test_that("none mode retains codec identity safety without structural QC", {
+test_that("none mode retains native duplicate safety without structural QC", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")
   input <- make_fixture(3L)
   input$reference_allele[1L] <- "AT"
   input$other_allele[1L] <- "AT"
-  expect_error(
-    compress_sumstats(input, tempfile("none-indel-"), qc = "none"),
-    "REF and ALT"
-  )
+  store <- compress_sumstats(input, tempfile("none-indel-"), qc = "none",
+                             overwrite = TRUE)
+  expect_equal(store$manifest$n_rows, 2L)
+  expect_equal(store$manifest$preparation$preparation$identity_safety$dropped_rows, 1L)
+  expect_equal(store$manifest$preparation$preparation$identity_safety$counts$invalid_allele, 1L)
   duplicate <- rbind(input[2L, ], input[2L, ])
   expect_error(
     compress_sumstats(duplicate, tempfile("none-duplicate-"), qc = "none"),

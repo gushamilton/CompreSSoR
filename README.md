@@ -205,7 +205,13 @@ This bypasses structural QC, duplicate scans, row-level reports, alias
 resolution, and temporary variant-ID construction. It still requires the
 canonical `chromosome`, `base_pair_location`, `reference_allele`,
 `alternate_allele`, `effect_allele`, `other_allele`, `beta`, and
-`standard_error` columns, and native identity/codec checks remain fail-closed.
+`standard_error` columns. Before canonicalization, a cheap native-identity
+safety filter drops rows with an invalid primary chromosome, non-finite,
+non-integer, or out-of-range coordinate, or an invalid/non-distinct A/C/G/T
+REF/ALT pair. It does not run full structural QC or duplicate scans; malformed
+canonical statistics remain fail-closed, and native duplicate checks still
+apply at write time. Dropped identity counts and the pre-filter input count
+are retained in the preparation manifest so selection counts remain aligned.
 The manifest records `qc$mode = "none"` and
 `qc$structural_qc = "bypassed"`. Use this mode only for trusted,
 already-oriented input; it does not harmonise, liftover, or repair rows.

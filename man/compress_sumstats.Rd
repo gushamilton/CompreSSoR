@@ -36,7 +36,10 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     structural-QC path. \code{"none"} is an explicit fast path for already
     canonical prepared input; it bypasses structural QC, duplicate scans,
     row-level reports, alias resolution, and temporary variant-ID creation.
-    Build-aware identity and native codec safety checks still apply.}
+    A pre-canonicalization native-identity safety filter drops unsupported
+    primary chromosomes, coordinates, or REF/ALT pairs and records their
+    counts in preparation metadata. Malformed canonical statistics remain
+    fail-closed; native duplicate checks still apply.}
   \item{keep_extras}{Whether arbitrary non-core input columns should be kept
     in a Parquet extras sidecar.}
   \item{block_rows}{Rows per Parquet write chunk; native Pcodec uses its
