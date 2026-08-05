@@ -11,9 +11,9 @@ require_parquet_backend <- function(feature = "this operation", dplyr = FALSE) {
 }
 
 required_sumstats_columns <- function() {
-  # Coordinates can be recovered from the canonical rsID alias table. Alleles
-  # remain required because they determine orientation and effect flipping.
-  c("effect_allele", "other_allele")
+  c("chromosome", "base_pair_location", "reference_allele",
+    "alternate_allele", "effect_allele", "other_allele", "beta",
+    "standard_error")
 }
 
 sumstats_primary_chromosomes <- function() {
@@ -203,55 +203,6 @@ alias_values_equal <- function(x, y) {
 
 alias_key <- function(x) gsub("[^a-z0-9#]", "", tolower(as.character(x)), perl = TRUE)
 
-gwas_catalog_hm_diagnostic <- function(columns) {
-  columns <- as.character(columns %||% character())
-  keys <- alias_key(columns)
-  hm_fields <- grep("^hm_", tolower(trimws(columns)), value = TRUE)
-  if (!length(hm_fields)) return(NULL)
-  source_column <- function(name) {
-    hit <- which(keys == alias_key(name))
-    if (length(hit)) columns[hit[1L]] else NA_character_
-  }
-  fields <- stats::setNames(vapply(c(
-    "hm_chrom", "hm_pos", "hm_other_allele", "hm_effect_allele",
-    "hm_beta", "hm_odds_ratio", "hm_effect_allele_frequency", "hm_code"
-  ), source_column, character(1)), c(
-    "chromosome", "position", "other_allele", "effect_allele",
-    "beta", "odds_ratio", "effect_allele_frequency", "code"
-  ))
-  required <- c("chromosome", "position", "other_allele", "effect_allele", "code")
-  list(
-    schema = "gwas_catalog_harmonised",
-    detected = sort(unique(hm_fields)),
-    fields = fields,
-    required = required,
-    missing = required[is.na(fields[required])],
-    orientation_codes = 1:13,
-    non_oriented_codes = 14:18
-  )
-}
-
-gwas_catalog_hm_orientation_message <- function(diagnostic) {
-  if (is.null(diagnostic)) return(NULL)
-  detected <- paste(diagnostic$detected, collapse = ", ")
-  fields <- diagnostic$fields
-  mapping <- paste(names(fields)[!is.na(fields)], fields[!is.na(fields)],
-                   sep = " <- ", collapse = ", ")
-  missing <- diagnostic$missing
-  suffix <- if (length(missing)) {
-    paste0(" Required harmonised fields are missing: ", paste(missing, collapse = ", "), ".")
-  } else ""
-  paste0(
-    "GWAS Catalog harmonised hm_* fields detected (", detected, "). ",
-    "They are not used implicitly for REF/ALT orientation; the reference-free ",
-    "identity safety guard remains active. Detected mapping: ", mapping, ". ",
-    "Verify hm_code is in 1-13 (codes 14-18 are not oriented), then explicitly ",
-    "copy hm_chrom/hm_pos, hm_other_allele -> other_allele, hm_effect_allele -> ",
-    "effect_allele, and the matching hm effect fields before calling ",
-    "compress_sumstats(..., assume_grch38_ref_alt = TRUE).", suffix
-  )
-}
-
 normalise_chromosome <- function(x) {
   out <- toupper(trimws(sub("^chr", "", as.character(x), ignore.case = TRUE)))
   out[out == "23"] <- "X"
@@ -408,6 +359,8 @@ read_vcf_input <- function(input, parse_policy = c("error", "report")) {
   out <- data.frame(
     chromosome = data[[chrom_i]],
     base_pair_location = data[[pos_i]],
+    reference_allele = data[[ref_i]],
+    alternate_allele = alt,
     effect_allele = alt,
     other_allele = data[[ref_i]],
     beta = beta,
@@ -443,7 +396,6 @@ read_vcf_input <- function(input, parse_policy = c("error", "report")) {
   extra_names <- setdiff(names(data), exclude)
   if (length(extra_names)) out[extra_names] <- data[extra_names]
   attr(out, "source_columns") <- names(data)
-  attr(out, "explicit_ref_alt") <- TRUE
   out
 }
 
@@ -506,9 +458,11 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   alias_map <- list(
     chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
     base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
-    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1", "alt", "ALT",
+    reference_allele = c("reference_allele", "reference", "ref", "REF"),
+    alternate_allele = c("alternate_allele", "alternate", "alt", "ALT"),
+    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1",
                       "ALLELE1", "alleleB", "ALLELEB"),
-    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2", "ref", "REF",
+    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2",
                      "ALLELE0", "alleleA", "ALLELEA"),
     # A single-letter B is used by some sources for expected non-reference
     # counts. It must not compete with an exact beta column (or be silently
@@ -543,8 +497,12 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   assign_parsed("base_pair_location",
                 parse_integer_column(data$base_pair_location, "base_pair_location",
                                      invalid = parse_policy))
+  data$reference_allele <- toupper(trimws(as.character(data$reference_allele)))
+  data$alternate_allele <- toupper(trimws(as.character(data$alternate_allele)))
   data$effect_allele <- toupper(trimws(as.character(data$effect_allele)))
   data$other_allele <- toupper(trimws(as.character(data$other_allele)))
+  data$reference_allele[data$reference_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
+  data$alternate_allele[data$alternate_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$effect_allele[data$effect_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$other_allele[data$other_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   if (!"beta" %in% names(data)) data$beta <- NA_real_
@@ -927,12 +885,6 @@ read_manifest <- function(path) {
 now_utc <- function() format(Sys.time(), tz = "UTC", usetz = TRUE)
 
 safe_file_size <- function(path) if (file.exists(path)) file.info(path)$size else NA_real_
-
-chain_manifest_metadata <- function(chain) {
-  if (is.null(chain)) return(NULL)
-  path <- normalizePath(chain, mustWork = TRUE)
-  list(path = path, sha256 = digest::digest(path, algo = "sha256", file = TRUE))
-}
 
 stage_store_output <- function(output, overwrite = FALSE) {
   if (length(output) != 1L || !is.character(output) || is.na(output) || !nzchar(output)) {

@@ -61,6 +61,29 @@ compressor_chromosome_offsets <- function(build = "GRCh38") {
 compressor_grch37_chromosome_offsets <- compressor_chromosome_offsets("GRCh37")
 compressor_grch38_chromosome_offsets <- compressor_chromosome_offsets("GRCh38")
 
+parse_canonical_variant_keys <- function(x) {
+  x <- as.character(x)
+  pieces <- strsplit(x, ":", fixed = TRUE)
+  out <- data.frame(
+    chromosome = rep(NA_character_, length(x)),
+    base_pair_location = rep(NA_integer_, length(x)),
+    reference_allele = rep(NA_character_, length(x)),
+    alternate_allele = rep(NA_character_, length(x)),
+    stringsAsFactors = FALSE
+  )
+  valid <- lengths(pieces) == 4L
+  if (any(valid)) {
+    valid_pieces <- pieces[valid]
+    out$chromosome[valid] <- vapply(valid_pieces, `[[`, character(1), 1L)
+    out$base_pair_location[valid] <- suppressWarnings(as.integer(
+      vapply(valid_pieces, `[[`, character(1), 2L)
+    ))
+    out$reference_allele[valid] <- vapply(valid_pieces, `[[`, character(1), 3L)
+    out$alternate_allele[valid] <- vapply(valid_pieces, `[[`, character(1), 4L)
+  }
+  out
+}
+
 compressor_normalize_chromosome <- function(chromosome) {
   chromosome <- toupper(trimws(as.character(chromosome)))
   chromosome <- sub("^CHR", "", chromosome, ignore.case = TRUE)
@@ -235,81 +258,33 @@ compressor_decode_variant_identity <- function(global_position, substitution,
 compressor_encode_identity <- compressor_encode_variant_identity
 compressor_decode_identity <- compressor_decode_variant_identity
 
-compressor_identity_reference_metadata <- function(reference, build) {
-  if (is.null(reference)) {
-    return(list(id = "none", build = build, status = "not_required",
-                external_reference_required = FALSE))
-  }
-  if (is.character(reference) && length(reference) == 1L) {
-    return(list(id = reference, build = build, status = "recorded",
-                external_reference_required = FALSE))
-  }
-  if (is.list(reference)) {
-    out <- reference
-    if (is.null(out$build)) out$build <- build
-    if (is.null(out$status)) out$status <- "recorded"
-    out$external_reference_required <- FALSE
-    return(out)
-  }
-  stop("reference identity must be NULL, a scalar ID, or a metadata list",
-       call. = FALSE)
-}
-
-compressor_identity_chain_metadata <- function(chain, input_build, stored_build,
-                                               chain_hash = NULL) {
-  required <- !identical(input_build, stored_build)
-  direction <- if (required) paste(input_build, stored_build, sep = "-to-") else NULL
-  if (is.null(chain)) {
-    out <- list(required = required, status = if (required) "required" else "not_used")
-    if (!is.null(direction)) out$direction <- direction
-    return(out)
-  }
-  if (is.character(chain) && length(chain) == 1L) {
-    if (is.null(chain_hash) && file.exists(chain)) {
-      chain_hash <- digest::digest(chain, algo = "sha256", file = TRUE)
-    }
-    chain <- list(id = basename(chain))
-  } else if (!is.list(chain)) {
-    stop("chain identity must be NULL, a path, or a metadata list", call. = FALSE)
-  }
-  out <- chain
-  if (is.null(out$direction)) out$direction <- direction
-  out$required <- required
-  if (is.null(out$status)) out$status <- "recorded"
-  if (!is.null(chain_hash)) out$sha256 <- chain_hash
-  if (is.null(out$sha256) && !is.null(out$hash)) out$sha256 <- out$hash
-  out$path <- NULL
-  out
-}
-
 #' Define manifest metadata for a build-aware variant identity
 #'
-#' This helper describes the identity contract; it does not make a reference
-#' or chain file a read-time dependency. A chain path is hashed when supplied.
+#' This helper describes the build-specific identity contract. The identity is
+#' self-contained; no reference or chain file is a read-time dependency.
 #'
 #' @param build Default stored build when `stored_build` is omitted.
 #' @param input_build Build of the input rows.
 #' @param stored_build Build represented by the encoded identity.
-#' @param reference Optional reference identity string or metadata list.
-#' @param chain Optional chain path or metadata list.
-#' @param chain_hash Optional precomputed SHA-256 for `chain`.
 #' @return A manifest-ready list containing the build-specific identity table
 #'   and provenance fields.
 compressor_identity_manifest <- function(build = "GRCh38", input_build = NULL,
-                                         stored_build = NULL, reference = NULL,
-                                         chain = NULL, chain_hash = NULL) {
+                                         stored_build = NULL) {
   default_build <- compressor_normalize_build(build)
   if (is.null(input_build)) input_build <- default_build
   if (is.null(stored_build)) stored_build <- default_build
   input_build <- compressor_normalize_build(input_build)
   stored_build <- compressor_normalize_build(stored_build)
+  if (!identical(input_build, stored_build)) {
+    stop("input_build and stored_build must be identical in the compression-core " ,
+         "identity manifest; liftover is outside the package", call. = FALSE)
+  }
   lengths <- compressor_chromosome_lengths(stored_build)
   offsets <- compressor_chromosome_offsets(stored_build)
   table_id <- paste0(tolower(stored_build), "_primary_1_22_X_Y")
-  reference_metadata <- compressor_identity_reference_metadata(reference, stored_build)
-  chain_metadata <- compressor_identity_chain_metadata(
-    chain, input_build, stored_build, chain_hash = chain_hash
-  )
+  reference_metadata <- list(id = "none", build = stored_build, status = "not_used",
+                             external_reference_required = FALSE)
+  chain_metadata <- list(required = FALSE, status = "not_used")
   list(
     schema = compressor_identity_schema,
     encoding = "global_position_plus_directed_ref_alt_substitution",

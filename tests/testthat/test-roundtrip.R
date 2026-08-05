@@ -2,23 +2,22 @@ test_that("exact conversion round-trips all supported columns", {
   skip_if_not_installed("arrow")
   input <- make_fixture(500L)
   path <- file.path(tempdir(), "roundtrip-exact.cpr")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             profile = "exact", keep_extras = TRUE, backend = "parquet", overwrite = TRUE)
+  store <- compress_sumstats(input, path, profile = "exact", keep_extras = TRUE,
+                             backend = "parquet", overwrite = TRUE)
   got <- decompress_sumstats(store)
   expect_true(validate_compressor(store)$valid)
   expect_equal(got[input_core <- c("chromosome", "base_pair_location", "effect_allele",
                                    "other_allele", "variant_id", "rsid", "beta",
                                    "standard_error", "effect_allele_frequency", "p_value",
                                    "annotation")], input[input_core])
-  expect_equal(got$harmonisation_status, rep("unreferenced", nrow(input)))
 })
 
 test_that("standard conversion round-trips with measured codec error", {
   skip_if_not_installed("arrow")
   input <- make_fixture(5000L)
   path <- file.path(tempdir(), "roundtrip-standard.cpr")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             profile = "standard", backend = "parquet", overwrite = TRUE)
+  store <- compress_sumstats(input, path, profile = "standard",
+                             backend = "parquet", overwrite = TRUE)
   got <- decompress_sumstats(store)
   expect_true(validate_compressor(store)$valid)
   expect_lt(max(abs(log10(got$p_value) - log10(input$p_value)), na.rm = TRUE), 0.08)
@@ -31,8 +30,8 @@ test_that("regional cache reads agree with the durable store and respect variant
   skip_if_not_installed("arrow")
   input <- make_fixture(1200L)
   path <- file.path(tempdir(), "roundtrip-cache.cpr")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             profile = "standard", backend = "parquet", overwrite = TRUE)
+  store <- compress_sumstats(input, path, profile = "standard",
+                             backend = "parquet", overwrite = TRUE)
   build_cache(store, overwrite = TRUE, block_rows = 128L)
   direct <- read_sumstats(store, region = "chr1:100100-100250")
   cached <- read_sumstats(store, region = "chr1:100100-100250", use_cache = TRUE)
@@ -51,8 +50,8 @@ test_that("validation detects broken store files", {
   skip_if_not_installed("arrow")
   input <- make_fixture(20L)
   path <- file.path(tempdir(), "broken-store.cpr")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             profile = "exact", backend = "parquet", overwrite = TRUE)
+  store <- compress_sumstats(input, path, profile = "exact",
+                             backend = "parquet", overwrite = TRUE)
   unlink(file.path(path, "values.parquet"))
   result <- validate_compressor(path)
   expect_false(result$valid)

@@ -18,13 +18,14 @@ or \code{"GRCh38"}, with \code{"hg19"}/\code{"hg38"} aliases.}
 }
 \value{
 A data.frame containing canonical columns such as \code{chromosome},
-\code{base_pair_location}, \code{effect_allele}, \code{other_allele},
-\code{beta}, \code{standard_error}, \code{z},
+\code{base_pair_location}, \code{reference_allele},
+\code{alternate_allele}, \code{effect_allele}, \code{other_allele}, \code{beta},
+\code{standard_error}, \code{z},
 \code{effect_allele_frequency}, and \code{p_value}.
 The \code{structural_qc_report} attribute records rejected-row counts and
 bounded row-number examples. Use the internal preparation helper
 \code{preflight_sumstats()} when the filtered data and report are both needed
-before optional reference harmonisation.
+before strict compression or an external preparation workflow.
 }
 \description{
 Reads a data frame or delimited text file with automatic comma, tab,
@@ -39,11 +40,9 @@ and is never treated as a beta alias when an exact \code{beta} column is
 present. GWAS Catalog \code{hm_*} fields are detected for a structured
 orientation diagnostic but are not inferred as REF/ALT automatically.
 Chromosome prefixes and 23/24 are normalised to 1--22/X/Y. This function does
-not change genome build or allele orientation; use \code{liftover_sumstats()}
-and \code{harmonise_sumstats()} for those operations.
-}
-\seealso{
-\code{\link{liftover_sumstats}}, \code{\link{harmonise_sumstats}}
+not change genome build or allele orientation. External preparation tools must
+provide explicit REF/ALT and effect/non-effect allele columns before
+compression.
 }
 \examples{
 path <- system.file("extdata", "example-grch38.tsv", package = "CompreSSoR")

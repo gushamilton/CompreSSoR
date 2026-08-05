@@ -3,8 +3,7 @@ test_that("native stream reader returns compact keys without identity expansion"
               "native Pcodec backend is not built")
   input <- make_fixture(5000L)
   path <- tempfile("pcodec-native-reader-")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  store <- compress_sumstats(input, path, overwrite = TRUE)
 
   compact <- read_sumstats(
     store,

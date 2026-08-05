@@ -123,8 +123,8 @@ pcodec_native_writer_workers <- function(metadata = list()) {
     metadata$threads_requested,
     metadata$threads,
     metadata$workers,
-    metadata$harmonisation$threads_requested,
-    metadata$harmonisation$chrom_threads
+    metadata$preparation$threads_requested,
+    metadata$preparation$compression_threads
   )
   requested <- NULL
   for (candidate in candidates) {
@@ -526,9 +526,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   offsets <- pcodec_native_offsets(build)
   identity_contract <- compressor_identity_manifest(
     input_build = metadata$identity$input_build %||% build,
-    stored_build = build,
-    reference = metadata$reference %||% NULL,
-    chain = metadata$identity$chain %||% NULL
+    stored_build = build
   )
   identity <- list(
     encoding = "native_global_position_plus_full_ref_alt_code",
@@ -584,7 +582,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     genome_build = build,
     reference = metadata$reference %||% list(id = "none", build = build,
                                              status = "identity key is self-contained"),
-    harmonisation = metadata$harmonisation %||% list(method = "not recorded"),
+    preparation = metadata$preparation %||% list(method = "strict_prepared_input"),
     selection = selection_manifest,
     source_columns = metadata$source_columns %||% names(data),
     source = metadata$source %||% NULL,
@@ -916,6 +914,7 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
       output$substitution <- as.integer(substitution)
     }
     if (is.null(requested) || any(c("chromosome", "base_pair_location",
+                                    "reference_allele", "alternate_allele",
                                     "effect_allele", "other_allele") %in% requested)) {
       output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution,
                                                                        build = build),
@@ -964,6 +963,8 @@ pcodec_native_key_columns <- function(position, substitution, build = "GRCh38") 
   list(
     chromosome = names(lengths)[chromosome_code],
     base_pair_location = as.integer(position - offsets[chromosome_code] + 1),
+    reference_allele = c("A", "C", "G", "T")[bitwShiftR(as.integer(substitution), 2L) + 1L],
+    alternate_allele = c("A", "C", "G", "T")[(bitwAnd(as.integer(substitution), 3L)) + 1L],
     effect_allele = c("A", "C", "G", "T")[(bitwAnd(as.integer(substitution), 3L)) + 1L],
     other_allele = c("A", "C", "G", "T")[bitwShiftR(as.integer(substitution), 2L) + 1L]
   )
@@ -1044,13 +1045,15 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
 
 pcodec_native_empty_result <- function(columns) {
   result <- data.frame(row = integer(), stringsAsFactors = FALSE)
-  all_columns <- c("global_position", "substitution", "chromosome", "base_pair_location", "effect_allele",
+  all_columns <- c("global_position", "substitution", "chromosome", "base_pair_location",
+                   "reference_allele", "alternate_allele", "effect_allele",
                    "other_allele", "z", "beta", "standard_error",
                    "effect_allele_frequency", "p_value")
   needed <- if (is.null(columns)) all_columns else unique(columns)
   for (column in setdiff(needed, names(result))) {
     result[[column]] <- switch(column,
-      chromosome = character(), effect_allele = character(),
+      chromosome = character(), reference_allele = character(),
+      alternate_allele = character(), effect_allele = character(),
       other_allele = character(), base_pair_location = integer(),
       substitution = integer(), global_position = numeric(),
       numeric())
@@ -1074,7 +1077,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     c("chromosome", "base_pair_location", "effect_allele", "other_allele",
       "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
   } else unique(as.character(columns))
-  allowed <- c("global_position", "substitution", "chromosome", "base_pair_location", "effect_allele", "other_allele",
+  allowed <- c("global_position", "substitution", "chromosome", "base_pair_location",
+               "reference_allele", "alternate_allele", "effect_allele", "other_allele",
                "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
   unknown <- setdiff(requested, allowed)
   if (length(unknown)) stop("unknown output column(s): ", paste(unknown, collapse = ", "), call. = FALSE)
@@ -1093,6 +1097,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   }
   identity_needed <- is.null(columns) || any(c("global_position", "substitution",
                                                 "chromosome", "base_pair_location",
+                                                "reference_allele", "alternate_allele",
                                                 "effect_allele", "other_allele") %in% requested) ||
     !is.null(region) || !is.null(key_targets)
   need_z <- is.null(columns) || any(c("z", "beta", "p_value") %in% requested)
@@ -1245,6 +1250,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   row.names(output) <- NULL
   if (is.null(columns)) {
     output <- output[c("row", setdiff(c("chromosome", "base_pair_location",
+      "reference_allele", "alternate_allele",
       "effect_allele", "other_allele", "z", "beta", "standard_error",
       "effect_allele_frequency", "p_value"), ""))]
   } else {

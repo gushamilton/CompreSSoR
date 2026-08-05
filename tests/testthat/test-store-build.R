@@ -72,11 +72,9 @@ test_that("identity validation rejects unsupported rows and out-of-range positio
   )
 })
 
-test_that("identity manifest records build-specific provenance", {
+test_that("identity manifest records build-specific provenance without external files", {
   manifest <- CompreSSoR:::compressor_identity_manifest(
-    input_build = "hg19", stored_build = "GRCh37",
-    reference = list(id = "reference-37", sha256 = "ref-hash"),
-    chain = list(id = "chain-37-38", sha256 = "chain-hash")
+    input_build = "hg19", stored_build = "GRCh37"
   )
   expect_equal(manifest$schema, "compressor_variant_identity_v1")
   expect_equal(manifest$input_build, "GRCh37")
@@ -84,25 +82,13 @@ test_that("identity manifest records build-specific provenance", {
   expect_equal(manifest$assembly_identifier, "GRCh37")
   expect_equal(manifest$chromosome_table$id, "grch37_primary_1_22_X_Y")
   expect_equal(manifest$chromosome_table$version, 1L)
-  expect_equal(manifest$reference$id, "reference-37")
-  expect_equal(manifest$chain$direction, NULL)
-  expect_equal(manifest$chain$sha256, "chain-hash")
-
-  chain_path <- tempfile(fileext = ".chain.gz")
-  writeLines("chain fixture", chain_path)
-  on.exit(unlink(chain_path), add = TRUE)
-  hashed <- CompreSSoR:::compressor_identity_manifest(
-    input_build = "GRCh37", stored_build = "GRCh38", chain = chain_path
+  expect_equal(manifest$reference$id, "none")
+  expect_equal(manifest$reference$status, "not_used")
+  expect_equal(manifest$chain$status, "not_used")
+  expect_error(
+    CompreSSoR:::compressor_identity_manifest(
+      input_build = "GRCh37", stored_build = "GRCh38"
+    ),
+    "must be identical"
   )
-  expect_equal(hashed$chain$direction, "GRCh37-to-GRCh38")
-  expect_equal(hashed$chain$sha256,
-               digest::digest(chain_path, algo = "sha256", file = TRUE))
-  expect_false("path" %in% names(hashed$chain))
-
-  cross_build <- CompreSSoR:::compressor_identity_manifest(
-    input_build = "GRCh37", stored_build = "GRCh38",
-    chain = list(id = "chain-37-38", sha256 = "chain-hash")
-  )
-  expect_equal(cross_build$chain$direction, "GRCh37-to-GRCh38")
-  expect_true(cross_build$chain$required)
 })

@@ -40,10 +40,8 @@ test_that("native format and manifest expose one SE6 provenance contract", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")
   input <- make_fixture(32L)
-  store <- compress_sumstats(
-    input, tempfile("pcodec-native-provenance-"), reference = NULL,
-    mode = "convert", assume_grch38_ref_alt = TRUE, overwrite = TRUE
-  )
+  store <- compress_sumstats(input, tempfile("pcodec-native-provenance-"),
+                             overwrite = TRUE)
   semantic <- store$manifest$semantic_codec
   expect_identical(store$manifest$format_version, CompreSSoR:::PCODEC_NATIVE_FORMAT)
   expect_identical(semantic$name, CompreSSoR:::PCODEC_NATIVE_SE_PROFILE)
@@ -69,8 +67,7 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
               "native Pcodec backend is not built")
   input <- make_fixture(2000L)
   path <- tempfile("pcodec-native-")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  store <- compress_sumstats(input, path, overwrite = TRUE)
   expect_equal(store$manifest$format_version, "0.4.5-pcodec-native")
   expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions")
   expect_equal(store$manifest$key_block_rows, 131072L)
@@ -124,10 +121,8 @@ test_that("native Pcodec preserves exceptional values and batched reads", {
   input$z <- input$beta / input$standard_error
   path1 <- tempfile("pcodec-native-batch-a-")
   path2 <- tempfile("pcodec-native-batch-b-")
-  first_store <- compress_sumstats(input, path1, reference = NULL, mode = "convert",
-                                   assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  second_store <- compress_sumstats(input, path2, reference = NULL, mode = "convert",
-                                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  first_store <- compress_sumstats(input, path1, overwrite = TRUE)
+  second_store <- compress_sumstats(input, path2, overwrite = TRUE)
   expect_identical(first_store$manifest$integrity$payload_sha256,
                    second_store$manifest$integrity$payload_sha256)
   expect_identical(first_store$manifest$integrity$canonical_sha256,
@@ -159,23 +154,17 @@ test_that("a native Pcodec store can be used as an identity-only panel", {
   input <- make_fixture(128L)
   panel_input <- input[c(1L, 17L, 99L), , drop = FALSE]
   panel_path <- tempfile("pcodec-variant-panel-")
-  compress_sumstats(panel_input, panel_path, reference = NULL, mode = "convert",
-                    assume_grch38_ref_alt = TRUE, overwrite = TRUE)
+  compress_sumstats(panel_input, panel_path, overwrite = TRUE)
 
   panel <- CompreSSoR:::read_variant_set(panel_path)
   expect_equal(nrow(panel), 3L)
   expect_true(all(grepl("^[0-9XY]+:[0-9]+:[ACGT]:[ACGT]$", panel$variant_id)))
   expect_equal(attr(panel, "variant_set_metadata")$rows, 3L)
 
-  filtered <- harmonise_sumstats(input, reference = NULL, mode = "convert",
-                                 variant_set = panel_path)
-  expect_equal(nrow(filtered), 3L)
-  expect_equal(filtered$base_pair_location, panel$base_pair_location)
-
   output_path <- tempfile("pcodec-filtered-")
   filtered_store <- compress_sumstats(
-    input, output_path, reference = NULL, mode = "convert",
-    variant_set = panel_path, assume_grch38_ref_alt = TRUE, overwrite = TRUE
+    input, output_path, selection = "core", variant_set = panel_path,
+    overwrite = TRUE
   )
   expect_equal(filtered_store$manifest$n_rows, 3L)
   expect_equal(nrow(read_sumstats(filtered_store)), 3L)
@@ -186,9 +175,8 @@ test_that("native Pcodec keeps configurable stream frames aligned", {
               "native Pcodec backend is not built")
   input <- make_fixture(70000L)
   path <- tempfile("pcodec-native-frame-")
-  store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
-                             assume_grch38_ref_alt = TRUE, block_rows = 65536L,
-                             chrom_threads = 4L,
+  store <- compress_sumstats(input, path, block_rows = 65536L,
+                             threads = 4L,
                              overwrite = TRUE)
   expect_equal(store$manifest$block_rows, 65536L)
   expect_equal(store$manifest$writer$requested_workers, 4L)
