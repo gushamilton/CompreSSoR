@@ -15,6 +15,48 @@ test_that("import_sumstats exposes canonical columns and preserves extras", {
   expect_equal(attr(got, "source_columns"), names(input))
 })
 
+test_that("compression exposes orthogonal issue-18 arguments and manifest provenance", {
+  skip_if_not_installed("arrow")
+  input <- make_fixture(12L)
+  path <- tempfile("issue18-api-")
+  store <- compress_sumstats(
+    input, path, reference = NULL, backend = "parquet", profile = "exact",
+    store_build = "hg38", selection = "full", threads = 2L,
+    row_policy = "report", overwrite = TRUE
+  )
+  expect_s3_class(store, "compressor_store")
+  expect_equal(store$manifest$selection_scope, "full")
+  expect_equal(store$manifest$input_build, "GRCh38")
+  expect_equal(store$manifest$stored_build, "GRCh38")
+  expect_equal(store$manifest$profile, "exact")
+  expect_true(nzchar(store$manifest$codec$name))
+  expect_true(isTRUE(store$manifest$tolerances$exact))
+  expect_equal(store$manifest$row_policy, "report")
+  expect_equal(store$manifest$threads$requested, 2L)
+  expect_equal(store$manifest$threads$effective, 1L)
+  expect_equal(store$manifest$provenance$input$kind, "data.frame")
+  expect_true(validate_compressor(store)$valid)
+})
+
+test_that("threads is a positive scalar and row policy can reject rows", {
+  skip_if_not_installed("arrow")
+  input <- make_fixture(2L)
+  expect_error(
+    compress_sumstats(input, tempfile("bad-threads-"), reference = NULL,
+                      backend = "parquet", threads = 0L),
+    "threads"
+  )
+  bad_reference <- input[1L, c("chromosome", "base_pair_location",
+                               "effect_allele", "other_allele"), drop = FALSE]
+  bad_reference$base_pair_location <- bad_reference$base_pair_location + 100L
+  expect_error(
+    compress_sumstats(input, tempfile("row-policy-"), reference = bad_reference,
+                      backend = "parquet", selection = "full",
+                      row_policy = "error", overwrite = TRUE),
+    "reference alignment failed"
+  )
+})
+
 test_that("liftover_sumstats is a public no-op for GRCh38", {
   input <- make_fixture(5L)
   got <- liftover_sumstats(input, input_build = "GRCh38")

@@ -31,7 +31,7 @@ test_that("standard stores use semantic codes and omit P", {
   expect_false("p_value" %in% names(light))
 })
 
-test_that("a canonical Parquet reference is shared by index", {
+test_that("Parquet stores retain inline identity after reference-backed QC", {
   skip_if_not_installed("arrow")
   input <- make_fixture(40L)
   input <- input[seq(1L, nrow(input), by = 4L), , drop = FALSE]
@@ -43,9 +43,10 @@ test_that("a canonical Parquet reference is shared by index", {
   store <- compress_sumstats(input, path, reference = reference_path,
                              profile = "exact", backend = "parquet", overwrite = TRUE)
   index <- arrow::read_parquet(file.path(path, "variants.parquet"))
-  expect_equal(store$manifest$variant_storage, "shared_reference_index")
-  expect_true(all(c("row", "reference_index") %in% names(index)))
-  expect_false(anyNA(index$reference_index))
+  expect_equal(store$manifest$variant_storage, "inline")
+  expect_true(all(c("row", "chromosome", "base_pair_location",
+                    "effect_allele", "other_allele") %in% names(index)))
+  expect_false("reference_index" %in% names(index))
   expect_equal(read_sumstats(store)$variant_id,
                paste(reference$chromosome, reference$base_pair_location,
                      reference$other_allele, reference$effect_allele, sep = ":"))

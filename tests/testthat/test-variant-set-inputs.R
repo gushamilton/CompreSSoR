@@ -18,10 +18,15 @@ test_that("chromosome panel directories select only requested shards", {
   skip_if_not_installed("data.table")
   shard_dir <- tempfile("panel-shards-")
   dir.create(shard_dir)
-  data.table::fwrite(data.frame(variant_id = c("1:100:A:C", "1:200:G:T")),
-                     file.path(shard_dir, "chr1.tsv.gz"), sep = "\t", compress = "gzip")
-  data.table::fwrite(data.frame(variant_id = "2:100:A:G"),
-                     file.path(shard_dir, "chr2.tsv.gz"), sep = "\t", compress = "gzip")
+  write_gzip_tsv <- function(data, path) {
+    con <- gzfile(path, open = "wt")
+    write.table(data, con, sep = "\t", row.names = FALSE, quote = FALSE)
+    close(con)
+  }
+  write_gzip_tsv(data.frame(variant_id = c("1:100:A:C", "1:200:G:T")),
+                 file.path(shard_dir, "chr1.tsv.gz"))
+  write_gzip_tsv(data.frame(variant_id = "2:100:A:G"),
+                 file.path(shard_dir, "chr2.tsv.gz"))
 
   panel <- CompreSSoR:::read_variant_set(shard_dir, chromosomes = "chr1")
   expect_equal(panel$variant_id, c("1:100:A:C", "1:200:G:T"))

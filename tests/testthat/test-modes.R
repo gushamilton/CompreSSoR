@@ -103,6 +103,60 @@ test_that("named common and tag panels resolve through environment variables", {
   expect_equal(attr(common, "alignment_stats")$variant_set$rows, 2L)
 })
 
+test_that("hash-pinned core panel resolution verifies provenance", {
+  panel_path <- tempfile("core-pinned-", fileext = ".tsv.gz")
+  con <- gzfile(panel_path, open = "wt")
+  writeLines(c("variant_id", "1:100:A:C"), con)
+  close(con)
+  expected <- digest::digest(panel_path, algo = "sha256", file = TRUE)
+  old_path <- Sys.getenv("COMPRESSOR_CORE_VARIANTS", unset = NA_character_)
+  old_hash <- Sys.getenv("COMPRESSOR_CORE_VARIANTS_SHA256", unset = NA_character_)
+  on.exit({
+    if (is.na(old_path)) Sys.unsetenv("COMPRESSOR_CORE_VARIANTS") else
+      Sys.setenv(COMPRESSOR_CORE_VARIANTS = old_path)
+    if (is.na(old_hash)) Sys.unsetenv("COMPRESSOR_CORE_VARIANTS_SHA256") else
+      Sys.setenv(COMPRESSOR_CORE_VARIANTS_SHA256 = old_hash)
+  }, add = TRUE)
+  Sys.setenv(COMPRESSOR_CORE_VARIANTS = panel_path,
+             COMPRESSOR_CORE_VARIANTS_SHA256 = expected)
+
+  panel <- CompreSSoR:::read_variant_set("core")
+  metadata <- attr(panel, "variant_set_metadata")
+  expect_equal(metadata$name, "core")
+  expect_equal(metadata$sha256, expected)
+  expect_true(metadata$hash_pinned)
+  expect_true(metadata$hash_verified)
+
+  Sys.setenv(COMPRESSOR_CORE_VARIANTS_SHA256 = strrep("0", 64))
+  expect_error(CompreSSoR:::read_variant_set("core"), "SHA-256 mismatch")
+})
+
+test_that("explicit selection helpers return a stable result and preserve custom panel identity", {
+  data <- data.frame(
+    chromosome = rep("1", 4), base_pair_location = c(100L, 200L, 300L, 400L),
+    other_allele = rep("A", 4), effect_allele = rep("C", 4),
+    z = c(0, 5, 0, 0), stringsAsFactors = FALSE
+  )
+  panel <- data[2L, c("chromosome", "base_pair_location", "other_allele",
+                      "effect_allele"), drop = FALSE]
+
+  full <- CompreSSoR:::select_full_variants(data)
+  core <- CompreSSoR:::select_core_variants(data, panel)
+  hm3 <- CompreSSoR:::select_hm3_variants(data, panel)
+  core_plus <- CompreSSoR:::select_core_plus_variants(
+    data, panel, pvalue_threshold = 1e-5, region_padding = 0L
+  )
+
+  expect_equal(names(full), c("data", "keep", "panel", "regions", "metadata"))
+  expect_true(all(full$keep))
+  expect_equal(core$data$base_pair_location, 200L)
+  expect_equal(hm3$data$base_pair_location, 200L)
+  expect_equal(hm3$metadata$panel_name, "custom")
+  expect_equal(core_plus$metadata$selection, "core_plus")
+  expect_equal(core_plus$metadata$threshold_source, "pre_encoding_harmonised")
+  expect_equal(core_plus$metadata$threshold_statistic, "p_value_from_harmonised_z")
+})
+
 test_that("chromosome-parallel harmonisation matches serial output", {
   input <- make_edge_case_sumstats()
   reference <- make_edge_case_reference()

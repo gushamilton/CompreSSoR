@@ -236,6 +236,13 @@ download_reference <- function(reference = "GRCh38", cache_dir = NULL, overwrite
   metadata$sha256 <- reference_file_digest(resolved$path, "sha256")
   metadata$downloaded <- isTRUE(resolved$downloaded)
   metadata$filename <- basename(resolved$path)
+  source_format <- tryCatch(reference_source_format(resolved$path), error = function(e) NULL)
+  source_metadata <- tryCatch(read_reference_metadata(resolved$path, source_format),
+                              error = function(e) NULL)
+  if (!is.null(source_format) && !identical(source_format, "delimited")) {
+    metadata$source_format <- source_format
+  }
+  if (!is.null(source_metadata)) metadata$source_metadata <- source_metadata
   descriptor$metadata <- metadata
   descriptor
 }

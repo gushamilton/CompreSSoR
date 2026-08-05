@@ -4,18 +4,18 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.4-pcodec-native"
+PCODEC_NATIVE_FORMAT <- "0.4.5-pcodec-native"
 PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native",
                                      "0.4.2-pcodec-native", "0.4.3-pcodec-native",
-                                     PCODEC_NATIVE_FORMAT)
+                                     "0.4.4-pcodec-native", PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 65536L
 PCODEC_NATIVE_KEY_BLOCK_ROWS <- 131072L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 131072L
 PCODEC_NATIVE_LEVEL <- 8L
-PCODEC_NATIVE_SE_BITS <- 8L
-PCODEC_NATIVE_SE_COUNT <- 254L
-PCODEC_NATIVE_SE_RESIDUAL_RANGE <- c(-4, 4)
+PCODEC_NATIVE_SE_BITS <- 6L
+PCODEC_NATIVE_SE_COUNT <- 62L
+PCODEC_NATIVE_SE_RESIDUAL_RANGE <- c(-1, 1)
 
 pcodec_native_available <- function() {
   is.loaded("compressor_pcodec_native_available", PACKAGE = "CompreSSoR") &&
@@ -76,28 +76,84 @@ pcodec_native_zstd_decompress <- function(blob, n) {
         PACKAGE = "CompreSSoR")
 }
 
-pcodec_native_offsets <- function() {
-  lengths <- compressor_grch38_chromosome_lengths
-  c(0, cumsum(as.numeric(lengths)))[seq_along(lengths)]
+pcodec_native_offsets <- function(build = "GRCh38") {
+  compressor_chromosome_offsets(build)
 }
 
-pcodec_native_identity <- function(data) {
-  chromosome <- toupper(sub("^CHR", "", as.character(data$chromosome),
-                             ignore.case = TRUE))
-  position <- as.numeric(data$base_pair_location)
-  reference <- toupper(as.character(data$other_allele))
-  alternate <- toupper(as.character(data$effect_allele))
-  offsets <- pcodec_native_offsets()
-  names(offsets) <- names(compressor_grch38_chromosome_lengths)
-  base_code <- c(A = 0, C = 1, G = 2, T = 3)
-  global_position <- unname(offsets[chromosome]) + position - 1
-  substitution <- as.integer(base_code[reference]) * 4L +
-    as.integer(base_code[alternate])
+pcodec_native_identity <- function(data, build = "GRCh38") {
+  identity <- compressor_encode_variant_identity(
+    data$chromosome, data$base_pair_location,
+    data$other_allele, data$effect_allele, build = build
+  )
+  global_position <- identity$global_position
+  substitution <- identity$substitution
   if (any(!is.finite(global_position) | global_position < 0 | global_position > 4294967295)) {
     stop("native Pcodec identity position is outside uint32", call. = FALSE)
   }
-  if (anyNA(substitution)) stop("native Pcodec identity contains an invalid allele", call. = FALSE)
   list(global_position = global_position, substitution = substitution)
+}
+
+pcodec_native_validate_worker_count <- function(value,
+                                                 label = "native Pcodec worker count") {
+  if (length(value) != 1L || !is.numeric(value) || is.na(value) ||
+      !is.finite(value) || value < 1 || value != floor(value) ||
+      value > .Machine$integer.max) {
+    stop(label, " must be one positive integer", call. = FALSE)
+  }
+  as.integer(value)
+}
+
+pcodec_native_writer_workers <- function(metadata = list()) {
+  if (!is.list(metadata)) {
+    stop("native Pcodec writer metadata must be a list", call. = FALSE)
+  }
+  candidates <- list(
+    metadata$writer_threads,
+    metadata$compression_threads,
+    metadata$compression$workers,
+    metadata$compression$requested_workers,
+    metadata$writer$workers,
+    metadata$writer$requested_workers,
+    metadata$threads_requested,
+    metadata$threads,
+    metadata$workers,
+    metadata$harmonisation$threads_requested,
+    metadata$harmonisation$chrom_threads
+  )
+  requested <- NULL
+  for (candidate in candidates) {
+    if (is.list(candidate)) {
+      candidate <- candidate$requested %||% candidate$requested_workers
+    }
+    if (!is.null(candidate)) {
+      requested <- candidate
+      break
+    }
+  }
+  pcodec_native_validate_worker_count(requested %||% 1L)
+}
+
+pcodec_native_effective_workers <- function(requested, task_count) {
+  requested <- pcodec_native_validate_worker_count(requested)
+  if (length(task_count) != 1L || !is.numeric(task_count) ||
+      is.na(task_count) || !is.finite(task_count) || task_count < 0 ||
+      task_count != floor(task_count)) {
+    stop("native Pcodec task count must be a non-negative integer", call. = FALSE)
+  }
+  if (!task_count) return(0L)
+  effective <- if (task_count > .Machine$integer.max) requested else
+    min(requested, as.integer(task_count))
+  check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
+  if (nzchar(check_limit) && check_limit != "false") effective <- min(effective, 2L)
+  if (.Platform$OS.type == "windows") effective <- 1L
+  as.integer(max(1L, effective))
+}
+
+pcodec_native_parallel_batch <- function(X, FUN, workers) {
+  if (!length(X)) return(list())
+  workers <- pcodec_native_effective_workers(workers, length(X))
+  if (workers <= 1L) return(lapply(X, FUN))
+  pcodec_parallel_lapply(X, FUN, threads = workers)
 }
 
 pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_ROWS) {
@@ -180,36 +236,65 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
 }
 
 pcodec_native_append_stream <- function(values, path, dtype,
-                                         block_rows = PCODEC_NATIVE_BLOCK_ROWS) {
+                                         block_rows = PCODEC_NATIVE_BLOCK_ROWS,
+                                         workers = 1L) {
+  block_rows <- as.integer(block_rows)
+  if (length(block_rows) != 1L || is.na(block_rows) || block_rows < 1L) {
+    stop("native Pcodec stream block_rows must be positive", call. = FALSE)
+  }
   n <- length(values)
   blocks <- vector("list", if (n) ceiling(n / block_rows) else 0L)
+  requested_workers <- pcodec_native_validate_worker_count(workers)
+  effective_workers <- pcodec_native_effective_workers(requested_workers, length(blocks))
   connection <- file(path, open = "wb")
   on.exit(close(connection), add = TRUE)
   offset <- 0
   if (n) {
-    for (block in seq_along(blocks)) {
-      start <- (block - 1L) * block_rows + 1L
-      stop <- min(n, block * block_rows)
-      blob <- pcodec_native_compress(values[start:stop], dtype)
-      writeBin(blob, connection, useBytes = TRUE)
-      blocks[[block]] <- list(
-        row_start = start - 1L, row_stop = stop,
-        offset = offset, length = length(blob), values = stop - start + 1L
-      )
-      offset <- offset + length(blob)
+    for (batch_start in seq.int(1L, length(blocks), by = effective_workers)) {
+      batch_stop <- min(length(blocks), batch_start + effective_workers - 1L)
+      batch <- seq.int(batch_start, batch_stop)
+      results <- pcodec_native_parallel_batch(batch, function(block) {
+        start <- (block - 1L) * block_rows + 1L
+        stop <- min(n, block * block_rows)
+        list(block = block, blob = pcodec_native_compress(values[start:stop], dtype),
+             row_start = start - 1L, row_stop = stop, values = stop - start + 1L)
+      }, workers = effective_workers)
+      for (result in results) {
+        blob <- result$blob
+        writeBin(blob, connection, useBytes = TRUE)
+        blocks[[result$block]] <- list(
+          row_start = result$row_start, row_stop = result$row_stop,
+          offset = offset, length = length(blob), values = result$values
+        )
+        offset <- offset + length(blob)
+      }
     }
   }
-  list(file = basename(path), bytes = offset, blocks = blocks)
+  list(file = basename(path), bytes = offset, blocks = blocks,
+       requested_workers = requested_workers,
+       effective_workers = effective_workers)
 }
 
 pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLOCK_ROWS) {
+  block_rows <- as.integer(block_rows)
+  if (length(block_rows) != 1L || is.na(block_rows) || block_rows < 1L) {
+    stop("native Pcodec position block_rows must be positive", call. = FALSE)
+  }
+  position <- as.numeric(position)
   n <- length(position)
+  if (n && any(!is.finite(position) | position < 0 | position > 4294967295 |
+               position != floor(position))) {
+    stop("native Pcodec positions must be uint32 values", call. = FALSE)
+  }
+  if (n > 1L && any(diff(position) < 0)) {
+    stop("native Pcodec positions must be sorted", call. = FALSE)
+  }
   gaps <- numeric(n)
   if (n) {
-    blocks <- ceiling(n / as.integer(block_rows))
+    blocks <- ceiling(n / block_rows)
     for (block in seq_len(blocks)) {
-      start <- (block - 1L) * as.integer(block_rows) + 1L
-      stop <- min(n, block * as.integer(block_rows))
+      start <- (block - 1L) * block_rows + 1L
+      stop <- min(n, block * block_rows)
       gaps[start] <- 0
       if (stop > start) gaps[(start + 1L):stop] <- diff(position[start:stop])
     }
@@ -278,26 +363,45 @@ pcodec_native_read_exception_bytes <- function(blob, count) {
   )
 }
 
-pcodec_native_write_exceptions <- function(exceptions, output, blocks) {
+pcodec_native_write_exceptions <- function(exceptions, output, blocks, workers = 1L) {
+  requested_workers <- pcodec_native_validate_worker_count(workers)
+  effective_workers <- pcodec_native_effective_workers(requested_workers, length(blocks))
+  if (nrow(exceptions) && (anyNA(exceptions$row) || anyNA(exceptions$flags) ||
+      any(exceptions$row < 0L) || any(exceptions$flags < 1L | exceptions$flags > 7L) ||
+      any(diff(exceptions$row) <= 0L))) {
+    stop("native Pcodec exception rows or flags are invalid", call. = FALSE)
+  }
   path <- file.path(output, "exceptions.bin")
   connection <- file(path, open = "wb")
   on.exit(close(connection), add = TRUE)
   offset <- 0
   locations <- vector("list", length(blocks))
-  for (block in seq_along(blocks)) {
-    inside <- exceptions$row >= blocks[[block]]$row_start &
-      exceptions$row < blocks[[block]]$row_stop
-    raw_blob <- pcodec_native_exception_bytes(exceptions[inside, , drop = FALSE])
-    blob <- if (length(raw_blob)) pcodec_native_zstd_compress(raw_blob, level = 19L) else raw()
-    if (length(blob)) writeBin(blob, connection, useBytes = TRUE)
-    locations[[block]] <- list(
-      offset = offset, length = length(blob), raw_length = length(raw_blob),
-      count = sum(inside)
-    )
-    offset <- offset + length(blob)
+  if (length(blocks)) {
+    for (batch_start in seq.int(1L, length(blocks), by = effective_workers)) {
+      batch_stop <- min(length(blocks), batch_start + effective_workers - 1L)
+      batch <- seq.int(batch_start, batch_stop)
+      results <- pcodec_native_parallel_batch(batch, function(block) {
+        inside <- exceptions$row >= blocks[[block]]$row_start &
+          exceptions$row < blocks[[block]]$row_stop
+        raw_blob <- pcodec_native_exception_bytes(exceptions[inside, , drop = FALSE])
+        blob <- if (length(raw_blob)) pcodec_native_zstd_compress(raw_blob, level = 19L) else raw()
+        list(block = block, blob = blob, raw_length = length(raw_blob),
+             count = sum(inside))
+      }, workers = effective_workers)
+      for (result in results) {
+        blob <- result$blob
+        if (length(blob)) writeBin(blob, connection, useBytes = TRUE)
+        locations[[result$block]] <- list(
+          offset = offset, length = length(blob), raw_length = result$raw_length,
+          count = result$count
+        )
+        offset <- offset + length(blob)
+      }
+    }
   }
   list(file = basename(path), bytes = offset, codec = "zstd", record_bytes = 17L,
-       blocks = locations)
+       blocks = locations, requested_workers = requested_workers,
+       effective_workers = effective_workers)
 }
 
 pcodec_native_write_store <- function(data, output, metadata = list()) {
@@ -309,7 +413,9 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
                 "effect_allele_frequency", "z")
   missing <- setdiff(required, names(data))
   if (length(missing)) stop("Pcodec input is missing: ", paste(missing, collapse = ", "), call. = FALSE)
-  identity <- pcodec_native_identity(data)
+  requested_workers <- pcodec_native_writer_workers(metadata)
+  build <- compressor_normalize_build(metadata$genome_build %||% "GRCh38")
+  identity <- pcodec_native_identity(data, build = build)
   order <- order(identity$global_position, identity$substitution, method = "radix")
   ordered_position <- identity$global_position[order]
   ordered_substitution <- identity$substitution[order]
@@ -329,17 +435,38 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   streams <- list(
     position = pcodec_native_append_stream(
       pcodec_native_position_gaps(ordered_position, key_block_rows),
-      file.path(output, "position.pco"), "u32", key_block_rows),
+      file.path(output, "position.pco"), "u32", key_block_rows,
+      workers = requested_workers),
     substitution = pcodec_native_append_stream(
-      ordered_substitution, file.path(output, "substitution.pco"), "u8", key_block_rows),
+      ordered_substitution, file.path(output, "substitution.pco"), "u8", key_block_rows,
+      workers = requested_workers),
     z = pcodec_native_append_stream(
-      values$z, file.path(output, "z.pco"), "u16", block_rows),
+      values$z, file.path(output, "z.pco"), "u16", block_rows,
+      workers = requested_workers),
     eaf = pcodec_native_append_stream(
-      values$eaf, file.path(output, "eaf.pco"), "u8", block_rows),
+      values$eaf, file.path(output, "eaf.pco"), "u8", block_rows,
+      workers = requested_workers),
     se = pcodec_native_append_stream(
-      values$se, file.path(output, "se.pco"), "u8", block_rows)
+      values$se, file.path(output, "se.pco"), "u8", block_rows,
+      workers = requested_workers)
   )
-  exception_stream <- pcodec_native_write_exceptions(values$exceptions, output, block_template)
+  exception_stream <- pcodec_native_write_exceptions(
+    values$exceptions, output, block_template, workers = requested_workers
+  )
+  task_count <- max(length(key_block_template), length(block_template))
+  effective_workers <- pcodec_native_effective_workers(requested_workers, task_count)
+  writer_metadata <- list(
+    requested_workers = requested_workers,
+    effective_workers = effective_workers,
+    partition = "deterministic_contiguous_blocks",
+    max_in_flight = effective_workers,
+    streams = stats::setNames(lapply(streams, function(stream) {
+      list(requested_workers = stream$requested_workers,
+           effective_workers = stream$effective_workers)
+    }), names(streams)),
+    exceptions = list(requested_workers = exception_stream$requested_workers,
+                      effective_workers = exception_stream$effective_workers)
+  )
   index <- list(
     format = "CompreSSoR-native-index", version = 3L,
     position_encoding = "delta_u32_within_block",
@@ -347,7 +474,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     key_block_rows = key_block_rows, value_block_rows = block_rows,
     blocks = block_template, key_blocks = key_block_template,
     value_blocks = block_template,
-    streams = streams, exceptions = exception_stream
+    streams = streams, exceptions = exception_stream, writer = writer_metadata
   )
   jsonlite::write_json(index, file.path(output, "native.index.json"),
                        auto_unbox = TRUE, pretty = TRUE, digits = 17)
@@ -390,23 +517,32 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     exceptions = "exceptions.bin", index = "native.index.json"
   )
   if (!is.null(selection_file)) files$selection_regions <- selection_file
-  chromosomes <- compressor_grch38_chromosome_lengths
-  offsets <- pcodec_native_offsets()
+  chromosomes <- compressor_chromosome_lengths(build)
+  offsets <- pcodec_native_offsets(build)
+  identity_contract <- compressor_identity_manifest(
+    input_build = metadata$identity$input_build %||% build,
+    stored_build = build,
+    reference = metadata$reference %||% NULL,
+    chain = metadata$identity$chain %||% NULL
+  )
+  identity <- list(
+    encoding = "native_global_position_plus_full_ref_alt_code",
+    position_storage = "within-block delta-coded uint32; block first positions are in the index",
+    external_reference_required = FALSE,
+    chromosome_lengths = as.list(chromosomes),
+    chromosome_offsets = as.list(offsets),
+    effect_allele_is_alt = TRUE, other_allele_is_ref = TRUE
+  )
+  identity[names(identity_contract)] <- identity_contract
   manifest <- list(
     format = "CompreSSoR", format_version = PCODEC_NATIVE_FORMAT,
     backend = "pcodec", profile = "standard", rows = n, n_rows = n,
     block_rows = block_rows, key_block_rows = key_block_rows,
     value_block_rows = block_rows,
-    identity = list(
-      encoding = "native_global_position_plus_full_ref_alt_code",
-      position_storage = "within-block delta-coded uint32; block first positions are in the index",
-      external_reference_required = FALSE,
-      chromosome_lengths = as.list(chromosomes),
-      chromosome_offsets = as.list(offsets),
-      effect_allele_is_alt = TRUE, other_allele_is_ref = TRUE
-    ),
+    writer = writer_metadata,
+    identity = identity,
     semantic_codec = list(
-      name = "z9/eaf8/se8", z_bits = 9L, eaf_bits = 8L,
+      name = "z9/eaf8/se6", z_bits = 9L, eaf_bits = 8L,
       se_bits = PCODEC_NATIVE_SE_BITS, z_range = c(-3.5, 3.5),
       se_count = PCODEC_NATIVE_SE_COUNT,
       se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
@@ -419,7 +555,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       p_value = "derived as 2 * pnorm(-abs(z))"
     ),
     codec = list(
-      name = "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions",
+      name = "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions",
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
       page_rows = PCODEC_NATIVE_PAGE_ROWS,
       compression = paste0("Pcodec standalone streams; ", key_block_rows,
@@ -436,8 +572,8 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     variant_identity = list(encoding = "global_position_plus_full_ref_alt_code",
                             position_storage = "within-block delta-coded uint32",
                             rsid = "not_stored", external_reference_required = FALSE),
-    genome_build = "GRCh38",
-    reference = metadata$reference %||% list(id = "none", build = "GRCh38",
+    genome_build = build,
+    reference = metadata$reference %||% list(id = "none", build = build,
                                              status = "identity key is self-contained"),
     harmonisation = metadata$harmonisation %||% list(method = "not recorded"),
     selection = selection_manifest,
@@ -471,6 +607,52 @@ manifest$tolerances <- list(
   invisible(manifest)
 }
 
+pcodec_native_validate_index_partition <- function(blocks, n, label) {
+  if (!is.list(blocks)) stop(label, " must be a list", call. = FALSE)
+  expected <- 0
+  for (block in blocks) {
+    start <- as.numeric(block$row_start)
+    row_stop <- as.numeric(block$row_stop)
+    values <- if (!is.null(block$values)) as.numeric(block$values) else row_stop - start
+    if (length(start) != 1L || length(row_stop) != 1L || length(values) != 1L ||
+        !is.finite(start) || !is.finite(row_stop) || !is.finite(values) ||
+        start != floor(start) || row_stop != floor(row_stop) || values != floor(values) ||
+        start != expected || row_stop < start || row_stop > n ||
+        row_stop - start != values) {
+      stop(label, " do not form a contiguous row partition", call. = FALSE)
+    }
+    expected <- row_stop
+  }
+  if (expected != n) stop(label, " do not cover the declared row count", call. = FALSE)
+  invisible(TRUE)
+}
+
+pcodec_native_validate_index_parity <- function(index, n) {
+  key_blocks <- pcodec_native_index_blocks(index, "key")
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  pcodec_native_validate_index_partition(key_blocks, n, "native key blocks")
+  pcodec_native_validate_index_partition(value_blocks, n, "native value blocks")
+  same_rows <- function(left, right, label) {
+    if (length(left) != length(right) || length(left) != 0L && any(vapply(seq_along(left),
+        function(i) as.numeric(left[[i]]$row_start) == as.numeric(right[[i]]$row_start) &&
+          as.numeric(left[[i]]$row_stop) == as.numeric(right[[i]]$row_stop), logical(1)) == FALSE)) {
+      stop(label, " are not row-aligned", call. = FALSE)
+    }
+  }
+  streams <- index$streams
+  if (!is.list(streams)) stop("native Pcodec index streams are missing", call. = FALSE)
+  same_rows(key_blocks, streams$position$blocks, "native position stream blocks")
+  same_rows(key_blocks, streams$substitution$blocks, "native substitution stream blocks")
+  same_rows(value_blocks, streams$z$blocks, "native Z stream blocks")
+  same_rows(value_blocks, streams$eaf$blocks, "native EAF stream blocks")
+  same_rows(value_blocks, streams$se$blocks, "native SE stream blocks")
+  exception_blocks <- index$exceptions$blocks %||% list()
+  if (length(exception_blocks) != length(value_blocks)) {
+    stop("native exception blocks are not aligned with value blocks", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
 pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
   index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
@@ -478,6 +660,11 @@ pcodec_native_read_index <- function(store) {
       !as.integer(index$version) %in% c(1L, 2L, 3L)) {
     stop("invalid native Pcodec index", call. = FALSE)
   }
+  n <- as.numeric(store$manifest$n_rows %||% store$manifest$rows)
+  if (length(n) != 1L || !is.finite(n) || n < 0 || n != floor(n)) {
+    stop("native Pcodec manifest row count is invalid", call. = FALSE)
+  }
+  pcodec_native_validate_index_parity(index, n)
   index
 }
 
@@ -550,6 +737,47 @@ pcodec_native_block_matrix <- function(blocks, stream_blocks = blocks,
          byrow = TRUE)
 }
 
+pcodec_native_validate_code_domains <- function(codes, streams, semantic,
+                                                identity = list()) {
+  z_count <- as.integer(semantic$z_count %||% 510L)
+  se_count <- as.integer(semantic$se_count %||%
+                           (2^as.integer(semantic$se_bits %||% 8L) - 2L))
+  eaf_count <- as.integer(semantic$eaf_count %||%
+                            (2^as.integer(semantic$eaf_bits %||% 8L) - 1L))
+  if ("z" %in% streams && any(codes$z < 0L | codes$z > z_count + 1L)) {
+    stop("native Pcodec Z stream contains an out-of-domain code", call. = FALSE)
+  }
+  if ("se" %in% streams && any(codes$se < 0L | codes$se > se_count + 1L)) {
+    stop("native Pcodec SE stream contains an out-of-domain code", call. = FALSE)
+  }
+  if ("eaf" %in% streams && any(codes$eaf < 0L | codes$eaf > eaf_count)) {
+    stop("native Pcodec EAF stream contains an out-of-domain code", call. = FALSE)
+  }
+  if ("position" %in% streams && length(codes$position)) {
+    invalid_position <- !is.finite(codes$position) | codes$position < 0 |
+      codes$position > 4294967295
+    if (length(codes$position) > 1L) {
+      invalid_position[-1L] <- invalid_position[-1L] |
+        diff(codes$position) < 0
+    }
+    if (any(invalid_position)) {
+      stop("native Pcodec position stream is outside its sorted uint32 domain", call. = FALSE)
+    }
+    lengths <- as.numeric(unlist(identity$chromosome_lengths %||% numeric()))
+    offsets <- as.numeric(unlist(identity$chromosome_offsets %||% numeric()))
+    if (length(lengths) && length(lengths) == length(offsets) &&
+        any(codes$position >= offsets[length(offsets)] + lengths[length(lengths)])) {
+      stop("native Pcodec position stream exceeds the stored chromosome table", call. = FALSE)
+    }
+  }
+  if ("substitution" %in% streams && length(codes$substitution) &&
+      any(codes$substitution < 0L | codes$substitution > 15L |
+          bitwShiftR(codes$substitution, 2L) == bitwAnd(codes$substitution, 3L))) {
+    stop("native Pcodec substitution stream contains an invalid code", call. = FALSE)
+  }
+  invisible(codes)
+}
+
 pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L) {
   if (!is.loaded("compressor_read_pcodec_native_codes", PACKAGE = "CompreSSoR")) {
     stop("native Pcodec stream reader is not available in this build", call. = FALSE)
@@ -565,7 +793,7 @@ pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L)
     file.path(store$path, index$streams$se$file),
     file.path(store$path, index$exceptions$file)
   )
-  .Call("compressor_read_pcodec_native_codes", files,
+  codes <- .Call("compressor_read_pcodec_native_codes", files,
         pcodec_native_block_matrix(key_blocks, index$streams$position$blocks,
                                    first_position = TRUE),
         pcodec_native_block_matrix(key_blocks, index$streams$substitution$blocks,
@@ -581,6 +809,11 @@ pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L)
         as.character(streams), index$exceptions$codec %||% "raw",
         as.integer(threads),
         PACKAGE = "CompreSSoR")
+  pcodec_native_validate_code_domains(
+    codes, streams, store$manifest$semantic_codec %||% list(),
+    store$manifest$identity %||% list()
+  )
+  codes
 }
 
 pcodec_native_read_all_exceptions <- function(store, index) {
@@ -601,7 +834,8 @@ pcodec_native_read_all_exceptions <- function(store, index) {
 }
 
 pcodec_native_full_read <- function(store, index, requested, need_identity,
-                                     need_z, need_se, need_eaf, threads = 1L) {
+                                     need_z, need_se, need_eaf, threads = 1L,
+                                     build = "GRCh38") {
   threads <- pcodec_validate_threads(threads)
   n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
   semantic <- store$manifest$semantic_codec %||% list()
@@ -669,7 +903,8 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
     }
     if (is.null(requested) || any(c("chromosome", "base_pair_location",
                                     "effect_allele", "other_allele") %in% requested)) {
-      output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution),
+      output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution,
+                                                                       build = build),
                                             stringsAsFactors = FALSE))
     }
   }
@@ -707,9 +942,9 @@ pcodec_native_block_ids_for_rows <- function(index, rows, kind = "value") {
   unique(findInterval(as.numeric(rows), stops) + 1L)
 }
 
-pcodec_native_key_columns <- function(position, substitution) {
-  lengths <- compressor_grch38_chromosome_lengths
-  offsets <- pcodec_native_offsets()
+pcodec_native_key_columns <- function(position, substitution, build = "GRCh38") {
+  lengths <- compressor_chromosome_lengths(build)
+  offsets <- pcodec_native_offsets(build)
   chromosome_code <- findInterval(position, offsets)
   chromosome_code <- pmax(1L, pmin(length(lengths), chromosome_code))
   list(
@@ -720,7 +955,7 @@ pcodec_native_key_columns <- function(position, substitution) {
   )
 }
 
-pcodec_native_target_keys <- function(variants) {
+pcodec_native_target_keys <- function(variants, build = "GRCh38") {
   parsed <- parse_canonical_variant_keys(variants)
   if (anyNA(parsed$chromosome) || anyNA(parsed$base_pair_location) ||
       anyNA(parsed$reference_allele) || anyNA(parsed$alternate_allele)) {
@@ -728,7 +963,7 @@ pcodec_native_target_keys <- function(variants) {
   }
   canonical <- compressor_variant_key(
     parsed$chromosome, parsed$base_pair_location,
-    parsed$reference_allele, parsed$alternate_allele
+    parsed$reference_allele, parsed$alternate_allele, build = build
   )
   identity <- pcodec_native_identity(data.frame(
     chromosome = parsed$chromosome,
@@ -736,7 +971,7 @@ pcodec_native_target_keys <- function(variants) {
     other_allele = parsed$reference_allele,
     effect_allele = parsed$alternate_allele,
     stringsAsFactors = FALSE
-  ))
+  ), build = build)
   list(canonical = canonical, position = identity$global_position,
        substitution = identity$substitution)
 }
@@ -754,16 +989,18 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
   }
   if ("z" %in% needed) {
     z <- rep(NA_real_, n)
-    ok <- codes$z < z_count
+    ok <- codes$z >= 0L & codes$z < z_count
     z[ok] <- -3.5 + (codes$z[ok] + 0.5) * (7 / z_count)
     output$z <- z
   }
   if ("eaf" %in% needed || "se" %in% needed) {
-    output$eaf <- sin(pi * as.numeric(codes$eaf) / (2 * eaf_count))^2
+    output$eaf <- rep(NA_real_, n)
+    ok <- codes$eaf >= 0L & codes$eaf <= eaf_count
+    output$eaf[ok] <- sin(pi * as.numeric(codes$eaf[ok]) / (2 * eaf_count))^2
   }
   if ("se" %in% needed) {
     se <- rep(NA_real_, n)
-    ok <- codes$se < se_count
+    ok <- codes$se >= 0L & codes$se < se_count
     safe <- pmin(1 - 1e-12, pmax(1e-12, output$eaf))
     residual <- se_range[1] + (codes$se + 0.5) * diff(se_range) / se_count
     se[ok] <- 2^(residual[ok] + centres[centre_id] -
@@ -815,6 +1052,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   threads <- pcodec_native_default_threads(region = region, variants = variants,
                                             threads = threads)
   manifest <- store$manifest
+  build <- compressor_normalize_build(manifest$genome_build %||% "GRCh38")
   index <- pcodec_native_read_index(store)
   n <- as.integer(manifest$n_rows %||% manifest$rows)
   if (!is.null(columns) && !length(columns)) stop("columns must contain at least one column name", call. = FALSE)
@@ -831,7 +1069,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   key_targets <- NULL
   if (!is.null(variants)) {
     if (is.character(variants)) {
-      key_targets <- pcodec_native_target_keys(unique(trimws(variants)))
+      key_targets <- pcodec_native_target_keys(unique(trimws(variants)), build = build)
     } else {
       row_targets <- unique(as.integer(variants))
       if (anyNA(row_targets) || any(row_targets < 0L | row_targets >= n)) {
@@ -852,14 +1090,16 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   if (!is.null(region)) {
     bounds <- read_region_bounds(region)
     chromosome <- toupper(sub("^CHR", "", as.character(bounds$chromosome), ignore.case = TRUE))
-    if (!chromosome %in% names(compressor_grch38_chromosome_lengths)) stop("unsupported region chromosome", call. = FALSE)
-    offsets <- pcodec_native_offsets()
-    lower <- offsets[match(chromosome, names(compressor_grch38_chromosome_lengths))] + bounds$start - 1
-    upper <- offsets[match(chromosome, names(compressor_grch38_chromosome_lengths))] + bounds$end - 1
+    lengths <- compressor_chromosome_lengths(build)
+    if (!chromosome %in% names(lengths)) stop("unsupported region chromosome", call. = FALSE)
+    offsets <- pcodec_native_offsets(build)
+    lower <- offsets[match(chromosome, names(lengths))] + bounds$start - 1
+    upper <- offsets[match(chromosome, names(lengths))] + bounds$end - 1
   }
   if (is.null(region) && is.null(variants)) {
     output <- pcodec_native_full_read(store, index, requested, identity_needed,
-                                      need_z, need_se, need_eaf, threads = threads)
+                                      need_z, need_se, need_eaf, threads = threads,
+                                      build = build)
     attr(output, "source_bytes_read") <- NA_real_
     return(output)
   }
@@ -967,7 +1207,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     if (identity_needed) {
       selected_index <- match(rows[keep], selected_rows)
       identity_part <- pcodec_native_key_columns(
-        selected_position[selected_index], selected_substitution[selected_index])
+        selected_position[selected_index], selected_substitution[selected_index],
+        build = build)
       part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
     }
     if ("z" %in% names(decoded)) part$z <- decoded$z
@@ -1018,11 +1259,14 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
           any(starts[-1] != stops[-length(stops)])) {
         errors <- c(errors, "native blocks do not cover rows contiguously")
       }
-    }
-    if (isTRUE(full) && !length(errors)) {
-      pcodec_native_read_store(s, columns = c("z", "standard_error",
-                                               "effect_allele_frequency"))
-    }
+            }
+            if (isTRUE(full) && !length(errors)) {
+                pcodec_native_read_store(s, columns = c(
+                  "chromosome", "base_pair_location", "effect_allele",
+                  "other_allele", "z", "standard_error",
+                  "effect_allele_frequency"
+                ))
+            }
     list(valid = !length(errors), errors = errors,
          rows = as.integer(m$n_rows), profile = m$profile, full = isTRUE(full))
   }, error = function(e) list(valid = FALSE, errors = conditionMessage(e),

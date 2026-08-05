@@ -68,3 +68,20 @@ test_that("native decoder rejects unsupported code domains", {
     "16-bit limit"
   )
 })
+
+test_that("native decoder rejects invalid exception flags", {
+  skip_if_not(is.loaded("compressor_decode_native", PACKAGE = "CompreSSoR"))
+  encoded <- CompreSSoR:::q_encode(
+    beta = c(0.1, 0.2), se = c(0.02, 0.03), eaf = c(0.2, 0.3),
+    block_rows = 2L
+  )
+  encoded$exceptions <- data.frame(
+    row = 0L, z_value = 0.1, se_value = 0.02, eaf_value = 0.2, flags = 8L
+  )
+  expect_error(
+    CompreSSoR:::q_decode(encoded$main, encoded$exceptions,
+                           encoded$metadata, include_beta = FALSE,
+                           include_p = FALSE),
+    "exception flags"
+  )
+})

@@ -68,10 +68,10 @@ pcodec_native_projection <- function(out, columns = NULL) {
   out
 }
 
-pcodec_validate_threads <- function(threads) {
+pcodec_validate_threads <- function(threads, label = "threads") {
   if (length(threads) != 1L || !is.numeric(threads) || is.na(threads) ||
       !is.finite(threads) || threads < 1 || threads != floor(threads)) {
-    stop("threads must be one positive integer", call. = FALSE)
+    stop(label, " must be one positive integer", call. = FALSE)
   }
   as.integer(threads)
 }

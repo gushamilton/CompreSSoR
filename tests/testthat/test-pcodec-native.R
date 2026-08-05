@@ -30,8 +30,8 @@ test_that("native 0.4 stores are the default and support full, regional, key, an
   path <- tempfile("pcodec-native-")
   store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
                              assume_grch38_ref_alt = TRUE, overwrite = TRUE)
-  expect_equal(store$manifest$format_version, "0.4.4-pcodec-native")
-  expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se8_zstd_exceptions")
+  expect_equal(store$manifest$format_version, "0.4.5-pcodec-native")
+  expect_equal(store$manifest$codec$name, "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions")
   expect_equal(store$manifest$key_block_rows, 131072L)
   expect_equal(store$manifest$value_block_rows, 65536L)
   expect_equal(store$manifest$codec$page_rows, 131072L)
@@ -139,8 +139,14 @@ test_that("native Pcodec keeps configurable stream frames aligned", {
   path <- tempfile("pcodec-native-frame-")
   store <- compress_sumstats(input, path, reference = NULL, mode = "convert",
                              assume_grch38_ref_alt = TRUE, block_rows = 65536L,
+                             chrom_threads = 4L,
                              overwrite = TRUE)
   expect_equal(store$manifest$block_rows, 65536L)
+  expect_equal(store$manifest$writer$requested_workers, 4L)
+  expect_true(store$manifest$writer$effective_workers >= 1L)
+  expect_lte(store$manifest$writer$effective_workers, 2L)
+  expect_identical(store$manifest$writer$partition,
+                   "deterministic_contiguous_blocks")
   expect_true(validate_compressor(store, full = TRUE)$valid)
   observed <- read_sumstats(store, columns = c("z", "standard_error",
                                                 "effect_allele_frequency"))
@@ -171,4 +177,93 @@ test_that("native exception frames use Zstandard and round trip", {
   encoded <- CompreSSoR:::pcodec_native_zstd_compress(raw, level = 19L)
   expect_lt(length(encoded), length(raw))
   expect_identical(CompreSSoR:::pcodec_native_zstd_decompress(encoded, length(raw)), raw)
+})
+
+test_that("native writer validates and bounds worker counts", {
+  expect_equal(CompreSSoR:::pcodec_native_validate_worker_count(1), 1L)
+  for (value in list(0, 1.5, NA_real_, Inf, c(1, 2))) {
+    expect_error(
+      CompreSSoR:::pcodec_native_validate_worker_count(value),
+      "positive integer"
+    )
+  }
+  check_limited <- nzchar(Sys.getenv("_R_CHECK_LIMIT_CORES_")) &&
+    tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_")) != "false"
+  expected_workers <- if (check_limited) 2L else 3L
+  expect_equal(CompreSSoR:::pcodec_native_effective_workers(8L, 3L), expected_workers)
+  expect_equal(CompreSSoR:::pcodec_native_effective_workers(8L, 0L), 0L)
+  expect_error(
+    CompreSSoR:::pcodec_native_writer_workers(list(threads = 0L)),
+    "positive integer"
+  )
+})
+
+test_that("native stream code validation preserves reserved missing codes", {
+  codes <- list(
+    z = c(0L, 510L, 511L), se = c(0L, 62L, 63L), eaf = c(0L, 255L),
+    position = c(0, 1), substitution = c(1L, 2L)
+  )
+  expect_silent(CompreSSoR:::pcodec_native_validate_code_domains(
+    codes, c("z", "se", "eaf", "position", "substitution"),
+    list(z_count = 510L, se_count = 62L, eaf_count = 255L)
+  ))
+  codes$se[1] <- 64L
+  expect_error(
+    CompreSSoR:::pcodec_native_validate_code_domains(
+      codes, "se", list(se_count = 62L)
+    ),
+    "out-of-domain"
+  )
+})
+
+test_that("native index validation rejects non-contiguous partitions", {
+  expect_error(
+    CompreSSoR:::pcodec_native_validate_index_partition(
+      list(list(row_start = 1, row_stop = 2, values = 1)), 2,
+      "native test blocks"
+    ),
+    "contiguous"
+  )
+})
+
+test_that("native stream block compression merges deterministically", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  values <- as.integer(seq_len(7000L) %% 65536L)
+  serial_path <- tempfile("pcodec-native-serial-")
+  parallel_path <- tempfile("pcodec-native-parallel-")
+  serial <- CompreSSoR:::pcodec_native_append_stream(
+    values, serial_path, "u16", block_rows = 1024L, workers = 1L
+  )
+  parallel <- CompreSSoR:::pcodec_native_append_stream(
+    values, parallel_path, "u16", block_rows = 1024L, workers = 4L
+  )
+  expect_identical(readBin(serial_path, raw(), file.info(serial_path)$size),
+                   readBin(parallel_path, raw(), file.info(parallel_path)$size))
+  expect_identical(serial$blocks, parallel$blocks)
+  expect_equal(serial$effective_workers, 1L)
+  check_limited <- nzchar(Sys.getenv("_R_CHECK_LIMIT_CORES_")) &&
+    tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_")) != "false"
+  expected_workers <- if (check_limited) 2L else 4L
+  expect_equal(parallel$effective_workers, expected_workers)
+})
+
+test_that("native position gaps reset at block boundaries and reject unsorted input", {
+  expect_identical(
+    CompreSSoR:::pcodec_native_position_gaps(c(0, 4294967295, 4294967295), 2L),
+    c(0, 4294967295, 0)
+  )
+  expect_error(
+    CompreSSoR:::pcodec_native_position_gaps(c(2, 1), 2L),
+    "sorted"
+  )
+})
+
+test_that("native empty integer streams are valid empty round trips", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  encoded <- CompreSSoR:::pcodec_native_compress(integer(), "u8")
+  expect_length(encoded, 0L)
+  expect_identical(CompreSSoR:::pcodec_native_decompress(encoded, 0L, "u8"),
+                   integer())
 })

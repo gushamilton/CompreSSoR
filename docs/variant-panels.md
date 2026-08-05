@@ -1,4 +1,15 @@
-# Core and HM3 panel provenance
+# Core, HM3, and core-plus panel provenance
+
+Panel selection is a post-harmonisation operation. The package first imports,
+validates, liftover-aligns, and harmonises the GWAS; only then does it apply a
+panel or build the core-plus union. The four explicit selection scopes are
+`full`, `core`, `hm3`, and `core_plus`.
+
+Every canonical panel row is the directed, allele-aware key
+`chromosome:position:REF:ALT`, with chromosome labels and allele case
+normalised. Coordinate-only or rsID-only legacy files may still be read for
+interoperability, but they are recorded as legacy identity and do not acquire
+HM3 provenance merely because they were passed as `variant_set`.
 
 The panel-backed modes use frozen GRCh38 identity dictionaries. The original
 artifacts used for the current Mac mini benchmarks are:
@@ -41,6 +52,30 @@ the manifest rather than silently treated as a complete source reproduction.
 Neither the raw sources nor the generated panel dictionaries belong in
 `inputs/` or in the synced project.
 
+## Named and hash-pinned resolution
+
+Named `core` and `hm3` panels resolve from `COMPRESSOR_CORE_VARIANTS` and
+`COMPRESSOR_HM3_VARIANTS` (or the equivalent
+`COMPRESSOR_VARIANT_SET_CORE/HM3` variables). A named core/HM3 panel must have
+a SHA-256 pin, supplied by `COMPRESSOR_CORE_VARIANTS_SHA256` or
+`COMPRESSOR_HM3_VARIANTS_SHA256`, by the matching `COMPRESSOR_VARIANT_SET_*`
+or `COMPRESSOR_PANEL_*` variable, or inline as `core@sha256:<digest>` /
+`hm3@sha256:<digest>`. A staged `panel_manifest.json` can provide the same
+pin through `prepared_sha256`. Resolution verifies the bytes before the panel
+is used and records the requested name, observed/expected hashes, build,
+source hash, local path, cache status, and identity class in selection
+provenance.
+
+Remote named assets are cached under `COMPRESSOR_VARIANT_SET_CACHE` (or
+`COMPRESSOR_PANEL_CACHE`) using the panel name and pinned digest. The cache is
+content-verified on reuse; a failed verification is an error, not a silent
+refresh. Ordinary local panel files are never copied into the repository.
+
+Compressed TSV.GZ panels use `data.table::fread()` with a gzip command fallback
+and do not require the optional `R.utils` package. The reader probes identity
+columns first, so large canonical dictionaries do not materialise unused
+annotations.
+
 At storage time, a large canonical panel is read as its single normalized
 allele-aware key column. The reader deliberately does not expand those keys
 back into redundant chromosome/position/allele columns before matching. The
@@ -51,3 +86,20 @@ provided, only shards represented in the harmonised input are read; this is
 the preferred path for chromosome-local jobs. If `pigz` is available,
 compressed readers use it automatically; otherwise they retain the `gzip`
 fallback.
+
+## Selection and core-plus threshold semantics
+
+The internal selection helpers `select_full_variants()`,
+`select_core_variants()`, `select_hm3_variants()`, and
+`select_core_plus_variants()` return the same stable result: selected `data`,
+the original-row logical `keep` mask, the resolved `panel`, a `regions` table,
+and compact `metadata`. The API layer can use this result without depending on
+the writer implementation.
+
+Core-plus is the union of the selected core panel and windows around significant
+variants. Significance is evaluated from the exact, post-harmonisation,
+pre-encoding Z statistic using the strict two-sided rule
+`2 * pnorm(-abs(z)) < pvalue_threshold`. It is never evaluated from a decoded
+lossy store value. The selection metadata records the source, derivation,
+operator, threshold, and `encoding = "not_encoded"`; the same information is
+carried into the store manifest.

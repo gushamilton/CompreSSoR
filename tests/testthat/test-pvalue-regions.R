@@ -19,6 +19,24 @@ test_that("p-value regions merge overlapping padded windows", {
                c(50000L, 100000L, 150000L, 200000L, 250000L, 300000L, 350000L))
 })
 
+test_that("p-value thresholds use the pre-encoding harmonised statistic", {
+  input <- data.frame(
+    chromosome = c("1", "1"), base_pair_location = c(100L, 200L),
+    z = c(5, 0), p_value = c(0.9, 1e-20), stringsAsFactors = FALSE
+  )
+  selected <- CompreSSoR:::pvalue_region_selection(
+    input, pvalue_threshold = 1e-5, region_padding = 0L
+  )
+
+  expect_equal(selected$keep, c(TRUE, FALSE))
+  expect_equal(selected$metadata$threshold_source, "pre_encoding_harmonised")
+  expect_equal(selected$metadata$threshold_statistic, "p_value_from_harmonised_z")
+  expect_equal(selected$metadata$threshold_operator, "<")
+  expect_equal(selected$metadata$threshold_semantics$encoding, "not_encoded")
+  expect_equal(selected$metadata$threshold_semantics$derivation,
+               "2 * pnorm(-abs(z))")
+})
+
 test_that("p-value regions are selected independently across chromosomes", {
   input <- data.frame(
     chromosome = c("2", "1", "X", "Y", "2"),
@@ -142,6 +160,8 @@ test_that("canonical panel membership is allele-aware", {
   data <- data.frame(
     variant_id = c("1:100:A:C", "1:100:A:G", "1:101:C:T"),
     chromosome = "1", base_pair_location = c(100L, 100L, 101L),
+    other_allele = c("A", "A", "C"),
+    effect_allele = c("C", "G", "T"),
     rsid = c("rs1", "rs1", "rs2"), stringsAsFactors = FALSE
   )
   panel <- data.frame(variant_id = "chr1:100:a:c", stringsAsFactors = FALSE)
@@ -154,12 +174,16 @@ test_that("canonical panel membership is allele-aware", {
 test_that("compressed panel readers select identity columns before normalization", {
   skip_if_not_installed("data.table")
   panel_path <- tempfile("panel-", fileext = ".tsv.gz")
-  data.table::fwrite(data.frame(
+  panel_data <- data.frame(
     vid = c("1:100:A:C", "1:200:G:T"),
     chromosome = c("1", "1"), base_pair_location = c(100L, 200L),
     other_allele = c("A", "G"), effect_allele = c("C", "T"),
     large_unused_annotation = c("x", "y"), stringsAsFactors = FALSE
-  ), panel_path, sep = "\t", compress = "gzip")
+  )
+  con <- gzfile(panel_path, open = "wt")
+  write.table(panel_data, con, sep = "\t", row.names = FALSE,
+              quote = FALSE)
+  close(con)
   panel <- CompreSSoR:::read_variant_set(panel_path)
   expect_equal(attr(panel, "variant_set_metadata")$columns_read,
                "vid")

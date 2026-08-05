@@ -3,7 +3,7 @@
 Status: current write format for CompreSSoR, locked after the five-run
 BluePebble comparison on 10 million FinnGen SNP rows.
 
-The writer emits `0.4.4-pcodec-native`. Older `0.4.x-pcodec-native` stores are
+The writer emits `0.4.5-pcodec-native`. Older `0.4.x-pcodec-native` stores are
 read-only compatibility inputs; they are not current benchmark targets and
 must not be used to make new performance or storage claims.
 
@@ -73,10 +73,9 @@ exception codes. EAF uses the arcsine transform
 log2(SE) + 0.5 * log2(2 * EAF * (1 - EAF))
 ```
 
-centred by the median of each 65,536-row block. Its central residual range is
-`[-4, 4)` with 254 central bins plus missing and exception codes. The current
-SE8 choice is intentional: the former six-bit semantic domain produced too
-many exceptions.
+centred by the median of each 65,536-row block. Its standard public residual
+range is `[-1, 1)` with 62 central bins plus missing and exception codes. The
+former SE8 experiment is historical and is not the public profile.
 
 Exceptions are stored per value block as 17-byte records before Zstandard:
 `row:uint32`, `z:float32`, `log2se:float32`, `eaf:float32`, and `flags:uint8`.
@@ -115,6 +114,6 @@ to store its own identity key. The shared reference is excluded equally.
 The Pcodec store is 3.56× smaller than TSV.gz. The same store read with one
 thread takes 0.552 s; four threads take 0.451 s.
 
-The historical 5.7× SE6/native-C++ screenshot is archived separately. Its
+The historical SE8/native-C++ screenshot is archived separately. Its
 hot projection path contained numeric streams but no position/substitution
 identity streams, so it is not comparable to this self-contained contract.

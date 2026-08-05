@@ -86,3 +86,19 @@ test_that("reference alignment is keyed by alleles rather than rsID", {
   expect_equal(got$variant_id, "1:100:A:C")
   expect_equal(got$rsid, "rs-any")
 })
+
+test_that("canonical keys are build-aware and normalize chromosome aliases", {
+  expect_equal(
+    compressor_variant_key("chr23", 100, "a", "g", build = "hg19"),
+    "X:100:A:G"
+  )
+  expect_equal(
+    compressor_variant_key(c("chr1", "24"), c(1, 2), c("A", "C"),
+                           c("G", "T"), build = "GRCh38"),
+    c("1:1:A:G", "Y:2:C:T")
+  )
+  expect_error(
+    compressor_variant_key("MT", 1, "A", "G", build = "GRCh38"),
+    "chromosome must be one of"
+  )
+})

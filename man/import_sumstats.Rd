@@ -2,23 +2,40 @@
 \alias{import_sumstats}
 \title{Import GWAS summary statistics}
 \usage{
-import_sumstats(input)
+import_sumstats(input, strict = FALSE, row_policy = c("report", "error"),
+                input_build = "GRCh38")
 }
 \arguments{
 \item{input}{A data.frame or an existing summary-statistics file.}
+\item{strict}{Whether structural QC failures should stop import. The default
+is \code{FALSE}; canonical rows are returned with a bounded structural QC
+report attribute.}
+\item{row_policy}{Either \code{"report"} to continue with a report or
+\code{"error"} to stop on any structural rejection. \code{strict = TRUE} is
+an alias for \code{"error"}.}
+\item{input_build}{Build used for coordinate-bound preflight: \code{"GRCh37"}
+or \code{"GRCh38"}, with \code{"hg19"}/\code{"hg38"} aliases.}
 }
 \value{
 A data.frame containing canonical columns such as \code{chromosome},
 \code{base_pair_location}, \code{effect_allele}, \code{other_allele},
 \code{beta}, \code{standard_error}, \code{z},
 \code{effect_allele_frequency}, and \code{p_value}.
+The \code{structural_qc_report} attribute records rejected-row counts and
+bounded row-number examples. Use the internal preparation helper
+\code{preflight_sumstats()} when the filtered data and report are both needed
+before optional reference harmonisation.
 }
 \description{
-Reads a data frame, delimited text file, gzip-compressed text file, or
-single-ALT VCF and maps common GWAS column names onto CompreSSoR's canonical
-in-memory schema. Unrecognised columns are retained. This function does not
-change genome build or allele orientation; use \code{liftover_sumstats()} and
-\code{harmonise_sumstats()} for those operations.
+Reads a data frame or delimited text file with automatic comma, tab,
+semicolon, and whitespace delimiter handling, including gzip/bgzip, bzip2,
+xz, and zstd transports. Simple single-trait VCF inputs are converted from
+fixed columns plus INFO/FORMAT values. Common aliases, including UKB-PPP
+\code{GENPOS}, \code{ALLELE0}, \code{ALLELE1}, and \code{LOG10P}, are mapped onto
+CompreSSoR's canonical in-memory schema and unrecognised columns are retained.
+Chromosome prefixes and 23/24 are normalised to 1--22/X/Y. This function does
+not change genome build or allele orientation; use \code{liftover_sumstats()}
+and \code{harmonise_sumstats()} for those operations.
 }
 \seealso{
 \code{\link{liftover_sumstats}}, \code{\link{harmonise_sumstats}}

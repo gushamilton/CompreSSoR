@@ -32,6 +32,7 @@ template <typename T>
 SEXP compress_integer(SEXP input, SEXP level, SEXP page_n, unsigned char dtype) {
   if (TYPEOF(input) != INTSXP) Rf_error("native Pcodec expects an integer vector");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
+  if (n == 0) return Rf_allocVector(RAWSXP, 0);
   std::vector<T> values(n);
   const int* source = INTEGER(input);
   for (std::size_t i = 0; i < n; ++i) {
@@ -69,6 +70,7 @@ SEXP decompress_integer(SEXP compressed, SEXP n, unsigned char dtype) {
   if (TYPEOF(compressed) != RAWSXP) Rf_error("compressed must be a raw vector");
   const R_xlen_t expected = Rf_asInteger(n);
   if (expected < 0) Rf_error("n must be non-negative");
+  if (expected == 0) return Rf_allocVector(INTSXP, 0);
   std::vector<T> values(static_cast<std::size_t>(expected));
   std::size_t written = 0;
   check_status(compressor_pco_decompress_into(
@@ -95,6 +97,7 @@ SEXP decompress_integer(SEXP compressed, SEXP n, unsigned char dtype) {
 SEXP compress_numeric_u32(SEXP input, SEXP level, SEXP page_n) {
   if (TYPEOF(input) != REALSXP) Rf_error("native Pcodec uint32 input must be numeric");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
+  if (n == 0) return Rf_allocVector(RAWSXP, 0);
   std::vector<std::uint32_t> values(n);
   const double* source = REAL(input);
   for (std::size_t i = 0; i < n; ++i) {
@@ -131,6 +134,7 @@ SEXP decompress_numeric_u32(SEXP compressed, SEXP n) {
   if (TYPEOF(compressed) != RAWSXP) Rf_error("compressed must be a raw vector");
   const R_xlen_t expected = Rf_asInteger(n);
   if (expected < 0) Rf_error("n must be non-negative");
+  if (expected == 0) return Rf_allocVector(REALSXP, 0);
   std::vector<std::uint32_t> values(static_cast<std::size_t>(expected));
   std::size_t written = 0;
   check_status(compressor_pco_decompress_into(

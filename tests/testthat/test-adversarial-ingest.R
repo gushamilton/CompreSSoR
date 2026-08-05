@@ -192,3 +192,56 @@ test_that("parallel strict harmonisation reports aggregate QC counts", {
     "reference alignment failed: unmatched=1, incompatible=0, ambiguous=0, duplicate=2"
   )
 })
+
+test_that("report mode retains bounded malformed-statistic diagnostics", {
+  input <- make_fixture(4L)
+  input$beta[2] <- "not-a-number"
+  input$standard_error[3] <- 0
+  input$effect_allele_frequency[4] <- 1.5
+  result <- preflight_sumstats(input, max_examples = 2L)
+  expect_equal(result$report$rejection_counts[["malformed_beta"]], 1L)
+  expect_equal(result$report$rejection_counts[["invalid_standard_error"]], 1L)
+  expect_equal(result$report$rejection_counts[["invalid_effect_allele_frequency"]], 1L)
+  expect_equal(result$report$dropped_rows, 3L)
+  expect_equal(nrow(result$data), 1L)
+  expect_error(preflight_sumstats(input, strict = TRUE), "structural QC rejected")
+})
+
+test_that("missing required columns are reported in report mode", {
+  input <- data.frame(
+    chromosome = "1", position = 100L, beta = .2, standard_error = .1,
+    stringsAsFactors = FALSE
+  )
+  result <- preflight_sumstats(input)
+  expect_setequal(result$report$missing_columns,
+                  c("effect_allele", "other_allele"))
+  expect_equal(result$report$rejection_counts[["missing_effect_allele"]], 1L)
+  expect_equal(result$report$rejection_counts[["missing_other_allele"]], 1L)
+  expect_error(import_sumstats(input, strict = TRUE), "Missing required")
+})
+
+test_that("strict import rejects out-of-range coordinates and unsupported contigs", {
+  input <- make_fixture(2L)
+  input$base_pair_location[1] <- 248956423L
+  input$chromosome[2] <- "chrM"
+  report <- attr(import_sumstats(input), "structural_qc_report")
+  expect_equal(report$rejection_counts[["coordinate_out_of_range"]], 1L)
+  expect_equal(report$rejection_counts[["unsupported_contig"]], 1L)
+  expect_error(import_sumstats(input, strict = TRUE), "structural QC rejected")
+})
+
+test_that("compressed simple VCF input uses the same structural path", {
+  skip_if_not(any(nzchar(Sys.which("bzip2")), nzchar(Sys.which("gzip"))))
+  path <- tempfile(fileext = ".vcf.bz2")
+  con <- bzfile(path, open = "wt")
+  writeLines(c(
+    "##fileformat=VCFv4.2",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+    "24\t101\trs101\tA\tC\t.\tPASS\tES=0.2;SE=0.1;AF=0.3;LP=2"
+  ), con)
+  close(con)
+  got <- import_sumstats(path)
+  expect_equal(got$chromosome, "Y")
+  expect_equal(got$beta, .2)
+  expect_equal(got$p_value, .01)
+})

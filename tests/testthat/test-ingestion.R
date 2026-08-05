@@ -90,3 +90,52 @@ test_that("a BIM reference can anchor sumstats", {
   expect_equal(nrow(got), 3L)
   expect_true(all(got$harmonisation_status == "aligned"))
 })
+
+test_that("UKB-PPP aliases and chromosome codes are canonicalised", {
+  input <- data.frame(
+    CHROM = c("chr1", "23", "24"), GENPOS = c(101L, 202L, 303L),
+    ID = c("rs101", "rs202", "rs303"),
+    ALLELE0 = c("A", "C", "G"), ALLELE1 = c("C", "G", "T"),
+    BETA = c(.2, -.3, .4), SE = .1, A1FREQ = c(.2, .7, .4),
+    LOG10P = c(2, 3, 4), N = c(1000, 1100, 1200),
+    check.names = FALSE, stringsAsFactors = FALSE
+  )
+  got <- import_sumstats(input)
+  expect_equal(got$chromosome, c("1", "X", "Y"))
+  expect_equal(got$base_pair_location, c(101L, 202L, 303L))
+  expect_equal(got$other_allele, c("A", "C", "G"))
+  expect_equal(got$effect_allele, c("C", "G", "T"))
+  expect_equal(got$p_value, 10^(-input$LOG10P), tolerance = 1e-12)
+  expect_equal(got$sample_size, input$N)
+})
+
+test_that("semicolon-delimited input is detected without changing values", {
+  path <- tempfile(fileext = ".txt")
+  writeLines(c(
+    "chr;pos;effect_allele;other_allele;beta;se;eaf;p",
+    "chr1;100;C;A;0.2;0.1;0.2;0.05"
+  ), path)
+  got <- import_sumstats(path)
+  expect_equal(got$chromosome, "1")
+  expect_equal(got$base_pair_location, 100L)
+  expect_equal(got$beta, .2)
+  expect_equal(got$standard_error, .1)
+})
+
+test_that("structural preflight reports and drops bad rows", {
+  input <- make_fixture(5L)
+  input$base_pair_location[2] <- 248956423L
+  input$chromosome[3] <- "23"
+  input$effect_allele[4] <- "AT"
+  input <- rbind(input, input[1L, , drop = FALSE])
+  result <- preflight_sumstats(input, max_examples = 1L)
+  report <- result$report
+  expect_equal(report$input_rows, 6L)
+  expect_equal(report$rejection_counts[["coordinate_out_of_range"]], 1L)
+  expect_equal(report$rejection_counts[["indel"]], 1L)
+  expect_equal(report$rejection_counts[["duplicate_variant"]], 2L)
+  expect_lte(length(report$examples$coordinate_out_of_range), 1L)
+  expect_equal(report$dropped_rows, 3L)
+  expect_equal(nrow(result$data), 3L)
+  expect_error(preflight_sumstats(input, row_policy = "error"), "structural QC rejected")
+})

@@ -97,6 +97,21 @@ bool requested_has(SEXP requested, const char* target) {
   return false;
 }
 
+double native_scalar_integer(SEXP value, bool allow_zero, const char* label) {
+  if ((TYPEOF(value) != INTSXP && TYPEOF(value) != REALSXP) ||
+      XLENGTH(value) != 1) {
+    throw std::runtime_error(std::string(label) + " must be one integer");
+  }
+  const double number = Rf_asReal(value);
+  if (!R_FINITE(number) || number != std::floor(number) ||
+      (allow_zero ? number < 0.0 : number < 1.0)) {
+    throw std::runtime_error(std::string(label) +
+                             (allow_zero ? " must be non-negative" :
+                                           " must be positive"));
+  }
+  return number;
+}
+
 #ifdef COMPRESSOR_NATIVE_PCODEC
 
 constexpr unsigned char kPcoTypeU8 = 10;
@@ -166,6 +181,10 @@ std::vector<NativePcodecBlock> read_native_blocks(SEXP matrix,
         block.row_stop - block.row_start != block.values || block.row_stop > n) {
       throw std::runtime_error("native Pcodec blocks do not form a contiguous row index");
     }
+    if (has_first_position &&
+        block.first_position > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error("native Pcodec block first position exceeds uint32");
+    }
     expected_row = block.row_stop;
     blocks.push_back(block);
   }
@@ -173,6 +192,21 @@ std::vector<NativePcodecBlock> read_native_blocks(SEXP matrix,
     throw std::runtime_error("native Pcodec blocks do not cover the declared row count");
   }
   return blocks;
+}
+
+void require_block_row_parity(const std::vector<NativePcodecBlock>& left,
+                              const std::vector<NativePcodecBlock>& right,
+                              const char* label) {
+  if (left.size() != right.size()) {
+    throw std::runtime_error(std::string(label) + " block counts differ");
+  }
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    if (left[i].row_start != right[i].row_start ||
+        left[i].row_stop != right[i].row_stop ||
+        left[i].values != right[i].values) {
+      throw std::runtime_error(std::string(label) + " blocks are not row-aligned");
+    }
+  }
 }
 
 std::vector<NativePcodecExceptionBlock> read_native_exception_blocks(SEXP matrix) {
@@ -328,10 +362,20 @@ float native_read_float_le(const std::uint8_t* bytes) {
 
 void native_append_exception_block(
     NativePcodecFile& file, const NativePcodecExceptionBlock& block,
+    const NativePcodecBlock& value_block, std::uint64_t row_count,
+    std::int64_t* previous_row,
     const std::string& codec, std::vector<int>& rows, std::vector<double>& z,
     std::vector<double>& log2se, std::vector<double>& eaf,
     std::vector<int>& flags) {
-  if (block.count == 0) return;
+  if (block.count == 0) {
+    if (block.raw_length != 0 || block.length != 0) {
+      throw std::runtime_error("native Pcodec empty exception block has a payload");
+    }
+    return;
+  }
+  if (block.count > value_block.values) {
+    throw std::runtime_error("native Pcodec exception block has too many records");
+  }
   if (block.count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 17)) {
     throw std::runtime_error("native Pcodec exception block is too large");
   }
@@ -360,9 +404,14 @@ void native_append_exception_block(
     const std::size_t index = static_cast<std::size_t>(i);
     const std::size_t count = static_cast<std::size_t>(block.count);
     const std::uint32_t row = native_read_u32_le(raw.data() + index * 4);
-    if (row > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
+    if (static_cast<std::uint64_t>(row) < value_block.row_start ||
+        static_cast<std::uint64_t>(row) >= value_block.row_stop ||
+        static_cast<std::uint64_t>(row) >= row_count ||
+        (previous_row != nullptr && static_cast<std::int64_t>(row) <= *previous_row) ||
+        row > static_cast<std::uint32_t>(std::numeric_limits<int>::max())) {
       throw std::runtime_error("native Pcodec exception row does not fit R integer");
     }
+    if (previous_row != nullptr) *previous_row = static_cast<std::int64_t>(row);
     rows.push_back(static_cast<int>(row));
     z.push_back(static_cast<double>(native_read_float_le(raw.data() + count * 4 + index * 4)));
     log2se.push_back(static_cast<double>(native_read_float_le(raw.data() + count * 8 + index * 4)));
@@ -419,7 +468,13 @@ extern "C" SEXP compressor_decode_native(
   const int eaf_count_value = Rf_asInteger(eaf_count);
   const double se_residual_min_value = Rf_asReal(se_residual_min);
   const double se_residual_max_value = Rf_asReal(se_residual_max);
-  const int block_rows_value = std::max(1, Rf_asInteger(block_rows));
+  const double block_rows_number = Rf_asReal(block_rows);
+  if (!R_FINITE(block_rows_number) || block_rows_number < 1.0 ||
+      block_rows_number != std::floor(block_rows_number) ||
+      block_rows_number > static_cast<double>(std::numeric_limits<int>::max())) {
+    Rf_error("native decoder block_rows must be a positive integer");
+  }
+  const int block_rows_value = static_cast<int>(block_rows_number);
   if (z_bits_value <= 0 || se_bits_value <= 0 || eaf_bits_value <= 0 ||
       z_count_value <= 0 || se_count_value <= 0 || eaf_count_value <= 0) {
     Rf_error("native decoder metadata contains invalid code domains");
@@ -427,6 +482,12 @@ extern "C" SEXP compressor_decode_native(
   if (!R_FINITE(se_residual_min_value) || !R_FINITE(se_residual_max_value) ||
       se_residual_max_value <= se_residual_min_value) {
     Rf_error("native decoder metadata contains an invalid SE residual range");
+  }
+  const double z_min_value = Rf_asReal(z_min);
+  const double z_max_value = Rf_asReal(z_max);
+  if (!R_FINITE(z_min_value) || !R_FINITE(z_max_value) ||
+      z_max_value <= z_min_value) {
+    Rf_error("native decoder metadata contains an invalid Z range");
   }
   if (z_bits_value > 16 || se_bits_value > 16 || eaf_bits_value > 16) {
     Rf_error("native decoder code domains exceed the supported 16-bit limit");
@@ -438,13 +499,21 @@ extern "C" SEXP compressor_decode_native(
   if (z_width > 65536 || se_width > 65536 || eaf_width > 65536) {
     Rf_error("native decoder code domains are too large");
   }
+  if (static_cast<std::size_t>(z_count_value) + 2 > z_width ||
+      static_cast<std::size_t>(se_count_value) + 2 > se_width ||
+      static_cast<std::size_t>(eaf_count_value) + 1 > eaf_width) {
+    Rf_error("native decoder metadata does not fit its code domains");
+  }
+  if (static_cast<std::size_t>(se_count_value) * eaf_width > 16u * 1024u * 1024u) {
+    Rf_error("native decoder SE lookup table is too large");
+  }
 
   std::vector<double> z_table(z_width, kNaN);
-  const double z_step = (Rf_asReal(z_max) - Rf_asReal(z_min)) /
+  const double z_step = (z_max_value - z_min_value) /
                         static_cast<double>(z_count_value);
   for (int code = 0; code < z_count_value &&
                        static_cast<std::size_t>(code) < z_width; ++code) {
-    z_table[static_cast<std::size_t>(code)] = Rf_asReal(z_min) +
+    z_table[static_cast<std::size_t>(code)] = z_min_value +
       (static_cast<double>(code) + 0.5) * z_step;
   }
   std::vector<double> p_table(z_width, kNaN);
@@ -464,7 +533,7 @@ extern "C" SEXP compressor_decode_native(
                          static_cast<double>(eaf_count_value)) * kPi / 2.0), 2.0);
   }
   const double fallback_eaf = 0.5;
-  std::vector<double> se_table(se_width * eaf_width, kNaN);
+  std::vector<double> se_table(static_cast<std::size_t>(se_count_value) * eaf_width, kNaN);
   for (int se_value = 0; se_value < se_count_value; ++se_value) {
     const double residual = se_residual_min_value +
       (static_cast<double>(se_value) + 0.5) *
@@ -490,6 +559,9 @@ extern "C" SEXP compressor_decode_native(
   // R-facing decoder materially slower than the historical native reader.
   std::vector<double> centre_factors(static_cast<std::size_t>(centre_count));
   for (R_xlen_t i = 0; i < centre_count; ++i) {
+    if (!R_FINITE(centre_values[i])) {
+      Rf_error("native decoder block centres contain a non-finite value");
+    }
     centre_factors[static_cast<std::size_t>(i)] = std::exp2(centre_values[i]);
   }
 
@@ -570,12 +642,16 @@ extern "C" SEXP compressor_decode_native(
   const int* exception_flag_values = INTEGER(exception_flags);
   for (R_xlen_t i = 0; i < exception_count; ++i) {
     const int row = exception_rows[i];
+    const int flags = exception_flag_values[i];
+    if (flags <= 0 || (flags & ~7) != 0) {
+      Rf_error("native decoder exception flags are invalid");
+    }
     if (row < 0 || static_cast<R_xlen_t>(row) >= n) continue;
-    if (exception_flag_values[i] & 1) z_out[row] = exception_z_values[i];
-    if (exception_flag_values[i] & 2) se_out[row] = exception_se_values[i];
-    if (exception_flag_values[i] & 4) eaf_out[row] = exception_eaf_values[i];
+    if (flags & 1) z_out[row] = exception_z_values[i];
+    if (flags & 2) se_out[row] = exception_se_values[i];
+    if (flags & 4) eaf_out[row] = exception_eaf_values[i];
     if (want_beta) beta_out[row] = z_out[row] * se_out[row];
-    if (want_p && (exception_flag_values[i] & 1)) {
+    if (want_p && (flags & 1)) {
       p_out[row] = std::erfc(std::abs(z_out[row]) * kInvSqrtTwo);
     }
   }
@@ -623,18 +699,18 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         XLENGTH(exception_codec) != 1 || STRING_ELT(exception_codec, 0) == NA_STRING) {
       throw std::runtime_error("malformed arguments to native Pcodec stream reader");
     }
-    const double row_count_value = Rf_asReal(row_count);
-    if (!R_FINITE(row_count_value) || row_count_value < 0.0 ||
-        row_count_value != std::floor(row_count_value) ||
-        row_count_value > static_cast<double>(std::numeric_limits<R_xlen_t>::max())) {
+    const double row_count_value = native_scalar_integer(
+      row_count, true, "native Pcodec row count");
+    if (row_count_value > static_cast<double>(std::numeric_limits<R_xlen_t>::max())) {
       throw std::runtime_error("native Pcodec row count is invalid");
     }
     const R_xlen_t n = static_cast<R_xlen_t>(row_count_value);
-    const int thread_value = Rf_asInteger(threads);
-    if (thread_value == NA_INTEGER || thread_value < 1) {
-      throw std::runtime_error("native Pcodec thread count must be positive");
+    const double thread_number = native_scalar_integer(
+      threads, false, "native Pcodec thread count");
+    if (thread_number >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
+      throw std::runtime_error("native Pcodec thread count is too large");
     }
-    const std::size_t requested_threads = static_cast<std::size_t>(thread_value);
+    const std::size_t requested_threads = static_cast<std::size_t>(thread_number);
     const bool need_position = requested_has(streams, "position");
     const bool need_substitution = requested_has(streams, "substitution");
     const bool need_z = requested_has(streams, "z");
@@ -654,6 +730,12 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
       se_blocks, static_cast<R_xlen_t>(n), false);
     std::vector<NativePcodecExceptionBlock> exceptions =
       read_native_exception_blocks(exception_blocks);
+    require_block_row_parity(positions, substitutions,
+                             "native key stream");
+    require_block_row_parity(z_values, eaf_values,
+                             "native value stream");
+    require_block_row_parity(z_values, se_values,
+                             "native value stream");
     if (need_numeric && exceptions.size() != z_values.size()) {
       throw std::runtime_error("native Pcodec exception index does not match value blocks");
     }
@@ -695,12 +777,17 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 0, "position"), positions, kPcoTypeU32,
         requested_threads, gaps);
       for (const NativePcodecBlock& block : positions) {
+        if (block.values == 0 || gaps[static_cast<std::size_t>(block.row_start)] != 0) {
+          throw std::runtime_error("native Pcodec position block does not reset its delta");
+        }
         std::uint64_t current = block.first_position;
         for (std::uint64_t i = 0; i < block.values; ++i) {
-          current += gaps[static_cast<std::size_t>(block.row_start + i)];
-          if (current > std::numeric_limits<std::uint32_t>::max()) {
+          const std::uint64_t gap =
+            gaps[static_cast<std::size_t>(block.row_start + i)];
+          if (current > std::numeric_limits<std::uint32_t>::max() - gap) {
             throw std::runtime_error("native Pcodec position exceeds uint32");
           }
+          current += gap;
           REAL(position)[block.row_start + i] = static_cast<double>(current);
         }
       }
@@ -711,7 +798,10 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 1, "substitution"), substitutions, kPcoTypeU8,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
-        if (codes[row] > 15) throw std::runtime_error("native Pcodec substitution code is invalid");
+        const int code = static_cast<int>(codes[row]);
+        if (code > 15 || (code >> 2) == (code & 3)) {
+          throw std::runtime_error("native Pcodec substitution code is invalid");
+        }
         INTEGER(substitution)[row] = static_cast<int>(codes[row]);
       }
     }
@@ -722,6 +812,9 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 2, "z"), z_values, kPcoTypeU16,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
+        if (codes[row] > 511) {
+          throw std::runtime_error("native Pcodec Z code is outside its domain");
+        }
         INTEGER(z)[row] = static_cast<int>(codes[row]);
       }
     }
@@ -731,6 +824,9 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 4, "SE"), se_values, kPcoTypeU8,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
+        if (codes[row] > 255) {
+          throw std::runtime_error("native Pcodec SE code is outside its domain");
+        }
         INTEGER(se)[row] = static_cast<int>(codes[row]);
       }
     }
@@ -740,6 +836,9 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 3, "EAF"), eaf_values, kPcoTypeU8,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
+        if (codes[row] > 255) {
+          throw std::runtime_error("native Pcodec EAF code is outside its domain");
+        }
         INTEGER(eaf)[row] = static_cast<int>(codes[row]);
       }
     }
@@ -751,8 +850,10 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
     std::vector<int> exception_flags;
     if (need_numeric) {
       const std::string codec = CHAR(STRING_ELT(exception_codec, 0));
-      for (const NativePcodecExceptionBlock& block : exceptions) {
-        native_append_exception_block(*exception_file, block, codec,
+      std::int64_t previous_row = -1;
+      for (std::size_t block_id = 0; block_id < exceptions.size(); ++block_id) {
+        native_append_exception_block(*exception_file, exceptions[block_id],
+          z_values[block_id], static_cast<std::uint64_t>(n), &previous_row, codec,
           exception_rows, exception_z, exception_log2se, exception_eaf,
           exception_flags);
       }
