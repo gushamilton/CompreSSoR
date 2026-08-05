@@ -137,6 +137,36 @@ store <- compress_sumstats(
 The reference is an ingestion dependency. The completed `.cpr` store carries
 its own identity and does not need the reference beside it for reading.
 
+### Reference provenance
+
+The canonical reference used by `reference = "GRCh38"` is built from the
+Ensembl 95 human GRCh38 variation VCFs, one chromosome file at a time, from
+the [Ensembl release-95 variation VCF directory](https://ftp.ensembl.org/pub/release-95/variation/vcf/homo_sapiens/).
+Materialise those inputs with `build_ebi_reference()` and point
+`COMPRESSOR_CANONICAL_REFERENCE` at the resulting partitioned dictionary.
+The dictionary manifest records the source release, source-file checksums,
+canonical-key definition, build, and dataset checksum. The default descriptor
+does not silently download a reference.
+
+For GRCh37/hg19 summary statistics, use the UCSC
+[`hg19ToHg38.over.chain.gz`](https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz)
+chain file locally, for example:
+
+```r
+store <- compress_sumstats(
+  "gwas.tsv.gz", "gwas.cpr", reference = "GRCh38", mode = "qc",
+  input_build = "GRCh37",
+  chain = "/data/reference/hg19ToHg38.over.chain.gz",
+  overwrite = TRUE
+)
+```
+
+Liftover currently supports GRCh37/hg19 to GRCh38/hg38 only. It requires
+`rtracklayer`, accepts the caller-supplied chain path, reverse-complements
+alleles for reverse-strand mappings, and records unmapped, multi-mapped, and
+non-primary-target rows in the harmonisation diagnostics. It does not fetch or
+silently substitute a chain file.
+
 For a core-plus store, harmonise first and then select the canonical core panel
 plus a 50 kb window around variants with derived `p < 1e-5`:
 
