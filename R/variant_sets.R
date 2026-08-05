@@ -204,6 +204,14 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
       if (length(hits)) path <- hits[[1L]]
     }
   }
+  bundled <- FALSE
+  if (!nzchar(path)) {
+    bundled_path <- bundled_variant_panel_path(name)
+    if (nzchar(bundled_path)) {
+      path <- bundled_path
+      bundled <- TRUE
+    }
+  }
   if (!nzchar(path)) {
     stop("variant_set='", name, "' needs ", env_var,
          " (or COMPRESSOR_VARIANT_SET_DIR with a named panel file)", call. = FALSE)
@@ -224,7 +232,7 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
   manifest <- variant_set_manifest(path)
   declared <- variant_set_declared_sha256(path, name = name, manifest = manifest)
   if (is.na(expected)) expected <- declared
-  if (name %in% c("core", "hm3") && is.na(expected)) {
+  if (name %in% c("core", "hm3") && is.na(expected) && !bundled) {
     stop("named ", name, " panel is not hash-pinned; set ",
          variant_set_hash_environment_names(name)[[1L]],
          " or provide name@sha256:<digest>", call. = FALSE)
@@ -238,6 +246,7 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
        env_var = env_var, expected_sha256 = expected,
        sha256 = verification$sha256 %||% declared,
        hash_pinned = !is.na(expected), hash_verified = isTRUE(verification$verified),
+       bundled = bundled,
        digest_target = verification$target, source_url = source_url,
        cache_dir = if (cached) variant_set_cache_dir(cache_dir) else NULL,
        cache_hit = if (cached) cached else NULL)
@@ -401,7 +410,19 @@ read_variant_set <- function(variant_set, chromosomes = NULL, build = "GRCh38") 
       stop("variant_set must be a data.frame, panel file, or chromosome-shard directory",
            call. = FALSE)
     }
-    if (dir.exists(variant_set) && file.exists(file.path(variant_set, "manifest.json"))) {
+    if (dir.exists(variant_set) && is_variant_panel_path(variant_set)) {
+      panel_name <- named$name %||% "core"
+      out <- read_variant_panel(
+        variant_set, chromosomes = chromosomes,
+        hm3_only = identical(panel_name, "hm3")
+      )
+      metadata <- attr(out, "variant_set_metadata") %||% list()
+      metadata$name <- panel_name
+      metadata$requested <- named$requested %||% NULL
+      metadata$bundled <- isTRUE(named$bundled) || is.null(named)
+      attr(out, "variant_set_metadata") <- metadata
+      return(out)
+    } else if (dir.exists(variant_set) && file.exists(file.path(variant_set, "manifest.json"))) {
       store <- open_compressor(variant_set)
       build <- compressor_normalize_build(store$manifest$genome_build %||% build)
       out <- read_sumstats(store, columns = c("chromosome", "base_pair_location",

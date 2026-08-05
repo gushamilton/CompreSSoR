@@ -80,6 +80,27 @@ This is intentionally a core numerical format. Exact or arbitrary extra
 columns can use the Parquet backend; see
 [the technical guide](docs/README-technical.md).
 
+### Bundled core/HM3 variant panel
+
+The package also bundles one compact native Pcodec panel at
+`inst/extdata/panels/core_hm3.cpr`. It is one canonical, sorted GRCh38 list of
+6,271,256 frozen core variants. Core membership is implicit by row membership;
+the only additional logical column is the lossless `hm3` flag (`1`/`0`). The
+bundled store is 11,081,115 bytes across its payload, index, manifest, and
+checksum files. It is not a reference genome, harmonisation resource, or
+liftover chain.
+
+The bundled panel is used automatically by `selection = "core"` and
+`selection = "hm3"` without environment variables. `read_variant_panel()`
+provides panel access, while `read_variant_set("core")` and
+`read_variant_set("hm3")` preserve the existing selection API. The panel
+contains 1,199,729 HM3-positive rows within the core universe; 13,236 rows in
+the HM3 source fall outside that universe and therefore have no row in the
+combined panel.
+
+The frozen source hashes and exact output layout are documented in
+[`docs/variant-panels.md`](docs/variant-panels.md).
+
 ## Install
 
 The native backend builds Pcodec through a small Rust-to-R C ABI. Install Rust
