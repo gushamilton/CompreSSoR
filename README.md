@@ -137,6 +137,24 @@ store <- compress_sumstats(
 The reference is an ingestion dependency. The completed `.cpr` store carries
 its own identity and does not need the reference beside it for reading.
 
+For a core-plus store, harmonise first and then select the canonical core panel
+plus a 50 kb window around variants with derived `p < 1e-5`:
+
+```r
+harmonised <- harmonise_sumstats(
+  "gwas.tsv.gz", reference = "GRCh38", mode = "qc", chrom_threads = 4
+)
+store <- compress_sumstats(
+  harmonised, "gwas-core-plus.cpr", reference = NULL,
+  mode = "core_plus", variant_set = "/data/panels/core_by_chrom",
+  overwrite = TRUE
+)
+```
+
+The selection is deterministic, recorded in the manifest, and accompanied by a
+small region sidecar. See [the panel preparation guide](docs/variant-panels.md)
+for reproducing the canonical core/HM3 inputs and chromosome shards.
+
 ## Reading and FastMR
 
 ```r

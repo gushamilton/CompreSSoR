@@ -239,7 +239,7 @@ read_reference_vcf_source <- function(source) {
   # the reference, while leaving the full sum-statistics VCF reader unchanged.
   source <- normalizePath(source, mustWork = TRUE)
   command <- if (grepl("[.]gz$", source, ignore.case = TRUE)) {
-    paste("gzip -dc", shQuote(source), "| grep -v '^##'")
+    paste(compressed_read_command(source), "| grep -v '^##'")
   } else {
     paste("grep -v '^##'", shQuote(source))
   }
@@ -263,7 +263,7 @@ read_reference_source <- function(source) {
                                "base_pair_location", "reference_allele", "alternate_allele"),
                  showProgress = FALSE)
     if (grepl("[.]gz$", source, ignore.case = TRUE)) {
-      args$cmd <- paste("gzip -dc", shQuote(normalizePath(source)))
+      args$cmd <- compressed_read_command(source)
     } else {
       args$input <- source
     }
@@ -278,13 +278,13 @@ read_reference_source <- function(source) {
                                data.table = FALSE, showProgress = FALSE, check.names = FALSE))
     }
     if (grepl("[.]gz$", source, ignore.case = TRUE)) {
-      return(data.table::fread(cmd = paste("gzip -dc", shQuote(normalizePath(source))),
+      return(data.table::fread(cmd = compressed_read_command(source),
                                data.table = FALSE, showProgress = FALSE, check.names = FALSE))
     }
     return(data.table::fread(source, data.table = FALSE, showProgress = FALSE, check.names = FALSE))
   }
   if (grepl("[.]gz$", source, ignore.case = TRUE)) {
-    return(data.table::fread(cmd = paste("gzip -dc", shQuote(normalizePath(source))),
+    return(data.table::fread(cmd = compressed_read_command(source),
                              data.table = FALSE, showProgress = FALSE))
   }
   data.table::fread(source, data.table = FALSE, showProgress = FALSE)

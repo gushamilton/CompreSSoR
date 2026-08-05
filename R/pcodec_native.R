@@ -351,11 +351,45 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   )
   jsonlite::write_json(index, file.path(output, "native.index.json"),
                        auto_unbox = TRUE, pretty = TRUE, digits = 17)
+  selection <- metadata$selection %||% NULL
+  selection_file <- NULL
+  selection_manifest <- NULL
+  if (!is.null(selection)) {
+    regions <- selection$regions_table
+    if (!is.data.frame(regions)) {
+      stop("selection region table is missing or malformed", call. = FALSE)
+    }
+    selection_file <- if (identical(selection$tag %||% "core", "core_plus")) {
+      "core_plus_regions.json"
+    } else {
+      "core_regions.json"
+    }
+    payload <- list(
+      format = "CompreSSoR-core-regions",
+      version = 1L,
+      tag = selection$tag %||% "core",
+      method = selection$method %||% "pvalue_regions",
+      pvalue_threshold = selection$pvalue_threshold,
+      padding_bp = selection$padding_bp,
+      regions = lapply(seq_len(nrow(regions)), function(index) {
+        list(chromosome = as.character(regions$chromosome[[index]]),
+             start = as.integer(regions$start[[index]]),
+             end = as.integer(regions$end[[index]]),
+             seed_snps = as.integer(regions$seed_snps[[index]]))
+      })
+    )
+    jsonlite::write_json(payload, file.path(output, selection_file),
+                         auto_unbox = TRUE, pretty = FALSE, digits = 17)
+    selection_manifest <- selection
+    selection_manifest$regions_table <- NULL
+    selection_manifest$file <- selection_file
+  }
   files <- list(
     position = "position.pco", substitution = "substitution.pco",
     z = "z.pco", eaf = "eaf.pco", se = "se.pco",
     exceptions = "exceptions.bin", index = "native.index.json"
   )
+  if (!is.null(selection_file)) files$selection_regions <- selection_file
   chromosomes <- compressor_grch38_chromosome_lengths
   offsets <- pcodec_native_offsets()
   manifest <- list(
@@ -406,9 +440,14 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     reference = metadata$reference %||% list(id = "none", build = "GRCh38",
                                              status = "identity key is self-contained"),
     harmonisation = metadata$harmonisation %||% list(method = "not recorded"),
+    selection = selection_manifest,
     source_columns = metadata$source_columns %||% names(data),
     source = metadata$source %||% NULL,
-    metadata = metadata
+    metadata = {
+      manifest_metadata <- metadata
+      manifest_metadata$selection <- selection_manifest
+      manifest_metadata
+    }
   )
   manifest$integrity <- list(
     algorithm = "sha256",

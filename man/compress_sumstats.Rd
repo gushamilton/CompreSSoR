@@ -10,11 +10,13 @@ compress_sumstats(input, output, reference = "GRCh38",
                   profile = c("standard", "exact"), overwrite = FALSE,
                   cache = FALSE, strict = FALSE, keep_extras = FALSE,
                   block_rows = 65536L,
-                  mode = c("qc", "convert", "all", "core", "hm3"),
+                  mode = c("qc", "convert", "all", "core", "hm3",
+                            "pvalue_regions", "core_plus"),
                   variant_set = NULL, chrom_threads = 1L,
                   drop_unresolved = TRUE, input_build = "GRCh38", chain = NULL,
                   backend = c("pcodec", "parquet"),
-                  assume_grch38_ref_alt = FALSE)
+                  assume_grch38_ref_alt = FALSE, pvalue_threshold = 1e-05,
+                  region_padding = 50000L)
 }
 \arguments{
   \item{input}{A data frame or a delimited summary-statistics file.}
@@ -43,6 +45,10 @@ compress_sumstats(input, output, reference = "GRCh38",
   \item{input_build}{Build of the incoming summary statistics. Non-GRCh38
     input requires \code{chain}.}
   \item{chain}{Optional GRCh37-to-GRCh38 chain file for liftover.}
+  \item{pvalue_threshold}{Strict p-value threshold for p-value region or
+    core-plus selection; p-values are derived from canonical Z.}
+  \item{region_padding}{Base pairs added on each side of significant SNPs for
+    p-value region or core-plus selection.}
   \item{keep_extras}{Whether arbitrary non-core input columns should be kept
     in an extras sidecar. The default is \code{FALSE}; harmonisation/QC
     summaries remain in the manifest, while row-wise QC labels are retained
@@ -50,14 +56,11 @@ compress_sumstats(input, output, reference = "GRCh38",
   \item{block_rows}{Rows per Parquet write chunk; Pcodec uses its measured
     fixed key and value frame sizes.}
   \item{mode}{One of \code{"qc"} (default), \code{"convert"}, \code{"all"},
-    \code{"core"}, or \code{"hm3"}.}
-  \item{variant_set}{An optional panel data frame or file usable with any
-    mode. In \code{mode = "convert"}, it filters by the existing canonical
-    GRCh38 identity without reference harmonisation. Named \code{"common"}
-    and \code{"tag"} values resolve through
-    \code{COMPRESSOR_COMMON_VARIANTS} and \code{COMPRESSOR_TAG_VARIANTS}.
-    PLINK \code{.bim}, Parquet, delimited files, and native Pcodec stores are
-    supported.}
+    \code{"core"}, \code{"hm3"}, \code{"pvalue_regions"}, or
+    \code{"core_plus"}.}
+  \item{variant_set}{An optional panel data frame, file, or chromosome-shard
+    directory. In \code{mode = "core_plus"}, it is unioned with the padded
+    p-value regions after harmonisation.}
   \item{chrom_threads}{Number of chromosome workers for harmonisation.}
 }
 \value{A \code{compressor_store} object.}

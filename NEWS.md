@@ -71,3 +71,10 @@ Initial standalone package release candidate.
 - Supports common delimited, gzipped, VCF/VCF.gz and BIM panel inputs.
 - Adds exact/lossy/cache round-trip tests and real FinnGen release-gate
   benchmarks run on the Mac mini.
+- Adds optional post-harmonisation `mode = "core_plus"`: the configured core
+  panel is stored together with variants within a configurable window of
+  canonical `p < 1e-5` signals. `mode = "pvalue_regions"` remains available for
+  p-value-only selection.
+- Adds deterministic chromosome-sharded core/HM3 panel preparation and fast
+  identity-only reads, including optional `pigz` decompression through
+  `COMPRESSOR_DECOMPRESSOR`.

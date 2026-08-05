@@ -39,6 +39,14 @@ strict_fread <- function(...) {
   result
 }
 
+compressed_read_command <- function(path) {
+  path <- normalizePath(path, mustWork = TRUE)
+  decompressor <- Sys.getenv("COMPRESSOR_DECOMPRESSOR", unset = "")
+  if (!nzchar(decompressor)) decompressor <- unname(Sys.which("pigz"))
+  if (length(decompressor) != 1L || !nzchar(decompressor)) decompressor <- "gzip"
+  paste(shQuote(decompressor), "-dc", shQuote(path))
+}
+
 numeric_missing <- function(x) {
   text <- trimws(as.character(x))
   is.na(x) | is.na(text) | !nzchar(text) |
@@ -158,7 +166,7 @@ parse_vcf_format <- function(format, sample) {
 
 read_vcf_input <- function(input) {
   if (grepl("[.](?:gz|bgz)$", input, ignore.case = TRUE) && .Platform$OS.type != "windows") {
-    command <- paste("gzip -dc", shQuote(normalizePath(input, mustWork = TRUE)))
+    command <- compressed_read_command(input)
     data <- strict_fread(cmd = command, skip = "#CHROM", data.table = FALSE,
                          showProgress = FALSE, check.names = FALSE)
   } else if (grepl("[.](?:gz|bgz)$", input, ignore.case = TRUE)) {
@@ -288,7 +296,7 @@ read_sumstats_input <- function(input) {
     if (.Platform$OS.type == "windows") {
       stop("could not read compressed delimited input with data.table::fread", call. = FALSE)
     }
-    command <- paste("gzip -dc", shQuote(normalizePath(input)))
+    command <- compressed_read_command(input)
     return(clean_input_names(strict_fread(cmd = command, data.table = FALSE, showProgress = FALSE)))
   }
   clean_input_names(strict_fread(input, data.table = FALSE, showProgress = FALSE))

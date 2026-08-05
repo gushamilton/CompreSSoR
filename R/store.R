@@ -1,3 +1,35 @@
+write_selection_regions <- function(output, selection) {
+  if (is.null(selection)) return(NULL)
+  regions <- selection$regions_table
+  if (!is.data.frame(regions)) {
+    stop("selection region table is missing or malformed", call. = FALSE)
+  }
+  file_name <- if (identical(selection$tag %||% "core", "core_plus")) {
+    "core_plus_regions.json"
+  } else {
+    "core_regions.json"
+  }
+  payload <- list(
+    format = "CompreSSoR-core-regions",
+    version = 1L,
+    tag = selection$tag %||% "core",
+    method = selection$method %||% "pvalue_regions",
+    pvalue_threshold = selection$pvalue_threshold,
+    padding_bp = selection$padding_bp,
+    regions = lapply(seq_len(nrow(regions)), function(index) {
+      list(chromosome = as.character(regions$chromosome[[index]]),
+           start = as.integer(regions$start[[index]]),
+           end = as.integer(regions$end[[index]]),
+           seed_snps = as.integer(regions$seed_snps[[index]]))
+    })
+  )
+  jsonlite::write_json(payload, file.path(output, file_name),
+                       auto_unbox = TRUE, pretty = FALSE, digits = 17)
+  selection$regions_table <- NULL
+  selection$file <- file_name
+  selection
+}
+
 #' Write a CompreSSoR store
 #'
 #' @param input A data.frame or a delimited summary-statistics file.
@@ -7,19 +39,22 @@
 #'   skip reference alignment.
 #' @param mode One of `"qc"` (default, harmonise and drop unresolved rows),
 #'   `"convert"` (minimal conversion without reference QC), `"all"` (alias
-#'   for `"qc"`), `"core"`, or `"hm3"`.
-#' @param variant_set Optional panel data.frame or file. It can be used with
-#'   any mode: in `mode = "convert"` it filters by the input's existing
-#'   GRCh38 identity without invoking reference harmonisation. Named values
-#'   `"common"` and `"tag"` resolve to `COMPRESSOR_COMMON_VARIANTS` and
-#'   `COMPRESSOR_TAG_VARIANTS`; PLINK `.bim`, compressed Parquet and native
-#'   Pcodec variant stores are supported.
+#'   for `"qc"`), `"core"`, `"hm3"`, `"pvalue_regions"`, or `"core_plus"`.
+#' @param variant_set Optional panel data.frame, file, or chromosome-shard
+#'   directory. In `mode = "core_plus"`, the harmonised core panel is unioned
+#'   with variants within the padded significant regions before compression.
+#'   Staged `*_by_chrom` directories are filtered to chromosomes present after
+#'   harmonisation.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, duplicated, or unsupported by the selected backend.
 #' @param drop_unresolved Whether unmatched, incompatible, ambiguous and
 #'   duplicate rows are dropped. The default is `TRUE`.
 #' @param input_build Build of the input. Non-GRCh38 input requires `chain`.
 #' @param chain Optional GRCh37-to-GRCh38 chain file.
+#' @param pvalue_threshold Strict p-value threshold for `mode = "pvalue_regions"`
+#'   or `mode = "core_plus"`; p-values are derived from canonical Z.
+#' @param region_padding Number of base pairs added on each side of significant
+#'   SNPs for `mode = "pvalue_regions"` or `mode = "core_plus"`.
 #' @param chrom_threads Number of chromosome workers for harmonisation. Values
 #'   above one use chromosome-parallel harmonisation and share the reference.
 #' @param profile `"standard"` uses semantic Z9/EAF8/SE8 streams with sparse
@@ -56,12 +91,14 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
                               overwrite = FALSE, cache = FALSE, strict = FALSE,
                               keep_extras = FALSE,
                               block_rows = 65536L,
-                              mode = c("qc", "convert", "all", "core", "hm3"),
+                              mode = c("qc", "convert", "all", "core", "hm3", "pvalue_regions", "core_plus"),
                               variant_set = NULL, chrom_threads = 1L,
                               drop_unresolved = TRUE,
                               input_build = "GRCh38", chain = NULL,
                               backend = c("pcodec", "parquet"),
-                              assume_grch38_ref_alt = FALSE) {
+                              assume_grch38_ref_alt = FALSE,
+                              pvalue_threshold = 1e-5,
+                              region_padding = 50000L) {
   profile <- match.arg(profile)
   backend <- match.arg(backend)
   mode <- match.arg(mode)
@@ -87,13 +124,27 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
   }, add = TRUE)
   output <- transaction$staging
 
+  pre_harmonised <- is.null(reference) &&
+    isTRUE(attr(input, "compressor_identity_verified"))
+  inherited_alignment <- if (pre_harmonised) {
+    list(
+      reference_hash = attr(input, "reference_hash"),
+      reference_rows = attr(input, "reference_rows"),
+      reference_metadata = attr(input, "reference_metadata"),
+      alignment_stats = attr(input, "alignment_stats"),
+      genome_build = attr(input, "genome_build")
+    )
+  } else {
+    NULL
+  }
   raw <- import_sumstats(input)
   source_keys <- alias_key(attr(raw, "source_columns") %||% character())
   explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt")) ||
+    isTRUE(attr(input, "compressor_identity_verified")) ||
     (any(source_keys %in% c("ref", "referenceallele")) &&
     any(source_keys %in% c("alt", "alternateallele"))
     )
-  if (identical(backend, "pcodec") && identical(mode, "convert") &&
+  if (identical(backend, "pcodec") && mode %in% c("convert", "pvalue_regions") &&
       !isTRUE(assume_grch38_ref_alt) && !explicit_ref_alt) {
     stop("Pcodec mode='convert' needs explicit REF/ALT columns or assume_grch38_ref_alt=TRUE; ordinary effect/other alleles do not prove REF/ALT orientation",
          call. = FALSE)
@@ -101,7 +152,11 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
   prepared <- prepare_sumstats_data(raw, reference, mode = mode, variant_set = variant_set,
                                     strict = strict, chrom_threads = chrom_threads,
                                     drop_unresolved = drop_unresolved,
-                                    input_build = input_build, chain = chain)
+                                    input_build = input_build, chain = chain,
+                                    pvalue_threshold = pvalue_threshold,
+                                    region_padding = region_padding,
+                                    pre_harmonised = pre_harmonised,
+                                    inherited_alignment = inherited_alignment)
   alignment <- prepared$alignment
   data <- prepared$data
   reference_index <- if (".compressor_reference_index" %in% names(data)) {
@@ -110,6 +165,7 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
     NULL
   }
   data$.compressor_reference_index <- NULL
+  selection <- prepared$selection
   validate_sumstats_values(data, require_identity = identical(backend, "pcodec") || isTRUE(drop_unresolved))
   if (identical(backend, "pcodec")) {
     if (!identical(profile, "standard")) {
@@ -163,7 +219,8 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
       genome_build = "GRCh38",
       reference = reference_metadata,
       harmonisation = list(
-        method = if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
+        method = if (pre_harmonised) "pre_harmonised" else
+          if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
         mode = prepared$requested_mode,
         chrom_threads = as.integer(chrom_threads),
         strict = isTRUE(strict),
@@ -173,7 +230,8 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
         alignment = alignment$alignment_stats
       ),
       source_columns = attr(raw, "source_columns") %||% names(raw),
-      source = attr(raw, "source_provenance") %||% NULL
+      source = attr(raw, "source_provenance") %||% NULL,
+      selection = selection
     )
     pcodec_write_store(data, output, metadata = pcodec_metadata)
     commit_store_output(transaction)
@@ -182,6 +240,11 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
   }
 
   n <- nrow(data)
+  if (!is.null(selection)) {
+    selection$kept_rows <- as.integer(n)
+    selection$dropped_rows <- as.integer(selection$input_rows - n)
+    selection <- write_selection_regions(output, selection)
+  }
 
   variant_names <- intersect(c("row", "chromosome", "base_pair_location", "effect_allele",
                                "other_allele", "variant_id", "rsid"), names(data))
@@ -201,7 +264,8 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
                  nzchar(as.character(reference_metadata[[field]])), logical(1)))
   reference_indexed <- !is.null(reference_index) && reusable_reference
   files <- list(variants = "variants.parquet", values = "values.parquet",
-                exceptions = NULL, unmatched = NULL, extras = NULL)
+                exceptions = NULL, unmatched = NULL, extras = NULL,
+                selection_regions = if (is.null(selection)) NULL else selection$file)
   if (reference_indexed) {
     index_table <- data.frame(
       row = seq_len(n) - 1L,
@@ -286,7 +350,8 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
     genome_build = prepared$genome_build,
     reference = reference_manifest,
     harmonisation = list(
-      method = if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
+      method = if (pre_harmonised) "pre_harmonised" else
+        if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
       mode = prepared$requested_mode,
       chrom_threads = as.integer(chrom_threads),
       strict = isTRUE(strict),
@@ -307,6 +372,7 @@ compress_sumstats <- function(input, output, reference = "GRCh38",
     variant_identity = list(
       rsid = if ("rsid" %in% variant_names) "stored" else "derived_from_variant_id"
     ),
+    selection = selection,
     files = files,
     benchmark = benchmark_metadata(),
     benchmark_comparisons = list(
