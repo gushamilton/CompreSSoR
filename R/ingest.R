@@ -39,6 +39,8 @@ import_sumstats_impl <- function(input, strict = FALSE,
                                  core_only = FALSE,
                                  allow_p_to_se = FALSE,
                                  run_qc = TRUE,
+                                 prepared_core = FALSE,
+                                 construct_variant_id = TRUE,
                                  qc_detail = c("full", "compact")) {
   if (length(strict) != 1L || !is.logical(strict) || is.na(strict)) {
     stop("strict must be TRUE or FALSE", call. = FALSE)
@@ -86,10 +88,15 @@ import_sumstats_impl <- function(input, strict = FALSE,
     )
   }
   normalise_started <- phase_clock()
-  out <- normalise_sumstats_columns(
-    raw, parse_policy = if (identical(row_policy, "error")) "error" else "report",
-    allow_p_to_se = allow_p_to_se
-  )
+  out <- if (isTRUE(prepared_core)) {
+    normalise_prepared_core_columns(raw, input_build = input_build)
+  } else {
+    normalise_sumstats_columns(
+      raw, parse_policy = if (identical(row_policy, "error")) "error" else "report",
+      allow_p_to_se = allow_p_to_se,
+      construct_variant_id = construct_variant_id
+    )
+  }
   normalise_seconds <- phase_seconds(normalise_started)
   provenance$resolution <- attr(out, "resolution_provenance") %||%
     sumstats_resolution_contract(allow_p_to_se = allow_p_to_se)

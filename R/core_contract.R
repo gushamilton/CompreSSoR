@@ -73,10 +73,28 @@ validate_core_orientation <- function(data, row_policy = c("error", "report")) {
   data
 }
 
-canonicalize_core_identity <- function(data, build) {
-  data$variant_id <- compressor_variant_key(
+canonicalize_core_identity <- function(data, build, include_variant_id = TRUE) {
+  build <- compressor_normalize_build(build)
+  identity <- compressor_encode_variant_identity(
     data$chromosome, data$base_pair_location,
     data$reference_allele, data$alternate_allele, build = build
+  )
+  data$chromosome <- identity$chromosome
+  data$base_pair_location <- identity$position
+  data$reference_allele <- identity$reference_allele
+  data$alternate_allele <- identity$alternate_allele
+  data$effect_allele <- identity$alternate_allele
+  data$other_allele <- identity$reference_allele
+  if (isTRUE(include_variant_id)) {
+    data$variant_id <- compressor_variant_key(
+      identity$chromosome, identity$position,
+      identity$reference_allele, identity$alternate_allele, build = build
+    )
+  }
+  attr(data, "compressor_identity") <- list(
+    global_position = identity$global_position,
+    substitution = identity$substitution,
+    code = compressor_identity_code(identity$global_position, identity$substitution)
   )
   attr(data, "genome_build") <- build
   attr(data, "compressor_identity_verified") <- TRUE
@@ -93,6 +111,12 @@ prepare_core_sumstats_data <- function(raw, selection = "full", variant_set = NU
     build = build
   )
   data <- selected$data
+  identity <- attr(raw, "compressor_identity")
+  if (is.list(identity) && length(identity$code) == nrow(raw) &&
+      length(selected$keep) == nrow(raw)) {
+    identity <- lapply(identity, function(values) values[selected$keep])
+    attr(data, "compressor_identity") <- identity
+  }
   selection_metadata <- selected$metadata %||% list()
   selection_result <- NULL
   if (selection %in% c("pvalue_regions", "core_plus")) {
@@ -112,7 +136,8 @@ prepare_core_sumstats_data <- function(raw, selection = "full", variant_set = NU
   list(
     data = data,
     preparation = preparation_stats,
-    selection = selection_result, selection_result = selected,
+    selection = selection_result, selection_metadata = selection_metadata,
+    selection_result = selected,
     genome_build = build
   )
 }

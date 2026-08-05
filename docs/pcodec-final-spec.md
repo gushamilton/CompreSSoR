@@ -10,11 +10,25 @@ must not be used to make new performance or storage claims.
 ## Contract
 
 `compress_sumstats()` writes a block-indexed, self-contained Pcodec store with
-the standard semantic profile. The normal path is:
+the standard semantic profile. The normal prepared-input path is:
 
 ```text
-sumstats → import/QC/harmonise/liftover → keyed Pcodec store
+prepared sumstats → compact structural QC → keyed Pcodec store
 ```
+
+Two ingestion modes are part of the current API:
+
+- `qc = "compact"` (default) applies structural QC, duplicate handling, and
+  aggregate reporting before encoding.
+- `qc = "none"` is an explicit fast path for already-canonical prepared
+  input. It skips structural QC, duplicate scans, row-level reports, alias
+  resolution, and temporary variant-ID construction. The exact canonical
+  columns remain mandatory, and build-aware identity encoding plus native
+  codec checks still fail closed. The manifest records the bypass under
+  `qc.mode`, `qc.structural_qc`, and `preparation.qc`.
+
+Neither mode performs harmonisation or liftover. Those transformations and
+their reference/chain provenance belong to an upstream preparation workflow.
 
 The storage reference is GRCh38. A GRCh37 input therefore needs a
 GRCh37-to-GRCh38 chain during ingestion. Once written, the store does not

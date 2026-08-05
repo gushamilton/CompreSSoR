@@ -181,6 +181,35 @@ store <- compress_sumstats(
 )
 ```
 
+### Two compression modes
+
+The default `qc = "compact"` path applies structural QC, rejects or reports
+invalid rows according to `row_policy`, removes duplicate identity keys, and
+records aggregate QC counts. It carries one numeric identity through panel
+matching and native encoding rather than repeatedly constructing character
+variant IDs.
+
+For a file already prepared into the exact canonical columns, `qc = "none"`
+is an explicit fast path:
+
+```r
+store <- compress_sumstats(
+  "prepared.tsv.gz", "prepared.cpr",
+  qc = "none", selection = "core", threads = 4,
+  input_build = "GRCh38", store_build = "GRCh38",
+  overwrite = TRUE
+)
+```
+
+This bypasses structural QC, duplicate scans, row-level reports, alias
+resolution, and temporary variant-ID construction. It still requires the
+canonical `chromosome`, `base_pair_location`, `reference_allele`,
+`alternate_allele`, `effect_allele`, `other_allele`, `beta`, and
+`standard_error` columns, and native identity/codec checks remain fail-closed.
+The manifest records `qc$mode = "none"` and
+`qc$structural_qc = "bypassed"`. Use this mode only for trusted,
+already-oriented input; it does not harmonise, liftover, or repair rows.
+
 `input_build = "GRCh37", store_build = "GRCh38"` is rejected. Perform any
 liftover, reference lookup, allele alignment, rsID resolution, and source-file
 specific field mapping in an upstream preparation workflow, then pass its

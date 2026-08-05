@@ -631,7 +631,8 @@ rename_first_alias <- function(data, target, aliases) {
 }
 
 normalise_sumstats_columns <- function(data, parse_policy = c("error", "report"),
-                                       allow_p_to_se = FALSE) {
+                                       allow_p_to_se = FALSE,
+                                       construct_variant_id = TRUE) {
   parse_policy <- match.arg(parse_policy)
   if (length(allow_p_to_se) != 1L || !is.logical(allow_p_to_se) ||
       is.na(allow_p_to_se)) {
@@ -702,7 +703,7 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     }
   }
   beta_from_or <- integer()
-  if (!beta_source_present && odds_ratio_source_present) {
+  if (odds_ratio_source_present) {
     beta_from_or <- which(is.na(data$beta) & is.finite(data$odds_ratio) &
                             data$odds_ratio > 0)
     if (length(beta_from_or)) data$beta[beta_from_or] <- log(data$odds_ratio[beta_from_or])
@@ -769,23 +770,27 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
            paste(utils::head(rows, 5L), collapse = ", "), call. = FALSE)
     }
   }
-  if (!"variant_id" %in% names(data) && "rsid" %in% names(data)) {
-    data$variant_id <- as.character(data$rsid)
-  }
-  if (!"variant_id" %in% names(data)) {
-    data$variant_id <- paste(data$chromosome, data$base_pair_location,
-                             data$other_allele, data$effect_allele, sep = "_")
-  } else {
-    data$variant_id <- as.character(data$variant_id)
-    missing_id <- is.na(data$variant_id) | !nzchar(data$variant_id) | data$variant_id == "."
-    if (any(missing_id)) {
-      data$variant_id[missing_id] <- paste(data$chromosome[missing_id],
-                                           data$base_pair_location[missing_id],
-                                           data$other_allele[missing_id],
-                                           data$effect_allele[missing_id], sep = "_")
+  if (isTRUE(construct_variant_id)) {
+    if (!"variant_id" %in% names(data) && "rsid" %in% names(data)) {
+      data$variant_id <- as.character(data$rsid)
+    }
+    if (!"variant_id" %in% names(data)) {
+      data$variant_id <- paste(data$chromosome, data$base_pair_location,
+                               data$other_allele, data$effect_allele, sep = "_")
+    } else {
+      data$variant_id <- as.character(data$variant_id)
+      missing_id <- is.na(data$variant_id) | !nzchar(data$variant_id) | data$variant_id == "."
+      if (any(missing_id)) {
+        data$variant_id[missing_id] <- paste(data$chromosome[missing_id],
+                                             data$base_pair_location[missing_id],
+                                             data$other_allele[missing_id],
+                                             data$effect_allele[missing_id], sep = "_")
+      }
     }
   }
-  if (!"rsid" %in% names(data)) data$rsid <- NA_character_
+  if (isTRUE(construct_variant_id) && !"rsid" %in% names(data)) {
+    data$rsid <- NA_character_
+  }
   if ("sample_size" %in% names(data)) {
     assign_parsed("sample_size", parse_numeric_column(data$sample_size, "sample_size",
                                                        invalid = parse_policy))
@@ -793,9 +798,11 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   if ("info" %in% names(data)) {
     assign_parsed("info", parse_numeric_column(data$info, "info", invalid = parse_policy))
   }
-  alias_id <- !is.na(data$variant_id) & grepl("^rs", data$variant_id, ignore.case = TRUE)
-  fill_rsid <- (is.na(data$rsid) | !nzchar(data$rsid)) & alias_id
-  data$rsid[fill_rsid] <- data$variant_id[fill_rsid]
+  if (isTRUE(construct_variant_id)) {
+    alias_id <- !is.na(data$variant_id) & grepl("^rs", data$variant_id, ignore.case = TRUE)
+    fill_rsid <- (is.na(data$rsid) | !nzchar(data$rsid)) & alias_id
+    data$rsid[fill_rsid] <- data$variant_id[fill_rsid]
+  }
   attr(data, "parse_failures") <- parse_failures
   attr(data, "missing_columns") <- missing
   attr(data, "resolution_provenance") <- sumstats_resolution_contract(
@@ -821,6 +828,55 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     "derived_from_beta_over_standard_error"
   }
   data
+}
+
+# Fast boundary for inputs that have already been prepared into the exact
+# compressor schema.  This deliberately does not resolve aliases, construct a
+# temporary variant_id, derive OR, or attach row-level QC state.  Identity and
+# codec code still perform their own strict safety checks later in the write.
+normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
+  required <- c("chromosome", "base_pair_location", "reference_allele",
+                "alternate_allele", "effect_allele", "other_allele", "beta",
+                "standard_error")
+  missing <- setdiff(required, names(data))
+  if (length(missing)) {
+    stop("qc='none' requires already-canonical columns: ",
+         paste(missing, collapse = ", "), call. = FALSE)
+  }
+  out <- data
+  out$chromosome <- normalise_chromosome(out$chromosome)
+  out$base_pair_location <- suppressWarnings(as.numeric(as.character(out$base_pair_location)))
+  for (field in c("reference_allele", "alternate_allele", "effect_allele", "other_allele")) {
+    out[[field]] <- toupper(trimws(as.character(out[[field]])))
+  }
+  numeric_fast <- function(value) {
+    if (is.numeric(value) && !is.factor(value)) return(as.numeric(value))
+    suppressWarnings(as.numeric(as.character(value)))
+  }
+  for (field in c("beta", "standard_error", "effect_allele_frequency", "z")) {
+    if (field %in% names(out)) out[[field]] <- numeric_fast(out[[field]])
+  }
+  if (!"effect_allele_frequency" %in% names(out)) {
+    out$effect_allele_frequency <- rep(NA_real_, nrow(out))
+  }
+  if (!"z" %in% names(out)) out$z <- rep(NA_real_, nrow(out))
+  derive_z <- is.na(out$z) & is.finite(out$beta) & is.finite(out$standard_error) &
+    out$standard_error > 0
+  out$z[derive_z] <- out$beta[derive_z] / out$standard_error[derive_z]
+  if (!"p_value" %in% names(out)) out$p_value <- rep(NA_real_, nrow(out))
+  out$p_value <- numeric_fast(out$p_value)
+  attr(out, "missing_columns") <- character()
+  attr(out, "parse_failures") <- list()
+  attr(out, "resolution_provenance") <- sumstats_resolution_contract(allow_p_to_se = FALSE)
+  attr(out, "resolution_provenance")$beta_route <- "explicit_beta_canonical"
+  attr(out, "resolution_provenance")$standard_error_route <- "explicit_standard_error_canonical"
+  attr(out, "resolution_provenance")$z_source <- if (any(derive_z)) {
+    "derived_from_beta_over_standard_error"
+  } else {
+    "supplied_canonical"
+  }
+  attr(out, "input_build") <- compressor_normalize_build(input_build)
+  out
 }
 
 new_structural_qc_report <- function(n, input_build, max_examples = 5L,
@@ -933,19 +989,17 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   add_reason("missing_alternate_allele", is.na(alternate) | !nzchar(alternate))
   add_reason("missing_effect_allele", is.na(effect) | !nzchar(effect))
   add_reason("missing_other_allele", is.na(other) | !nzchar(other))
-  alleles <- cbind(reference, alternate, effect, other)
-  present_alleles <- !is.na(alleles)
-  grepl_alleles <- function(pattern, fixed = FALSE) {
-    matrix(grepl(pattern, alleles, fixed = fixed), nrow = n)
+  allele_values <- list(reference, alternate, effect, other)
+  any_allele <- function(predicate) {
+    Reduce(`|`, Map(function(value) {
+      present <- !is.na(value)
+      present & predicate(value)
+    }, allele_values), init = rep(FALSE, n))
   }
-  add_reason("multiallelic",
-             rowSums(present_alleles & grepl_alleles(",", fixed = TRUE), na.rm = TRUE) > 0L)
-  add_reason("symbolic_allele",
-             rowSums(present_alleles & grepl_alleles("^(?:<.*>|\\*)$"), na.rm = TRUE) > 0L)
-  add_reason("indel",
-             rowSums(present_alleles & nchar(alleles) != 1L, na.rm = TRUE) > 0L)
-  add_reason("invalid_allele",
-             rowSums(present_alleles & !grepl_alleles("^[ACGT]$"), na.rm = TRUE) > 0L)
+  add_reason("multiallelic", any_allele(function(value) grepl(",", value, fixed = TRUE)))
+  add_reason("symbolic_allele", any_allele(function(value) grepl("^<|^\\*", value)))
+  add_reason("indel", any_allele(function(value) nchar(value) != 1L))
+  add_reason("invalid_allele", any_allele(function(value) !grepl("^[ACGT]$", value)))
   add_reason("same_alleles", (
     !is.na(reference) & !is.na(alternate) & reference == alternate
   ) | (
@@ -990,9 +1044,19 @@ structural_qc_report <- function(data, input_build = "GRCh38",
                  !is.finite(se) | se <= 0)
   }
 
-  key <- ifelse(!is.na(chromosome) & is.finite(position) &
-                  !is.na(effect) & !is.na(other),
-                paste(chromosome, as.integer(position), other, effect, sep = ":"), NA_character_)
+  valid_key <- known_chromosome & is.finite(position) & position >= 1 &
+    position == floor(position) & position <= unname(lengths[chromosome]) &
+    !is.na(other) & !is.na(effect) & other %in% c("A", "C", "G", "T") &
+    effect %in% c("A", "C", "G", "T") & other != effect
+  key <- rep(NA_real_, n)
+  if (any(valid_key)) {
+    identity <- compressor_encode_variant_identity(
+      chromosome[valid_key], position[valid_key], other[valid_key], effect[valid_key],
+      build = input_build
+    )
+    key[valid_key] <- compressor_identity_code(identity$global_position,
+                                               identity$substitution)
+  }
   duplicate <- !is.na(key) & (duplicated(key) | duplicated(key, fromLast = TRUE))
   add_reason("duplicate_variant", duplicate)
   report$rejection_counts <- sort(rejection_counts, decreasing = TRUE)
@@ -1100,7 +1164,24 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
     }
   }
   if (identical(row_policy, "error") && length(invalid)) {
-    stop(format_structural_qc_failure(report), call. = FALSE)
+    failure <- format_structural_qc_failure(report)
+    orientation_rejections <- report$rejection_counts[["orientation_mismatch"]] %||% 0L
+    identity_rejections <- sum(as.numeric(report$rejection_counts[c(
+      "missing_reference_allele", "missing_alternate_allele",
+      "invalid_allele", "same_alleles"
+    )]), na.rm = TRUE)
+    if (orientation_rejections > 0L) {
+      failure <- paste(
+        "effect_allele and other_allele are inconsistent with explicit REF/ALT;",
+        failure
+      )
+    } else if (identity_rejections > 0L) {
+      failure <- paste(
+        "explicit REF and ALT must be distinct single A/C/G/T alleles;",
+        failure
+      )
+    }
+    stop(failure, call. = FALSE)
   }
   if (identical(detail, "full")) report$row_status$accepted <- keep
   report$accepted_rows <- as.integer(sum(keep))

@@ -8,8 +8,9 @@ are useful when building or reviewing CompreSSoR.
 
 CompreSSoR separates three concerns:
 
-1. **Ingestion:** parse heterogeneous sumstats, optionally lift to GRCh38,
-   match alleles to a configured reference, apply QC, and sort rows.
+1. **Preparation:** an external workflow parses heterogeneous sumstats, applies
+   any harmonisation/liftover/reference work, and emits the explicit canonical
+   columns required by the compressor.
 2. **Storage:** encode one self-contained identity key plus independent core
    numerical streams in a block-framed `.cpr` directory.
 3. **Serving:** decode only requested regions, rows, columns, or canonical keys;
@@ -51,11 +52,10 @@ carry a FASTA or a large variant spine. A normal QC conversion:
 store <- compress_sumstats(
   "gwas.tsv.gz",
   "gwas.cpr",
-  reference = "GRCh38",
-  input_build = "GRCh37",
-  chain = "hg19ToHg38.over.chain.gz",
-  mode = "qc",
-  chrom_threads = 4
+  qc = "compact",
+  input_build = "GRCh38",
+  store_build = "GRCh38",
+  overwrite = TRUE
 )
 ```
 

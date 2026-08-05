@@ -388,7 +388,8 @@ normalise_variant_set_columns <- function(data, build = "GRCh38") {
   data
 }
 
-read_variant_set <- function(variant_set, chromosomes = NULL, build = "GRCh38") {
+read_variant_set <- function(variant_set, chromosomes = NULL, build = "GRCh38",
+                             panel_name = NULL) {
   build <- compressor_normalize_build(build)
   named <- resolve_named_variant_set(variant_set)
   if (!is.data.frame(variant_set) && !is.null(named)) variant_set <- named$path
@@ -411,10 +412,10 @@ read_variant_set <- function(variant_set, chromosomes = NULL, build = "GRCh38") 
            call. = FALSE)
     }
     if (dir.exists(variant_set) && is_variant_panel_path(variant_set)) {
-      panel_name <- named$name %||% "core"
+      panel_name <- panel_name %||% named$name %||% "core"
       out <- read_variant_panel(
         variant_set, chromosomes = chromosomes,
-        hm3_only = identical(panel_name, "hm3")
+        hm3_only = identical(panel_name, "hm3"), identity_only = TRUE
       )
       metadata <- attr(out, "variant_set_metadata") %||% list()
       metadata$name <- panel_name
@@ -582,6 +583,35 @@ normalise_variant_key <- function(x) {
 
 variant_set_membership <- function(data, panel, build = "GRCh38") {
   build <- compressor_normalize_build(build)
+  data_identity <- attr(data, "compressor_identity")
+  panel_identity <- attr(panel, "variant_set_identity")
+  if (is.list(panel_identity) && !is.list(data_identity) &&
+      all(c("chromosome", "base_pair_location", "other_allele",
+            "effect_allele") %in% names(data))) {
+    valid <- data$chromosome %in% c(as.character(1:22), "X", "Y") &
+      is.finite(as.numeric(data$base_pair_location)) &
+      as.numeric(data$base_pair_location) >= 1 &
+      data$other_allele %in% c("A", "C", "G", "T") &
+      data$effect_allele %in% c("A", "C", "G", "T") &
+      data$other_allele != data$effect_allele
+    data_code <- rep(NA_real_, nrow(data))
+    if (any(valid)) {
+      identity <- compressor_encode_variant_identity(
+        data$chromosome[valid], data$base_pair_location[valid],
+        data$other_allele[valid], data$effect_allele[valid], build = build
+      )
+      data_code[valid] <- compressor_identity_code(
+        identity$global_position, identity$substitution
+      )
+    }
+    data_identity <- list(code = data_code)
+  }
+  if (is.list(data_identity) && is.list(panel_identity) &&
+      length(data_identity$code) == nrow(data) &&
+      length(panel_identity$code) == nrow(panel)) {
+    panel_codes <- unique(as.numeric(panel_identity$code))
+    return(as.numeric(data_identity$code) %in% panel_codes)
+  }
   panel_values <- panel$variant_id[!is.na(panel$variant_id) & nzchar(panel$variant_id)]
   panel_id <- if (isTRUE(attr(panel, "variant_set_normalized_ids"))) {
     unique(as.character(panel_values))
@@ -817,7 +847,25 @@ select_core_variants <- function(data, variant_set = "core", build = "GRCh38") {
 }
 
 select_hm3_variants <- function(data, variant_set = "hm3", build = "GRCh38") {
-  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
+  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome),
+                            build = build, panel_name = "hm3")
+  # In-memory/custom combined panels may expose an HM3 flag rather than a
+  # named HM3 view.  Honour that flag before membership matching.
+  if ("hm3" %in% names(panel)) {
+    keep_hm3 <- !is.na(panel$hm3) & as.numeric(panel$hm3) == 1
+    panel_identity <- attr(panel, "variant_set_identity")
+    panel <- panel[keep_hm3, , drop = FALSE]
+    # `[.data.frame` drops custom attributes on some R versions; restore the
+    # identity vectors when a native panel supplied them.
+    identity <- attr(panel, "variant_set_identity")
+    if (is.null(identity)) {
+      identity <- panel_identity
+    }
+    if (is.list(identity)) {
+      identity <- lapply(identity, function(values) values[keep_hm3])
+      attr(panel, "variant_set_identity") <- identity
+    }
+  }
   panel_selection_result(data, panel, "hm3", build = build)
 }
 

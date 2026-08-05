@@ -1,6 +1,7 @@
 compressor_manifest_contract <- function(path, build, selection, profile,
                                          backend, threads, row_policy, source,
-                                         preparation = NULL, panel = NULL) {
+                                         preparation = NULL, panel = NULL,
+                                         qc = "compact") {
   manifest_path <- file.path(path, "manifest.json")
   manifest <- read_manifest(manifest_path)
   manifest$genome_build <- build
@@ -20,7 +21,13 @@ compressor_manifest_contract <- function(path, build, selection, profile,
     compression = as.integer(threads),
     compression_writer_parallel = effective_writer_workers > 1L
   )
-  manifest$row_policy <- row_policy
+  manifest$row_policy <- if (identical(qc, "none")) "not_applied" else row_policy
+  manifest$qc <- list(
+    mode = qc,
+    structural_qc = if (identical(qc, "none")) "bypassed" else "compact",
+    row_level_report = FALSE,
+    duplicate_scan = !identical(qc, "none")
+  )
   manifest$provenance <- list(
     input = source %||% NULL,
     input_build = build,
@@ -37,7 +44,7 @@ compressor_manifest_contract <- function(path, build, selection, profile,
     manifest$metadata %||% list(),
     list(api = list(selection = selection, store_build = build,
                     input_build = build, threads = as.integer(threads),
-                    row_policy = row_policy))
+                    row_policy = manifest$row_policy, qc = qc))
   )
   write_manifest(manifest, manifest_path)
   if (identical(backend, "pcodec")) seal_pcodec_manifest(manifest_path)
@@ -105,6 +112,11 @@ write_selection_regions <- function(output, selection) {
 #'   post-import selection; it is never used as a reference.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, duplicated, or unsupported by the selected backend.
+#' @param qc QC mode. `compact` is the default structural-QC path. `none`
+#'   is a deliberately unsafe fast path for already-canonical prepared input:
+#'   it skips structural QC, duplicate scans, row reports, alias resolution,
+#'   and temporary variant-ID construction, while retaining build and codec
+#'   identity safety.
 #' @param input_build Input build, explicitly GRCh37/hg19 or GRCh38/hg38.
 #' @param pvalue_threshold Strict p-value threshold for `selection = "pvalue_regions"`
 #'   or `selection = "core_plus"`; p-values are derived from canonical Z.
@@ -137,6 +149,7 @@ write_selection_regions <- function(output, selection) {
 compress_sumstats <- function(input, output,
                               profile = c("standard", "exact"),
                               overwrite = FALSE, cache = FALSE, strict = NULL,
+                              qc = c("compact", "none"),
                               keep_extras = FALSE,
                               block_rows = 65536L,
                               variant_set = NULL, input_build = "GRCh38",
@@ -151,6 +164,10 @@ compress_sumstats <- function(input, output,
   input_build <- builds$input_build
   store_build <- builds$store_build
   if (missing(selection)) selection <- NULL
+  qc <- match.arg(qc)
+  if (!is.null(strict) && (length(strict) != 1L || !is.logical(strict) || is.na(strict))) {
+    stop("strict must be TRUE or FALSE", call. = FALSE)
+  }
   if (is.null(threads)) {
     threads <- 1L
   } else {
@@ -167,6 +184,10 @@ compress_sumstats <- function(input, output,
     }
   }
   if (is.null(strict)) strict <- identical(row_policy, "error")
+  if (identical(qc, "none") && (isTRUE(strict) || identical(row_policy, "error"))) {
+    stop("qc='none' cannot be combined with strict=TRUE or row_policy='error'; "
+         , "it deliberately bypasses structural QC", call. = FALSE)
+  }
   if (!is.null(selection)) {
     if (length(selection) != 1L || is.na(selection) ||
         !selection %in% c("full", "core", "hm3", "core_plus", "pvalue_regions")) {
@@ -203,7 +224,9 @@ compress_sumstats <- function(input, output,
     project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
     core_only = identical(backend, "pcodec") || !isTRUE(keep_extras),
     allow_p_to_se = FALSE,
-    run_qc = FALSE
+    run_qc = FALSE,
+    prepared_core = identical(qc, "none"),
+    construct_variant_id = identical(backend, "parquet")
   )
   source_columns <- attr(raw, "source_columns")
   source_columns_read <- attr(raw, "source_columns_read")
@@ -213,44 +236,76 @@ compress_sumstats <- function(input, output,
   phase_timings$unit <- phase_timings$unit %||% "seconds"
   phase_timings$phases <- phase_timings$phases %||% list()
   qc_started <- phase_clock()
-  validate_core_schema(raw, source_columns = source_columns,
-                       input_build = input_build, store_build = store_build)
-  raw <- validate_core_orientation(raw, row_policy = row_policy)
-  structural <- apply_structural_qc(
-    raw, input_build = input_build, strict = strict,
-    row_policy = row_policy, require_statistics = TRUE,
-    drop_duplicates = TRUE, check_duplicates = TRUE, detail = "compact"
-  )
-  phase_timings$phases$qc <- phase_seconds(qc_started)
-  raw <- structural$data
-  if (structural$report$input_rows > 0L && !nrow(raw)) {
-    failure <- format_structural_qc_failure(structural$report)
-    orientation_rejections <- structural$report$rejection_counts[["orientation_mismatch"]] %||% 0L
-    if (orientation_rejections > 0L) {
-      failure <- paste(
-        "effect_allele and other_allele are inconsistent with explicit REF/ALT;",
-        failure
-      )
+  structural <- NULL
+  if (identical(qc, "none")) {
+    required_fast <- required_sumstats_columns()
+    missing_fast <- setdiff(required_fast, names(raw))
+    if (length(missing_fast)) {
+      stop("qc='none' requires already-canonical columns: ",
+           paste(missing_fast, collapse = ", "), call. = FALSE)
     }
-    stop(failure, call. = FALSE)
+    phase_timings$phases$qc <- 0
+  } else {
+    validate_core_schema(raw, source_columns = source_columns,
+                         input_build = input_build, store_build = store_build)
+    structural <- apply_structural_qc(
+      raw, input_build = input_build, strict = strict,
+      row_policy = row_policy, require_statistics = TRUE,
+      drop_duplicates = TRUE, check_duplicates = TRUE, detail = "compact"
+    )
+    phase_timings$phases$qc <- phase_seconds(qc_started)
+    raw <- structural$data
+    if (structural$report$input_rows > 0L && !nrow(raw)) {
+      failure <- format_structural_qc_failure(structural$report)
+      orientation_rejections <- structural$report$rejection_counts[["orientation_mismatch"]] %||% 0L
+      identity_rejections <- sum(as.numeric(structural$report$rejection_counts[c(
+        "missing_reference_allele", "missing_alternate_allele",
+        "invalid_allele", "same_alleles"
+      )]), na.rm = TRUE)
+      if (orientation_rejections > 0L) {
+        failure <- paste(
+          "effect_allele and other_allele are inconsistent with explicit REF/ALT;",
+          failure
+        )
+      } else if (identity_rejections > 0L) {
+        failure <- paste(
+          "explicit REF and ALT must be distinct single A/C/G/T alleles;",
+          failure
+        )
+      }
+      stop(failure, call. = FALSE)
+    }
   }
   identity_started <- phase_clock()
-  raw <- canonicalize_core_identity(raw, build = store_build)
+  raw <- canonicalize_core_identity(
+    raw, build = store_build, include_variant_id = identical(backend, "parquet")
+  )
   phase_timings$phases$identity_sort <- phase_seconds(identity_started)
   attr(raw, "source_columns") <- source_columns
   attr(raw, "source_columns_read") <- source_columns_read
   attr(raw, "source_provenance") <- source_provenance
+  selection_started <- phase_clock()
   prepared <- prepare_core_sumstats_data(
     raw, selection = selection, variant_set = variant_set,
     pvalue_threshold = pvalue_threshold, region_padding = region_padding,
     build = store_build
   )
+  phase_timings$phases$selection <- phase_seconds(selection_started)
   preparation <- prepared$preparation
-  preparation$structural_qc <-
+  preparation$qc <- list(
+    mode = qc,
+    structural_qc = if (identical(qc, "none")) "bypassed" else "compact",
+    row_level_report = FALSE,
+    duplicate_scan = !identical(qc, "none")
+  )
+  preparation$structural_qc <- if (identical(qc, "none")) {
+    list(mode = "none", bypassed = TRUE, input_rows = as.integer(nrow(raw)))
+  } else {
     compact_structural_qc_report(structural$report)
+  }
   data <- prepared$data
   selection <- prepared$selection
-  validate_sumstats_values(data, require_identity = TRUE)
+  if (identical(qc, "compact")) validate_sumstats_values(data, require_identity = TRUE)
   if (identical(backend, "pcodec")) {
     if (!identical(profile, "standard")) {
       stop("backend='pcodec' currently provides the standard semantic profile; "
@@ -294,10 +349,11 @@ compress_sumstats <- function(input, output,
       ),
       reference = reference_metadata,
       preparation = list(
-        method = "strict_prepared_input",
+        method = if (identical(qc, "none")) "prepared_input_qc_none" else "strict_prepared_input",
         threads_requested = as.integer(threads),
         row_policy = row_policy,
         strict = isTRUE(strict),
+        qc = qc,
         input_build = as.character(input_build),
         preparation = preparation
       ),
@@ -305,7 +361,10 @@ compress_sumstats <- function(input, output,
       source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
       source = attr(raw, "source_provenance") %||% NULL,
       selection = selection,
-      timings = phase_timings
+      selection_metadata = prepared$selection_metadata,
+      timings = phase_timings,
+      qc = qc,
+      identity_values = prepared$identity
     )
     pcodec_write_store(data, output, metadata = pcodec_metadata)
     compressor_manifest_contract(
@@ -314,7 +373,8 @@ compress_sumstats <- function(input, output,
       threads = threads, row_policy = row_policy,
       source = attr(raw, "source_provenance") %||% NULL,
       preparation = preparation,
-      panel = preparation$variant_set %||% NULL
+      panel = preparation$variant_set %||% NULL,
+      qc = qc
     )
     commit_started <- phase_clock()
     commit_store_output(transaction)
@@ -410,10 +470,11 @@ compress_sumstats <- function(input, output,
     ),
     reference = reference_manifest,
     preparation = list(
-      method = "strict_prepared_input",
+      method = if (identical(qc, "none")) "prepared_input_qc_none" else "strict_prepared_input",
       threads_requested = as.integer(threads),
       row_policy = row_policy,
       strict = isTRUE(strict),
+      qc = qc,
       input_build = as.character(input_build),
       preparation = preparation
     ),
@@ -425,11 +486,12 @@ compress_sumstats <- function(input, output,
     source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
     source = attr(raw, "source_provenance") %||% NULL,
     codec = codec,
+    qc = qc,
     variant_storage = "inline",
     variant_identity = list(
       rsid = if ("rsid" %in% variant_names) "stored" else "derived_from_variant_id"
     ),
-    selection = selection,
+    selection = prepared$selection_metadata,
     files = files,
     timings = phase_timings,
     benchmark = benchmark_metadata(),
@@ -453,7 +515,8 @@ compress_sumstats <- function(input, output,
     threads = threads, row_policy = row_policy,
     source = attr(raw, "source_provenance") %||% NULL,
     preparation = preparation,
-    panel = preparation$variant_set %||% NULL
+    panel = preparation$variant_set %||% NULL,
+    qc = qc
   )
   store <- open_compressor(output)
   if (isTRUE(cache)) build_cache(store, overwrite = TRUE, block_rows = block_rows)

@@ -30,6 +30,19 @@ compressor_identity_table_version <- 1L
 compressor_identity_schema <- "compressor_variant_identity_v1"
 compressor_identity_base_codes <- c(A = 0L, C = 1L, G = 2L, T = 3L)
 
+# A numeric composite is exact for the supported uint32 global positions and
+# four-bit substitution codes.  Keeping this representation numeric avoids
+# materialising a large character `chrom:position:REF:ALT` key during normal
+# compression and panel membership.
+compressor_identity_code <- function(global_position, substitution) {
+  global_position <- as.numeric(global_position)
+  substitution <- as.numeric(substitution)
+  if (length(global_position) != length(substitution)) {
+    stop("identity code fields must have equal length", call. = FALSE)
+  }
+  global_position * 16 + substitution
+}
+
 compressor_normalize_build <- function(build) {
   if (length(build) != 1L || is.na(build) || !nzchar(trimws(as.character(build)))) {
     stop("build must be one of GRCh37/hg19 or GRCh38/hg38", call. = FALSE)

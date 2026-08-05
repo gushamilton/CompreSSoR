@@ -316,7 +316,8 @@ variant_panel_stream_bytes <- function(index, stream, block_ids = NULL) {
 }
 
 read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NULL,
-                               hm3_only = FALSE, verify_payload = FALSE) {
+                               hm3_only = FALSE, verify_payload = FALSE,
+                               identity_only = FALSE) {
   store <- if (inherits(panel, "compressor_variant_panel")) panel else {
     open_variant_panel(panel, verify_payload = verify_payload)
   }
@@ -383,11 +384,15 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
     hm3 <- as.integer(flag_values[match(source_rows, flag_rows)])
   }
   key_columns <- pcodec_native_key_columns(position, substitution, build = build)
-  variant_id <- compressor_variant_key(key_columns$chromosome,
-                                       key_columns$base_pair_location,
-                                       key_columns$reference_allele,
-                                       key_columns$alternate_allele, build = build)
-  keep <- rep(TRUE, length(variant_id))
+  variant_id <- if (isTRUE(identity_only)) {
+    rep(NA_character_, length(position))
+  } else {
+    compressor_variant_key(key_columns$chromosome,
+                           key_columns$base_pair_location,
+                           key_columns$reference_allele,
+                           key_columns$alternate_allele, build = build)
+  }
+  keep <- rep(TRUE, length(position))
   if (!is.null(chromosomes)) {
     chromosomes <- unique(normalise_chromosome(chromosomes))
     keep <- keep & key_columns$chromosome %in% chromosomes
@@ -395,13 +400,19 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
   if (!is.null(rows)) {
     keep <- keep & source_rows %in% (as.integer(rows) - 1L)
   }
-  if (!is.null(keys)) {
+  if (!is.null(keys) && !isTRUE(identity_only)) {
     keys <- unique(normalise_variant_key(keys))
     keep <- keep & variant_id %in% keys
   }
   if (isTRUE(hm3_only)) keep <- keep & hm3 == 1L
-  out <- data.frame(variant_id = variant_id[keep], hm3 = hm3[keep],
-                    stringsAsFactors = FALSE)
+  out <- if (isTRUE(identity_only)) {
+    data.frame(global_position = as.numeric(position[keep]),
+               substitution = as.integer(substitution[keep]), hm3 = hm3[keep],
+               stringsAsFactors = FALSE)
+  } else {
+    data.frame(variant_id = variant_id[keep], hm3 = hm3[keep],
+               stringsAsFactors = FALSE)
+  }
   payload_bytes_read <- variant_panel_stream_bytes(index, "position", key_block_ids) +
     variant_panel_stream_bytes(index, "substitution", key_block_ids) +
     variant_panel_stream_bytes(index, "hm3", flag_block_ids)
@@ -418,6 +429,11 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
   )
   attr(out, "variant_set_normalized_ids") <- TRUE
   attr(out, "variant_set_canonical") <- TRUE
+  attr(out, "variant_set_identity") <- list(
+    global_position = as.numeric(position[keep]),
+    substitution = as.integer(substitution[keep]),
+    code = compressor_identity_code(position[keep], substitution[keep])
+  )
   attr(out, "variant_set_metadata") <- list(
     id = "bundled_core_hm3", name = if (isTRUE(hm3_only)) "hm3" else "core",
     source = "bundled", build = build, version = manifest$format_version,

@@ -421,11 +421,22 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   requested_workers <- pcodec_native_writer_workers(metadata)
   build <- compressor_normalize_build(metadata$genome_build %||% "GRCh38")
   identity_started <- phase_clock()
-  identity <- pcodec_native_identity(data, build = build)
+  identity <- metadata$identity_values %||% attr(data, "compressor_identity")
+  valid_identity <- is.list(identity) &&
+    length(identity$global_position) == nrow(data) &&
+    length(identity$substitution) == nrow(data)
+  if (!isTRUE(valid_identity)) {
+    identity <- pcodec_native_identity(data, build = build)
+  } else {
+    identity <- list(
+      global_position = as.numeric(identity$global_position),
+      substitution = as.integer(identity$substitution)
+    )
+  }
   order <- order(identity$global_position, identity$substitution, method = "radix")
   ordered_position <- identity$global_position[order]
   ordered_substitution <- identity$substitution[order]
-  if (anyDuplicated(paste(ordered_position, ordered_substitution, sep = ":"))) {
+  if (anyDuplicated(compressor_identity_code(ordered_position, ordered_substitution))) {
     stop("duplicate full REF/ALT identity keys", call. = FALSE)
   }
   ordered <- data[order, , drop = FALSE]
@@ -594,13 +605,14 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     reference = metadata$reference %||% list(id = "none", build = build,
                                              status = "identity key is self-contained"),
     preparation = metadata$preparation %||% list(method = "strict_prepared_input"),
-    selection = selection_manifest,
+    selection = selection_manifest %||% metadata$selection_metadata %||% NULL,
     source_columns = metadata$source_columns %||% names(data),
     source_columns_read = metadata$source_columns_read %||% names(data),
     source = metadata$source %||% NULL,
     timings = phase_timings,
     metadata = {
       manifest_metadata <- metadata
+      manifest_metadata$identity_values <- NULL
       manifest_metadata$selection <- selection_manifest
       manifest_metadata$timings <- NULL
       manifest_metadata
