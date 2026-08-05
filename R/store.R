@@ -235,7 +235,6 @@ compress_sumstats <- function(input, output,
     list(unit = "seconds", phases = list())
   phase_timings$unit <- phase_timings$unit %||% "seconds"
   phase_timings$phases <- phase_timings$phases %||% list()
-  qc_started <- phase_clock()
   structural <- NULL
   identity_safety <- NULL
   input_rows_before_identity_safety <- nrow(raw)
@@ -246,15 +245,20 @@ compress_sumstats <- function(input, output,
       stop("qc='none' requires already-canonical columns: ",
            paste(missing_fast, collapse = ", "), call. = FALSE)
     }
+    statistic_started <- phase_clock()
     validate_qc_none_statistics(raw)
+    phase_timings$phases$statistic_validation <- phase_seconds(statistic_started)
+    identity_safety_started <- phase_clock()
     identity_safety <- filter_pcodec_identity_safety(raw, build = store_build)
     raw <- identity_safety$data
-    phase_timings$phases$qc <- phase_seconds(qc_started)
+    phase_timings$phases$identity_safety <- phase_seconds(identity_safety_started)
+    phase_timings$phases$qc <- 0
     if (!nrow(raw)) {
       stop("no supported biallelic primary-chromosome SNVs remain for the Pcodec store",
            call. = FALSE)
     }
   } else {
+    qc_started <- phase_clock()
     validate_core_schema(raw, source_columns = source_columns,
                          input_build = input_build, store_build = store_build)
     structural <- apply_structural_qc(

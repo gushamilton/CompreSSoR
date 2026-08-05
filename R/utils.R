@@ -886,8 +886,11 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   derive_z <- is.na(out$z) & is.finite(out$beta) & is.finite(out$standard_error) &
     out$standard_error > 0
   out$z[derive_z] <- out$beta[derive_z] / out$standard_error[derive_z]
-  if (!"p_value" %in% names(out)) out$p_value <- rep(NA_real_, nrow(out))
-  out$p_value <- numeric_fast(out$p_value)
+  # P-values are derived from Z at read time and are not part of the native
+  # payload. Preserve a supplied canonical p_value for callers that explicitly
+  # provided it, but do not allocate a full-length placeholder on the fast
+  # prepared-input path.
+  if ("p_value" %in% names(out)) out$p_value <- numeric_fast(out$p_value)
   attr(out, "missing_columns") <- character()
   attr(out, "parse_failures") <- list()
   attr(out, "z_supplied") <- z_supplied

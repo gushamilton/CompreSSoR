@@ -476,17 +476,28 @@ pcodec_native_write_exceptions <- function(exceptions, output, blocks, workers =
   on.exit(close(connection), add = TRUE)
   offset <- 0
   locations <- vector("list", length(blocks))
+  exception_members <- vector("list", length(blocks))
+  if (nrow(exceptions) && length(blocks)) {
+    block_stops <- vapply(blocks, function(block) as.numeric(block$row_stop), numeric(1))
+    exception_block <- findInterval(as.numeric(exceptions$row), block_stops) + 1L
+    if (any(exception_block < 1L | exception_block > length(blocks))) {
+      stop("native Pcodec exception row is outside the value blocks", call. = FALSE)
+    }
+    split_members <- split(seq_len(nrow(exceptions)), exception_block)
+    for (name in names(split_members)) {
+      exception_members[[as.integer(name)]] <- split_members[[name]]
+    }
+  }
   if (length(blocks)) {
     for (batch_start in seq.int(1L, length(blocks), by = effective_workers)) {
       batch_stop <- min(length(blocks), batch_start + effective_workers - 1L)
       batch <- seq.int(batch_start, batch_stop)
       results <- pcodec_native_parallel_batch(batch, function(block) {
-        inside <- exceptions$row >= blocks[[block]]$row_start &
-          exceptions$row < blocks[[block]]$row_stop
-        raw_blob <- pcodec_native_exception_bytes(exceptions[inside, , drop = FALSE])
+        members <- exception_members[[block]] %||% integer()
+        raw_blob <- pcodec_native_exception_bytes(exceptions[members, , drop = FALSE])
         blob <- if (length(raw_blob)) pcodec_native_zstd_compress(raw_blob, level = 19L) else raw()
         list(block = block, blob = blob, raw_length = length(raw_blob),
-             count = sum(inside))
+             count = length(members))
       }, workers = effective_workers)
       for (result in results) {
         blob <- result$blob

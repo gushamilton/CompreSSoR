@@ -18,6 +18,9 @@ test_that("compact and none modes write the same trusted fixture", {
   expect_identical(none$manifest$qc$structural_qc, "bypassed")
   expect_identical(none$manifest$row_policy, "not_applied")
   expect_identical(none$manifest$preparation$preparation$qc$mode, "none")
+  expect_true(is.finite(none$manifest$timings$phases$statistic_validation))
+  expect_true(is.finite(none$manifest$timings$phases$identity_safety))
+  expect_equal(none$manifest$timings$phases$qc, 0)
   expect_true(isTRUE(validate_compressor(none, full = TRUE)$valid))
 })
 
