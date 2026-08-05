@@ -125,12 +125,28 @@ read_sumstats(
 )
 ```
 
+The boundary importer recognises common aliases through a deterministic
+resolution matrix: explicit beta plus `SE` is the primary route; an optional
+`Z` is checked against `beta / SE` or derived from it; a positive OR may be
+converted to log-OR only at the import boundary when beta is absent. P-values
+are not silently converted to SE in the strict writer. The standalone
+`import_sumstats(..., allow_p_to_se = TRUE)` opt-in is conflict-checked and
+records its bounded conversion rows in resolution provenance; it is not used
+by `compress_sumstats()`.
+
 For delimited-file input, the native Pcodec path discovers the header first and
 projects only columns that can affect the strict identity/statistical core
 before canonicalisation and QC. The complete source header and read-column
 counts remain in provenance. Parquet with `keep_extras = TRUE` intentionally
 reads and retains the full input table; use that mode when arbitrary source
 columns are required.
+
+Native and default compression manifests retain aggregate structural-QC counts,
+bounded row examples, source/projection provenance, and phase timings for read,
+normalisation, QC, identity/sort, encoding, and the final atomic commit. Full
+row-level QC status and canonical-key audits remain available through the
+explicit `preflight_sumstats()` path rather than being retained through a
+large compression job.
 
 For a prepared GRCh37 table, write a native GRCh37 store directly:
 

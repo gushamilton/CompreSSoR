@@ -14,6 +14,9 @@
 #'   (stop on any structural rejection). strict = TRUE is an alias for error.
 #' @param input_build Build used for coordinate-bound preflight, either
 #'   GRCh37/hg19 or GRCh38/hg38.
+#' @param allow_p_to_se Explicitly opt in to conflict-checked p-value-to-SE
+#'   conversion at the boundary. The strict compression core always leaves
+#'   this disabled.
 #' @return A data.frame containing canonical columns such as `chromosome`,
 #'   `base_pair_location`, `reference_allele`, `alternate_allele`,
 #'   `effect_allele`, `other_allele`, `beta`, `standard_error`, `z`,
@@ -21,10 +24,11 @@
 #' @export
 import_sumstats <- function(input, strict = FALSE,
                             row_policy = c("report", "error"),
-                            input_build = "GRCh38") {
+                            input_build = "GRCh38", allow_p_to_se = FALSE) {
   import_sumstats_impl(
     input, strict = strict, row_policy = row_policy,
-    input_build = input_build, project_columns = FALSE
+    input_build = input_build, project_columns = FALSE,
+    allow_p_to_se = allow_p_to_se
   )
 }
 
@@ -32,18 +36,24 @@ import_sumstats_impl <- function(input, strict = FALSE,
                                  row_policy = c("report", "error"),
                                  input_build = "GRCh38",
                                  project_columns = FALSE,
-                                 core_only = FALSE) {
+                                 core_only = FALSE,
+                                 allow_p_to_se = FALSE,
+                                 run_qc = TRUE,
+                                 qc_detail = c("full", "compact")) {
   if (length(strict) != 1L || !is.logical(strict) || is.na(strict)) {
     stop("strict must be TRUE or FALSE", call. = FALSE)
   }
   row_policy <- match.arg(row_policy)
+  qc_detail <- match.arg(qc_detail)
   if (isTRUE(strict)) row_policy <- "error"
+  read_started <- phase_clock()
   raw <- read_sumstats_input(
     input,
     parse_policy = if (identical(row_policy, "error")) "error" else "report",
     project_columns = project_columns,
     core_only = core_only
   )
+  read_seconds <- phase_seconds(read_started)
   if (!nrow(raw)) {
     stop("input contains zero rows; CompreSSoR requires at least one prepared summary-statistics row",
          call. = FALSE)
@@ -74,19 +84,38 @@ import_sumstats_impl <- function(input, strict = FALSE,
       read_elapsed_seconds = as.numeric(input_read_metadata$elapsed_seconds %||% NA_real_)
     )
   }
+  normalise_started <- phase_clock()
   out <- normalise_sumstats_columns(
-    raw, parse_policy = if (identical(row_policy, "error")) "error" else "report"
+    raw, parse_policy = if (identical(row_policy, "error")) "error" else "report",
+    allow_p_to_se = allow_p_to_se
   )
-  qc_report <- structural_qc_report(out, input_build = input_build,
-                                     require_statistics = TRUE)
-  if (identical(row_policy, "error") && length(qc_report$invalid_rows)) {
-    stop(format_structural_qc_failure(qc_report), call. = FALSE)
+  normalise_seconds <- phase_seconds(normalise_started)
+  provenance$resolution <- attr(out, "resolution_provenance") %||%
+    sumstats_resolution_contract(allow_p_to_se = allow_p_to_se)
+  qc_report <- NULL
+  qc_seconds <- NULL
+  if (isTRUE(run_qc)) {
+    qc_started <- phase_clock()
+    qc_report <- structural_qc_report(out, input_build = input_build,
+                                      require_statistics = TRUE,
+                                      detail = qc_detail)
+    qc_seconds <- phase_seconds(qc_started)
+    if (identical(row_policy, "error") && qc_report$rejected_rows > 0L) {
+      stop(format_structural_qc_failure(qc_report), call. = FALSE)
+    }
   }
   attr(out, "source_columns") <- source_columns
   attr(out, "source_columns_read") <- source_columns_read
   attr(out, "source_provenance") <- provenance
   attr(out, "input_build") <- normalise_build_name(input_build)
   attr(out, "structural_qc_report") <- qc_report
+  attr(out, "phase_timings") <- list(
+    unit = "seconds",
+    phases = c(
+      list(read = read_seconds, normalise = normalise_seconds),
+      if (is.null(qc_seconds)) list() else list(qc = qc_seconds)
+    )
+  )
   out
 }
 
@@ -115,15 +144,19 @@ preflight_sumstats <- function(input, input_build = "GRCh38", strict = FALSE,
   }
   row_policy <- match.arg(row_policy)
   if (isTRUE(strict)) row_policy <- "error"
-  imported <- import_sumstats(input, strict = FALSE, row_policy = "report",
-                              input_build = input_build)
+  imported <- import_sumstats_impl(
+    input, strict = FALSE, row_policy = "report",
+    input_build = input_build, run_qc = FALSE
+  )
   result <- apply_structural_qc(imported, input_build = input_build,
                                 row_policy = row_policy,
                                 require_statistics = require_statistics,
-                                max_examples = max_examples)
+                                max_examples = max_examples, detail = "full")
   attr(result$data, "source_columns") <- attr(imported, "source_columns")
   attr(result$data, "source_columns_read") <- attr(imported, "source_columns_read")
   attr(result$data, "source_provenance") <- attr(imported, "source_provenance")
+  attr(result$data, "resolution_provenance") <- attr(imported, "resolution_provenance")
   attr(result$data, "input_build") <- attr(imported, "input_build")
+  attr(result$data, "phase_timings") <- attr(imported, "phase_timings")
   result
 }

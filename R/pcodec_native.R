@@ -420,6 +420,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   if (length(missing)) stop("Pcodec input is missing: ", paste(missing, collapse = ", "), call. = FALSE)
   requested_workers <- pcodec_native_writer_workers(metadata)
   build <- compressor_normalize_build(metadata$genome_build %||% "GRCh38")
+  identity_started <- phase_clock()
   identity <- pcodec_native_identity(data, build = build)
   order <- order(identity$global_position, identity$substitution, method = "radix")
   ordered_position <- identity$global_position[order]
@@ -428,6 +429,8 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     stop("duplicate full REF/ALT identity keys", call. = FALSE)
   }
   ordered <- data[order, , drop = FALSE]
+  identity_seconds <- phase_seconds(identity_started)
+  encode_started <- phase_clock()
   values <- pcodec_native_quantise(ordered)
   n <- nrow(ordered)
   block_rows <- pcodec_native_validate_block_rows(
@@ -516,6 +519,14 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     selection_manifest$regions_table <- NULL
     selection_manifest$file <- selection_file
   }
+  phase_timings <- metadata$timings %||%
+    list(unit = "seconds", phases = list())
+  phase_timings$unit <- phase_timings$unit %||% "seconds"
+  phase_timings$phases <- phase_timings$phases %||% list()
+  phase_timings$phases$identity_sort <- as.numeric(
+    (phase_timings$phases$identity_sort %||% 0) + identity_seconds
+  )
+  phase_timings$phases$encode <- phase_seconds(encode_started)
   files <- list(
     position = "position.pco", substitution = "substitution.pco",
     z = "z.pco", eaf = "eaf.pco", se = "se.pco",
@@ -587,9 +598,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     source_columns = metadata$source_columns %||% names(data),
     source_columns_read = metadata$source_columns_read %||% names(data),
     source = metadata$source %||% NULL,
+    timings = phase_timings,
     metadata = {
       manifest_metadata <- metadata
       manifest_metadata$selection <- selection_manifest
+      manifest_metadata$timings <- NULL
       manifest_metadata
     }
   )

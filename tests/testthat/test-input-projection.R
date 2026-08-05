@@ -92,6 +92,19 @@ test_that("Parquet keep_extras explicitly retains the full input path", {
   expect_false(store$manifest$source$projected)
 })
 
+test_that("Parquet default projection also omits unrequested extras", {
+  skip_if_not_installed("arrow")
+  input <- wide_prepared_fixture(64L, extras = 3L)
+  path <- tempfile("projected-parquet-core-")
+  store <- compress_sumstats(input, path, backend = "parquet", profile = "exact",
+                             keep_extras = FALSE, overwrite = TRUE)
+
+  expect_identical(store$manifest$source$columns_read, 9L)
+  expect_true(store$manifest$source$projected)
+  expect_false(any(grepl("^unused_", unlist(store$manifest$source_columns_read))))
+  expect_false(any(grepl("^unused_", names(decompress_sumstats(store)))))
+})
+
 test_that("bounded wide-input projection reports compact timing evidence", {
   input <- wide_prepared_fixture(20000L, extras = 32L)
   started <- unname(proc.time()[["elapsed"]])

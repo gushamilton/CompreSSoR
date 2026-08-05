@@ -21,8 +21,19 @@ pcodec_payload_sha256 <- function(files) {
 }
 
 pcodec_canonical_manifest_sha256 <- function(manifest) {
-  canonical <- manifest
+  strip_observational <- function(value) {
+    if (!is.list(value)) return(value)
+    names_value <- names(value)
+    if (!is.null(names_value)) {
+      value <- value[!names_value %in% c("timings", "elapsed_seconds",
+                                         "read_elapsed_seconds")]
+    }
+    lapply(value, strip_observational)
+  }
+  canonical <- strip_observational(manifest)
   canonical$created_utc <- NULL
+  # Wall-clock timings and read-duration observations are metadata, not part
+  # of the deterministic store contract or its canonical manifest identity.
   if (!is.null(canonical$integrity)) {
     canonical$integrity$canonical_sha256 <- NULL
   }

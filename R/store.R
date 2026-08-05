@@ -44,6 +44,19 @@ compressor_manifest_contract <- function(path, build, selection, profile,
   invisible(manifest)
 }
 
+record_commit_timing <- function(path, seconds) {
+  manifest_path <- file.path(path, "manifest.json")
+  manifest <- read_manifest(manifest_path)
+  timings <- manifest$timings %||% list(unit = "seconds", phases = list())
+  timings$unit <- timings$unit %||% "seconds"
+  timings$phases <- timings$phases %||% list()
+  timings$phases$commit <- as.numeric(seconds)
+  manifest$timings <- timings
+  write_manifest(manifest, manifest_path)
+  if (identical(manifest$backend, "pcodec")) seal_pcodec_manifest(manifest_path)
+  invisible(manifest)
+}
+
 write_selection_regions <- function(output, selection) {
   if (is.null(selection)) return(NULL)
   regions <- selection$regions_table
@@ -188,19 +201,27 @@ compress_sumstats <- function(input, output,
   raw <- import_sumstats_impl(
     input, input_build = input_build,
     project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
-    core_only = identical(backend, "pcodec")
+    core_only = identical(backend, "pcodec") || !isTRUE(keep_extras),
+    allow_p_to_se = FALSE,
+    run_qc = FALSE
   )
   source_columns <- attr(raw, "source_columns")
   source_columns_read <- attr(raw, "source_columns_read")
   source_provenance <- attr(raw, "source_provenance")
+  phase_timings <- attr(raw, "phase_timings") %||%
+    list(unit = "seconds", phases = list())
+  phase_timings$unit <- phase_timings$unit %||% "seconds"
+  phase_timings$phases <- phase_timings$phases %||% list()
+  qc_started <- phase_clock()
   validate_core_schema(raw, source_columns = source_columns,
                        input_build = input_build, store_build = store_build)
   raw <- validate_core_orientation(raw, row_policy = row_policy)
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
     row_policy = row_policy, require_statistics = TRUE,
-    drop_duplicates = TRUE, check_duplicates = TRUE
+    drop_duplicates = TRUE, check_duplicates = TRUE, detail = "compact"
   )
+  phase_timings$phases$qc <- phase_seconds(qc_started)
   raw <- structural$data
   if (structural$report$input_rows > 0L && !nrow(raw)) {
     failure <- format_structural_qc_failure(structural$report)
@@ -213,7 +234,9 @@ compress_sumstats <- function(input, output,
     }
     stop(failure, call. = FALSE)
   }
+  identity_started <- phase_clock()
   raw <- canonicalize_core_identity(raw, build = store_build)
+  phase_timings$phases$identity_sort <- phase_seconds(identity_started)
   attr(raw, "source_columns") <- source_columns
   attr(raw, "source_columns_read") <- source_columns_read
   attr(raw, "source_provenance") <- source_provenance
@@ -281,7 +304,8 @@ compress_sumstats <- function(input, output,
       source_columns = attr(raw, "source_columns") %||% names(raw),
       source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
       source = attr(raw, "source_provenance") %||% NULL,
-      selection = selection
+      selection = selection,
+      timings = phase_timings
     )
     pcodec_write_store(data, output, metadata = pcodec_metadata)
     compressor_manifest_contract(
@@ -292,11 +316,15 @@ compress_sumstats <- function(input, output,
       preparation = preparation,
       panel = preparation$variant_set %||% NULL
     )
+    commit_started <- phase_clock()
     commit_store_output(transaction)
+    commit_seconds <- phase_seconds(commit_started)
     completed <- TRUE
+    record_commit_timing(transaction$target, commit_seconds)
     return(open_compressor(transaction$target))
   }
 
+  encode_started <- phase_clock()
   n <- nrow(data)
   if (!is.null(selection)) {
     selection$kept_rows <- as.integer(n)
@@ -367,6 +395,7 @@ compress_sumstats <- function(input, output,
                          chunk_size = as.integer(block_rows))
     files$extras <- file.path("extras", "values.parquet")
   }
+  phase_timings$phases$encode <- phase_seconds(encode_started)
 
   reference_manifest <- list(id = "none", build = store_build, status = "not_used",
                              external_reference_required = FALSE)
@@ -402,6 +431,7 @@ compress_sumstats <- function(input, output,
     ),
     selection = selection,
     files = files,
+    timings = phase_timings,
     benchmark = benchmark_metadata(),
     benchmark_comparisons = list(
       vcf_tabix = vcf_benchmark_metadata(),
@@ -427,8 +457,11 @@ compress_sumstats <- function(input, output,
   )
   store <- open_compressor(output)
   if (isTRUE(cache)) build_cache(store, overwrite = TRUE, block_rows = block_rows)
+  commit_started <- phase_clock()
   commit_store_output(transaction)
+  commit_seconds <- phase_seconds(commit_started)
   completed <- TRUE
+  record_commit_timing(transaction$target, commit_seconds)
   open_compressor(transaction$target)
 }
 

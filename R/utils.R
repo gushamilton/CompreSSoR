@@ -1,5 +1,11 @@
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+phase_clock <- function() unname(proc.time()[["elapsed"]])
+
+phase_seconds <- function(start) {
+  as.numeric(phase_clock() - start)
+}
+
 require_parquet_backend <- function(feature = "this operation", dplyr = FALSE) {
   if (!requireNamespace("arrow", quietly = TRUE)) {
     stop(feature, " requires the optional R package 'arrow'", call. = FALSE)
@@ -46,13 +52,53 @@ sumstats_column_alias_map <- function() {
   )
 }
 
+sumstats_resolution_matrix <- function() {
+  data.frame(
+    field = c("beta", "standard_error", "z", "odds_ratio", "p_value"),
+    primary_route = c(
+      "explicit beta alias",
+      "explicit standard_error alias",
+      "explicit z alias checked against beta/standard_error, otherwise derived",
+      "not a strict-core field",
+      "input aid only; never stored"
+    ),
+    strict_fallback = c(
+      "positive OR -> log(OR) only at the boundary when beta is absent",
+      "none",
+      "beta / standard_error",
+      "none",
+      "none; p-to-SE inference is disabled"
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
+                                         p_to_se_rows = integer()) {
+  list(
+    id = "beta_se_primary_v1",
+    beta = "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
+    standard_error = "explicit_standard_error_alias_only",
+    z = "explicit_z_checked_against_beta_over_standard_error_or_derived",
+    odds_ratio = "positive_OR_to_log_OR_only_when_beta_is_absent",
+    p_value = "input_aid_only;_never_stored",
+    p_to_se = list(
+      enabled = isTRUE(allow_p_to_se),
+      method = if (isTRUE(allow_p_to_se))
+        "explicit_opt_in_conflict_checked" else "disabled_in_strict_core",
+      rows = as.integer(length(p_to_se_rows)),
+      example_rows = as.integer(utils::head(p_to_se_rows, 5L))
+    )
+  )
+}
+
 sumstats_projection_aliases <- function(core_only = FALSE) {
   alias_map <- sumstats_column_alias_map()
   if (isTRUE(core_only)) {
     alias_map <- alias_map[c(
       "chromosome", "base_pair_location", "reference_allele",
       "alternate_allele", "effect_allele", "other_allele", "beta",
-      "standard_error", "effect_allele_frequency"
+      "standard_error", "effect_allele_frequency", "z"
     )]
   }
   unique(c(
@@ -571,8 +617,13 @@ rename_first_alias <- function(data, target, aliases) {
   data
 }
 
-normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")) {
+normalise_sumstats_columns <- function(data, parse_policy = c("error", "report"),
+                                       allow_p_to_se = FALSE) {
   parse_policy <- match.arg(parse_policy)
+  if (length(allow_p_to_se) != 1L || !is.logical(allow_p_to_se) ||
+      is.na(allow_p_to_se)) {
+    stop("allow_p_to_se must be TRUE or FALSE", call. = FALSE)
+  }
   data <- clean_input_names(data)
   parse_failures <- list()
   assign_parsed <- function(target, value) {
@@ -584,14 +635,16 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
                              c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"))
   alias_map <- sumstats_column_alias_map()
   for (target in names(alias_map)) data <- rename_first_alias(data, target, alias_map[[target]])
+  beta_source_present <- "beta" %in% names(data)
+  standard_error_source_present <- "standard_error" %in% names(data)
+  z_source_present <- "z" %in% names(data)
+  odds_ratio_source_present <- "odds_ratio" %in% names(data)
+  # Keep source-level missingness for provenance, but delay the parse-policy
+  # error until the unambiguous positive-OR boundary conversion has had a
+  # chance to provide beta. The strict writer still checks source columns and
+  # therefore never treats OR as a strict-core beta field.
   missing <- setdiff(required_sumstats_columns(), names(data))
-  if (length(missing)) {
-    if (identical(parse_policy, "error")) {
-      stop("Missing required summary-statistics columns: ", paste(missing, collapse = ", "),
-           call. = FALSE)
-    }
-    for (column in missing) data[[column]] <- NA_character_
-  }
+  for (column in missing) data[[column]] <- NA_character_
   if (!"chromosome" %in% names(data)) data$chromosome <- NA_character_
   if (!"base_pair_location" %in% names(data)) data$base_pair_location <- NA_integer_
   data$chromosome <- normalise_chromosome(data$chromosome)
@@ -620,8 +673,19 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   if (any(bad_or) && identical(parse_policy, "error")) {
     stop("odds_ratio must be finite and positive when supplied", call. = FALSE)
   }
-  beta_missing <- is.na(data$beta) & is.finite(data$odds_ratio) & data$odds_ratio > 0
-  data$beta[beta_missing] <- log(data$odds_ratio[beta_missing])
+  beta_from_or <- integer()
+  if (!beta_source_present && odds_ratio_source_present) {
+    beta_from_or <- which(is.na(data$beta) & is.finite(data$odds_ratio) &
+                            data$odds_ratio > 0)
+    if (length(beta_from_or)) data$beta[beta_from_or] <- log(data$odds_ratio[beta_from_or])
+  }
+  if (identical(parse_policy, "error")) {
+    unresolved <- setdiff(missing, if (length(beta_from_or)) "beta" else character())
+    if (length(unresolved)) {
+      stop("Missing required summary-statistics columns: ", paste(unresolved, collapse = ", "),
+           call. = FALSE)
+    }
+  }
   if (!"effect_allele_frequency" %in% names(data)) data$effect_allele_frequency <- NA_real_
   assign_parsed("effect_allele_frequency",
                 parse_numeric_column(data$effect_allele_frequency,
@@ -635,21 +699,32 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     fill <- is.na(data$p_value) & is.finite(lp)
     data$p_value[fill] <- 10^(-lp[fill])
   }
-  # Accept beta/SE, explicit Z/SE, or beta plus p (with the usual Wald
-  # approximation). P is an input aid only; it is never written to a store.
+  # The strict route is explicit beta + standard error. An optional supplied Z
+  # is checked against beta / standard_error, or derived when absent. P-value
+  # to SE inference is deliberately opt-in and is conflict-checked below.
   z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
   data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
-  beta_missing_from_z <- is.na(data$beta) & is.finite(data$z) & is.finite(data$standard_error) & data$standard_error > 0
-  data$beta[beta_missing_from_z] <- data$z[beta_missing_from_z] * data$standard_error[beta_missing_from_z]
-  se_missing <- is.na(data$standard_error) & is.finite(data$beta) & is.finite(data$p_value) &
-    data$p_value > 0 & data$p_value < 1 & data$beta != 0
-  if (any(se_missing)) {
-    data$standard_error[se_missing] <- abs(data$beta[se_missing]) /
-      abs(stats::qnorm(data$p_value[se_missing] / 2))
+  p_to_se_rows <- integer()
+  if (isTRUE(allow_p_to_se)) {
+    p_to_se_candidate <- is.finite(data$beta) & is.finite(data$p_value) &
+      data$p_value > 0 & data$p_value < 1 & data$beta != 0
+    derived_se <- rep(NA_real_, nrow(data))
+    derived_se[p_to_se_candidate] <- abs(data$beta[p_to_se_candidate]) /
+      abs(stats::qnorm(data$p_value[p_to_se_candidate] / 2))
+    supplied_se <- is.finite(data$standard_error) & data$standard_error > 0
+    conflict <- p_to_se_candidate & supplied_se &
+      abs(data$standard_error - derived_se) >
+        (1e-6 + 0.01 * pmax(abs(data$standard_error), abs(derived_se)))
+    if (any(conflict)) {
+      stop("standard_error conflicts with the explicitly enabled p-value-derived value at row(s): ",
+           paste(utils::head(which(conflict), 5L), collapse = ", "), call. = FALSE)
+    }
+    p_to_se_rows <- which(p_to_se_candidate & !supplied_se)
+    if (length(p_to_se_rows)) data$standard_error[p_to_se_rows] <- derived_se[p_to_se_rows]
   }
   z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
   data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
-  consistent <- is.finite(data$beta) & is.finite(data$z) &
+  consistent <- z_source_present & is.finite(data$beta) & is.finite(data$z) &
     is.finite(data$standard_error) & data$standard_error > 0
   if (any(consistent)) {
     beta_from_z <- data$z[consistent] * data$standard_error[consistent]
@@ -691,50 +766,91 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   data$rsid[fill_rsid] <- data$variant_id[fill_rsid]
   attr(data, "parse_failures") <- parse_failures
   attr(data, "missing_columns") <- missing
+  attr(data, "resolution_provenance") <- sumstats_resolution_contract(
+    allow_p_to_se = allow_p_to_se, p_to_se_rows = p_to_se_rows
+  )
+  attr(data, "resolution_provenance")$beta_route <- if (length(beta_from_or)) {
+    "positive_OR_to_log_OR_boundary_conversion"
+  } else if (beta_source_present) {
+    "explicit_beta_alias"
+  } else {
+    "missing"
+  }
+  attr(data, "resolution_provenance")$standard_error_route <- if (standard_error_source_present) {
+    "explicit_standard_error_alias"
+  } else {
+    "missing"
+  }
+  attr(data, "resolution_provenance")$z_source <- if (z_source_present) {
+    "supplied_and_checked_when_beta_and_standard_error_are_finite"
+  } else {
+    "derived_from_beta_over_standard_error"
+  }
   data
 }
 
-new_structural_qc_report <- function(n, input_build, max_examples = 5L) {
-  list(
+new_structural_qc_report <- function(n, input_build, max_examples = 5L,
+                                     detail = c("full", "compact")) {
+  detail <- match.arg(detail)
+  report <- list(
     input_rows = as.integer(n),
     accepted_rows = NA_integer_,
     rejected_rows = NA_integer_,
     dropped_rows = NA_integer_,
     input_build = normalise_build_name(input_build),
     valid = FALSE,
-    row_status = data.frame(
-      row = seq_len(n), structurally_valid = logical(n), accepted = logical(n),
-      reasons = rep("", n), stringsAsFactors = FALSE
-    ),
     rejection_counts = integer(),
     examples = list(),
-    max_examples = as.integer(max_examples)
+    max_examples = as.integer(max_examples),
+    detail = detail
   )
+  if (identical(detail, "full")) {
+    report$row_status <- data.frame(
+      row = seq_len(n), structurally_valid = logical(n), accepted = logical(n),
+      reasons = rep("", n), stringsAsFactors = FALSE
+    )
+  }
+  report
 }
 
 structural_qc_report <- function(data, input_build = "GRCh38",
-                                 require_statistics = TRUE, max_examples = 5L) {
+                                 require_statistics = TRUE, max_examples = 5L,
+                                 detail = c("full", "compact")) {
+  detail <- match.arg(detail)
   data <- clean_input_names(data)
   n <- nrow(data)
-  report <- new_structural_qc_report(n, input_build, max_examples = max_examples)
+  report <- new_structural_qc_report(
+    n, input_build, max_examples = max_examples, detail = detail
+  )
   report$missing_columns <- attr(data, "missing_columns") %||% character()
   if (!n) {
     report$accepted_rows <- 0L
     report$rejected_rows <- 0L
     report$dropped_rows <- 0L
     report$valid <- TRUE
-    report$row_status$structurally_valid <- logical()
-    report$row_status$accepted <- logical()
+    if (identical(detail, "full")) {
+      report$row_status$structurally_valid <- logical()
+      report$row_status$accepted <- logical()
+    }
     return(report)
   }
 
-  reasons <- list()
+  reasons <- if (identical(detail, "full")) list() else NULL
+  rejection_counts <- integer()
+  examples <- list()
+  invalid <- rep(FALSE, n)
+  reason_count <- integer(n)
   add_reason <- function(name, mask) {
     mask <- as.logical(mask)
     mask[is.na(mask)] <- FALSE
     if (length(mask) != n) stop("structural QC mask has the wrong number of rows",
                                 call. = FALSE)
-    reasons[[name]] <<- mask
+    if (identical(detail, "full")) reasons[[name]] <<- mask
+    count <- sum(mask)
+    rejection_counts[name] <<- as.integer(count)
+    examples[[name]] <<- utils::head(which(mask), max(0L, as.integer(max_examples)))
+    invalid <<- invalid | mask
+    reason_count <<- reason_count + as.integer(mask)
   }
   values <- function(name, default = NA_real_) {
     if (name %in% names(data)) return(data[[name]])
@@ -836,7 +952,8 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     add_reason("nonfinite_minus_log10_p", !is.na(lp) & !is.finite(lp))
   }
   if (isTRUE(require_statistics)) {
-    add_reason("missing_statistics", !is.finite(z) | !is.finite(se) | se <= 0)
+    add_reason("missing_statistics", !is.finite(beta) | !is.finite(z) |
+                 !is.finite(se) | se <= 0)
   }
 
   key <- ifelse(!is.na(chromosome) & is.finite(position) &
@@ -844,37 +961,37 @@ structural_qc_report <- function(data, input_build = "GRCh38",
                 paste(chromosome, as.integer(position), other, effect, sep = ":"), NA_character_)
   duplicate <- !is.na(key) & (duplicated(key) | duplicated(key, fromLast = TRUE))
   add_reason("duplicate_variant", duplicate)
-  report$canonical_key <- key
-
-  reason_names <- names(reasons)
-  reason_matrix <- if (length(reason_names)) {
-    do.call(cbind, lapply(reasons, as.integer))
-  } else {
-    matrix(0L, nrow = n, ncol = 0L)
-  }
-  if (length(reason_names)) colnames(reason_matrix) <- reason_names
-  invalid <- if (ncol(reason_matrix)) rowSums(reason_matrix) > 0L else rep(FALSE, n)
-  reason_text <- if (length(reason_names)) {
-    apply(reason_matrix, 1L, function(row) {
-      paste(reason_names[which(row != 0L)], collapse = ",")
-    })
-  } else {
-    rep("", n)
-  }
-  report$row_status$structurally_valid <- !invalid
-  report$row_status$reasons <- reason_text
-  report$rejection_counts <- sort(
-    vapply(reasons, sum, integer(1)), decreasing = TRUE
-  )
+  report$rejection_counts <- sort(rejection_counts, decreasing = TRUE)
   report$counts <- report$rejection_counts
   report$rejections <- report$rejection_counts[report$rejection_counts > 0L]
-  report$examples <- lapply(reasons, function(mask) {
-    utils::head(which(mask), max(0L, as.integer(max_examples)))
-  })
-  report$invalid_rows <- which(invalid)
-  report$duplicate_rows <- which(duplicate)
-  report$structurally_valid_rows <- which(!invalid)
+  report$examples <- examples
+  report$rejected_rows <- as.integer(sum(invalid))
   report$valid <- !any(invalid)
+  if (identical(detail, "full")) {
+    reason_names <- names(reasons)
+    reason_text <- rep("", n)
+    for (name in reason_names) {
+      rows <- reasons[[name]]
+      reason_text[rows] <- ifelse(
+        nzchar(reason_text[rows]), paste0(reason_text[rows], ",", name), name
+      )
+    }
+    report$row_status$structurally_valid <- !invalid
+    report$row_status$reasons <- reason_text
+    report$canonical_key <- key
+    report$invalid_rows <- which(invalid)
+    report$duplicate_rows <- which(duplicate)
+    report$structurally_valid_rows <- which(!invalid)
+  } else {
+    # Private, short-lived state consumed by apply_structural_qc(). It is
+    # removed before the compact report is attached to a store or returned.
+    report$internal <- list(
+      invalid = invalid,
+      duplicate = duplicate,
+      canonical_key = key,
+      reason_count = reason_count
+    )
+  }
   report
 }
 
@@ -894,43 +1011,69 @@ format_structural_qc_failure <- function(report) {
   }, character(1))
   example_text <- example_text[nzchar(example_text)]
   if (length(example_text)) summary <- paste(summary, paste(example_text, collapse = "; "), sep = "; ")
-  paste0("structural QC rejected ", length(report$invalid_rows), " row(s): ", summary)
+  rejected <- report$rejected_rows %||% length(report$invalid_rows %||% integer())
+  paste0("structural QC rejected ", as.integer(rejected), " row(s): ", summary)
 }
 
 apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
                                 row_policy = c("report", "error"),
                                 require_statistics = TRUE, max_examples = 5L,
-                                drop_duplicates = TRUE, check_duplicates = TRUE) {
+                                drop_duplicates = TRUE, check_duplicates = TRUE,
+                                detail = c("full", "compact")) {
   row_policy <- match.arg(row_policy)
+  detail <- match.arg(detail)
   if (isTRUE(strict)) row_policy <- "error"
   report <- structural_qc_report(data, input_build = input_build,
-                                  require_statistics = require_statistics,
-                                  max_examples = max_examples)
-  invalid <- report$invalid_rows
+                                 require_statistics = require_statistics,
+                                 max_examples = max_examples, detail = detail)
+  if (identical(detail, "compact")) {
+    internal <- report$internal %||% list(
+      invalid = logical(nrow(data)), duplicate = logical(nrow(data)),
+      canonical_key = character(nrow(data)), reason_count = integer(nrow(data))
+    )
+  } else {
+    internal <- list(
+      invalid = rep(FALSE, nrow(data)),
+      duplicate = rep(FALSE, nrow(data)),
+      canonical_key = report$canonical_key %||% rep(NA_character_, nrow(data)),
+      reason_count = integer(nrow(data))
+    )
+    internal$invalid[report$invalid_rows %||% integer()] <- TRUE
+    internal$duplicate[report$duplicate_rows %||% integer()] <- TRUE
+  }
+  invalid_mask <- internal$invalid
+  duplicate_mask <- internal$duplicate
+  invalid <- which(invalid_mask)
   if (!isTRUE(check_duplicates)) {
-    invalid <- setdiff(invalid, report$duplicate_rows)
+    invalid <- setdiff(invalid, which(duplicate_mask))
   }
   keep <- rep(TRUE, nrow(data))
   if (length(invalid)) {
     keep[invalid] <- FALSE
     # In report mode keep the first copy of an otherwise valid duplicate and
     # reject later copies. Strict/error mode still rejects every duplicate row.
-    duplicate <- report$duplicate_rows
+    duplicate <- which(duplicate_mask)
     if (isTRUE(drop_duplicates) && identical(row_policy, "report") && length(duplicate)) {
-      duplicate_key <- report$canonical_key[duplicate]
+      duplicate_key <- internal$canonical_key[duplicate]
       first <- !duplicated(duplicate_key)
       duplicate_first <- duplicate[first]
-      only_duplicate_reason <- report$row_status$reasons[duplicate_first] == "duplicate_variant"
+      only_duplicate_reason <- if (identical(detail, "compact")) {
+        internal$reason_count[duplicate_first] == 1L
+      } else {
+        report$row_status$reasons[duplicate_first] == "duplicate_variant"
+      }
       keep[duplicate_first[only_duplicate_reason]] <- TRUE
     }
   }
   if (identical(row_policy, "error") && length(invalid)) {
     stop(format_structural_qc_failure(report), call. = FALSE)
   }
-  report$row_status$accepted <- keep
+  if (identical(detail, "full")) report$row_status$accepted <- keep
   report$accepted_rows <- as.integer(sum(keep))
   report$rejected_rows <- as.integer(length(invalid))
   report$dropped_rows <- as.integer(sum(!keep))
+  report$valid <- !length(invalid)
+  report$internal <- NULL
   out <- data[keep, , drop = FALSE]
   attr(out, "structural_qc_report") <- report
   list(data = out, report = report)
@@ -954,6 +1097,7 @@ compact_structural_qc_report <- function(report) {
   compact$invalid_rows <- NULL
   compact$duplicate_rows <- NULL
   compact$structurally_valid_rows <- NULL
+  compact$internal <- NULL
   compact
 }
 
