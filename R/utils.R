@@ -648,6 +648,8 @@ structural_qc_report <- function(data, input_build = "GRCh38",
 
   chromosome <- normalise_chromosome(values("chromosome", NA_character_))
   position <- suppressWarnings(as.numeric(values("base_pair_location", NA_real_)))
+  reference <- toupper(text_values("reference_allele"))
+  alternate <- toupper(text_values("alternate_allele"))
   effect <- toupper(text_values("effect_allele"))
   other <- toupper(text_values("other_allele"))
   rsid <- text_values("rsid")
@@ -676,17 +678,32 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   add_reason("coordinate_out_of_range", known_chromosome & is.finite(position) &
                position >= 1 & position > unname(lengths[chromosome]))
 
+  add_reason("missing_reference_allele", is.na(reference) | !nzchar(reference))
+  add_reason("missing_alternate_allele", is.na(alternate) | !nzchar(alternate))
   add_reason("missing_effect_allele", is.na(effect) | !nzchar(effect))
   add_reason("missing_other_allele", is.na(other) | !nzchar(other))
-  add_reason("multiallelic", (!is.na(effect) & grepl(",", effect, fixed = TRUE)) |
-               (!is.na(other) & grepl(",", other, fixed = TRUE)))
-  add_reason("symbolic_allele", (!is.na(effect) & grepl("^(?:<.*>|\\*)$", effect)) |
-               (!is.na(other) & grepl("^(?:<.*>|\\*)$", other)))
-  add_reason("indel", (!is.na(effect) & nchar(effect) != 1L) |
-               (!is.na(other) & nchar(other) != 1L))
-  add_reason("invalid_allele", (!is.na(effect) & !grepl("^[ACGT]$", effect)) |
-               (!is.na(other) & !grepl("^[ACGT]$", other)))
-  add_reason("same_alleles", !is.na(effect) & !is.na(other) & effect == other)
+  alleles <- cbind(reference, alternate, effect, other)
+  present_alleles <- !is.na(alleles)
+  grepl_alleles <- function(pattern, fixed = FALSE) {
+    matrix(grepl(pattern, alleles, fixed = fixed), nrow = n)
+  }
+  add_reason("multiallelic",
+             rowSums(present_alleles & grepl_alleles(",", fixed = TRUE), na.rm = TRUE) > 0L)
+  add_reason("symbolic_allele",
+             rowSums(present_alleles & grepl_alleles("^(?:<.*>|\\*)$"), na.rm = TRUE) > 0L)
+  add_reason("indel",
+             rowSums(present_alleles & nchar(alleles) != 1L, na.rm = TRUE) > 0L)
+  add_reason("invalid_allele",
+             rowSums(present_alleles & !grepl_alleles("^[ACGT]$"), na.rm = TRUE) > 0L)
+  add_reason("same_alleles", (
+    !is.na(reference) & !is.na(alternate) & reference == alternate
+  ) | (
+    !is.na(effect) & !is.na(other) & effect == other
+  ))
+  orientation_defined <- !is.na(reference) & !is.na(alternate) &
+    !is.na(effect) & !is.na(other)
+  add_reason("orientation_mismatch", orientation_defined &
+               (effect != alternate | other != reference))
 
   numeric_fields <- c("beta", "standard_error", "z", "effect_allele_frequency",
                       "p_value", "odds_ratio", "sample_size", "info")
@@ -821,6 +838,12 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
 compact_structural_qc_report <- function(report) {
   if (is.null(report)) return(NULL)
   compact <- report
+  # Named atomic vectors are serialized by jsonlite as unnamed arrays. Keep
+  # rejection reasons addressable in manifests by storing these aggregates as
+  # named lists instead.
+  compact$rejection_counts <- as.list(report$rejection_counts)
+  compact$counts <- compact$rejection_counts
+  compact$rejections <- as.list(report$rejections)
   # The public workflows retain aggregate counts and bounded examples in
   # manifests. Full row status/key vectors remain available from
   # preflight_sumstats() for callers that explicitly request an audit table,

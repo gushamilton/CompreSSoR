@@ -186,13 +186,24 @@ compress_sumstats <- function(input, output,
   source_provenance <- attr(raw, "source_provenance")
   validate_core_schema(raw, source_columns = source_columns,
                        input_build = input_build, store_build = store_build)
-  raw <- validate_core_orientation(raw)
+  raw <- validate_core_orientation(raw, row_policy = row_policy)
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
     row_policy = row_policy, require_statistics = TRUE,
     drop_duplicates = TRUE, check_duplicates = TRUE
   )
   raw <- structural$data
+  if (structural$report$input_rows > 0L && !nrow(raw)) {
+    failure <- format_structural_qc_failure(structural$report)
+    orientation_rejections <- structural$report$rejection_counts[["orientation_mismatch"]] %||% 0L
+    if (orientation_rejections > 0L) {
+      failure <- paste(
+        "effect_allele and other_allele are inconsistent with explicit REF/ALT;",
+        failure
+      )
+    }
+    stop(failure, call. = FALSE)
+  }
   raw <- canonicalize_core_identity(raw, build = store_build)
   attr(raw, "source_columns") <- source_columns
   attr(raw, "source_provenance") <- source_provenance

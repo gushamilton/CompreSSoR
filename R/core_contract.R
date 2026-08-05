@@ -56,19 +56,20 @@ validate_core_schema <- function(data, source_columns = names(data),
   invisible(TRUE)
 }
 
-validate_core_orientation <- function(data) {
+validate_core_orientation <- function(data, row_policy = c("error", "report")) {
+  row_policy <- match.arg(row_policy)
   ref <- toupper(trimws(as.character(data$reference_allele)))
   alt <- toupper(trimws(as.character(data$alternate_allele)))
   effect <- toupper(trimws(as.character(data$effect_allele)))
   other <- toupper(trimws(as.character(data$other_allele)))
   bases <- c("A", "C", "G", "T")
   invalid_identity <- is.na(ref) | is.na(alt) | !ref %in% bases | !alt %in% bases | ref == alt
-  if (any(invalid_identity)) {
+  if (any(invalid_identity) && identical(row_policy, "error")) {
     stop("explicit REF and ALT must be distinct single A/C/G/T alleles; " ,
          sum(invalid_identity), " invalid row(s) found", call. = FALSE)
   }
   inconsistent <- is.na(effect) | is.na(other) | effect != alt | other != ref
-  if (any(inconsistent)) {
+  if (any(inconsistent) && identical(row_policy, "error")) {
     stop("effect_allele and other_allele are inconsistent with explicit REF/ALT; " ,
          "the core requires effect_allele = ALT and other_allele = REF, with no silent flipping (" ,
          sum(inconsistent), " row(s))", call. = FALSE)
