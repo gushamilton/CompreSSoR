@@ -8,7 +8,7 @@
 \arguments{\item{kind}{One of \code{"pareto"}, \code{"vcf"}, \code{"finngen"},
 \code{"finngen_optimization"}, \code{"modes"}, \code{"release_gate"},
 \code{"release_gate_followup"}, \code{"pcodec_access"}, \code{"storage_size"},
-or \code{"storage_amortization"}, \code{"native_se8"}, or
+or \code{"storage_amortization"}, the historical \code{"native_se8"}, or
 \code{"pareto_chr1"}. Use \code{"finngen_10m"} for the current keyed
 10-million-row FinnGen format comparison and \code{"pcodec_10m_threads"}
 for its native one-versus-four-thread reader comparison. The

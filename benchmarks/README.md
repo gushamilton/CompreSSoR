@@ -42,13 +42,11 @@ numeric reconstruction experiments: their inputs are `z.u16`, `eaf.u8`, and
 `se.u8` plus exception arrays. They do not contain the position and
 REF/ALT identity streams required by a self-contained GWAS store.
 
-The current package uses `z9/eaf8/se8` because commit `4de9978` deliberately
-changed the native SE code from a six-bit semantic domain to the full byte
-domain. The code comment gives the reason: six semantic bits caused ordinary
-SE values to become exceptions. That change is in the current locked package;
-it was not an accidental benchmark switch. However, it is separate from the
-old projection/native-C++ storage experiment and should not be presented as
-the 5.7× result.
+The current package uses the canonical `z9/eaf8/se6` semantic profile. SE codes
+are stored in a physical `uint8` stream, but only 62 central semantic bins plus
+missing and exception sentinels are part of the public contract. The historical
+full-byte semantic `se8` experiment is separate from the current keyed store
+and must not be presented as the 5.7× result.
 
 Until the exact 5.7× file layout—including its identity bytes—is recovered,
 the 5.7× screenshot is retained as historical evidence only. It is not a

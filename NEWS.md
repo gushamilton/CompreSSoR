@@ -4,7 +4,7 @@
   access repetitions, explicit self-contained/reference-anchored contracts,
   package round-trip validation, and a README plot generated from the checked
   CSV record.
-- Records theoretical validation bounds for the standard lossy Z9/EAF8/SE8
+- Records theoretical validation bounds for the standard lossy Z9/EAF8/SE6
   profile in the manifest, including the SE-relative and beta reconstruction
   tolerances.
 - Lowers the Arrow compatibility floor to the Arrow 22 API available on the

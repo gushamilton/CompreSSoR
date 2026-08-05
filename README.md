@@ -71,7 +71,7 @@ required for access or comparison. The standard numerical representation is:
 | REF + ALT | Four-bit directed substitution code | Exact alleles |
 | Z | 9-bit semantic code plus exceptions | Quantised Z |
 | EAF | 8-bit arcsine code | Quantised EAF |
-| SE | 8-bit block-centred log2 residual | Quantised SE |
+| SE | 6-bit semantic block-centred log2 residual in a physical `uint8` stream | Quantised SE |
 | Beta | Not stored per row | Derived as `Z × SE` |
 | p-value | Not stored | Derived from Z |
 | rsID/text ID | Not stored | Use `chrom:pos:REF:ALT` |

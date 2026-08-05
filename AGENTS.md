@@ -13,12 +13,14 @@ source of truth rather than resurrecting archived experiments.
 
 ## Current implementation
 
-- The current writer is native Pcodec format `0.4.4-pcodec-native`.
+- The current writer is native Pcodec format `0.4.5-pcodec-native`.
 - The store is self-contained: its identity is the GRCh38 global position plus
   directed REF→ALT substitution code. It does not depend on a shared spine or
   external reference when being read.
 - The standard streams are position, substitution, semantic Z9, arcsine EAF8,
-  block-centred SE8, and Zstandard-compressed exceptions. `beta` and `p` are
+  semantic SE6, and Zstandard-compressed exceptions. SE6 is carried in a
+  physical `uint8` stream; the physical byte container is not an SE8 semantic
+  profile. `beta` and `p` are
   reconstructed on demand.
 - The normal ingestion path is import/QC/harmonisation/liftover to GRCh38,
   followed by compression. The current identity path supports biallelic A/C/G/T

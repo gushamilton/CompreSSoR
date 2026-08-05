@@ -25,6 +25,13 @@ The default Pcodec store contains only the core GWAS fields and its identity
 key. It does not store `rsid`, `p`, or `beta` per row. Extra columns belong in
 the Parquet backend and are outside this locked Pcodec format.
 
+The canonical public numerical profile is `Z9/EAF8/SE6`: Z has 9 semantic bits,
+EAF has 8 semantic bits, and SE has 6 semantic bits. The SE semantic codes are
+carried in a physical `uint8` stream; this byte container must not be confused
+with the historical SE8 semantic experiment. Current manifests identify this
+distinction with `se_bits = 6`, `se_count = 62`, `se_missing = 62`,
+`se_exception = 63`, and `se_physical_dtype = "uint8"`.
+
 ## Variant identity
 
 Every row has an unambiguous identity key:
@@ -59,7 +66,7 @@ Pcodec 1.0.3, level 8:
 | REF→ALT | `substitution.pco` | directed four-bit code in `uint8` |
 | Z | `z.pco` | 9-bit semantic code, physically `uint16` |
 | EAF | `eaf.pco` | 8-bit arcsine code, physically `uint8` |
-| SE | `se.pco` | 8-bit block-centred log2 residual, physically `uint8` |
+| SE | `se.pco` | 6-bit semantic block-centred log2 residual (62 bins plus two sentinels), physically `uint8` |
 | Exceptions | `exceptions.bin` | block-local Zstandard level 19 sidecar |
 
 Key frames contain 131,072 rows. Numerical value frames contain 65,536

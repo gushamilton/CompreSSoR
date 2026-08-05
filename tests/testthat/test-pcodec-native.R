@@ -23,6 +23,47 @@ test_that("native Pcodec selects access-appropriate thread defaults", {
   expect_equal(CompreSSoR:::pcodec_native_default_threads(), 3L)
 })
 
+test_that("native format and manifest expose one SE6 provenance contract", {
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_FORMAT, "0.4.5-pcodec-native")
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_PROFILE, "z9/eaf8/se6")
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_BITS, 6L)
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_COUNT, 62L)
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_MISSING_CODE, 62L)
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_EXCEPTION_CODE, 63L)
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_DTYPE, "uint8")
+  expect_identical(CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_BITS, 8L)
+  expect_identical(
+    CompreSSoR:::PCODEC_NATIVE_CODEC_NAME,
+    "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions"
+  )
+
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(32L)
+  store <- compress_sumstats(
+    input, tempfile("pcodec-native-provenance-"), reference = NULL,
+    mode = "convert", assume_grch38_ref_alt = TRUE, overwrite = TRUE
+  )
+  semantic <- store$manifest$semantic_codec
+  expect_identical(store$manifest$format_version, CompreSSoR:::PCODEC_NATIVE_FORMAT)
+  expect_identical(semantic$name, CompreSSoR:::PCODEC_NATIVE_SE_PROFILE)
+  expect_identical(semantic$se_bits, CompreSSoR:::PCODEC_NATIVE_SE_BITS)
+  expect_identical(semantic$se_count, CompreSSoR:::PCODEC_NATIVE_SE_COUNT)
+  expect_identical(semantic$se_missing, CompreSSoR:::PCODEC_NATIVE_SE_MISSING_CODE)
+  expect_identical(semantic$se_exception, CompreSSoR:::PCODEC_NATIVE_SE_EXCEPTION_CODE)
+  expect_identical(semantic$se_physical_dtype, CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_DTYPE)
+  expect_identical(semantic$se_physical_bits, CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_BITS)
+  expect_identical(store$manifest$codec$name, CompreSSoR:::PCODEC_NATIVE_CODEC_NAME)
+  expect_identical(store$manifest$codec$se_physical_dtype,
+                   CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_DTYPE)
+  expect_identical(store$manifest$codec$se_physical_bits,
+                   CompreSSoR:::PCODEC_NATIVE_SE_PHYSICAL_BITS)
+  expect_identical(store$manifest$tolerances$se_profile,
+                   CompreSSoR:::PCODEC_NATIVE_SE_PROFILE)
+  expect_identical(store$manifest$tolerances$se_physical_storage,
+                   "uint8 container for semantic SE6 codes")
+})
+
 test_that("native 0.4 stores are the default and support full, regional, key, and row reads", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

@@ -32,7 +32,8 @@ The standard profile stores Z, EAF, and SE in separate numerical streams:
 
 - Z: 9-bit central quantisation, with sparse float32 exceptions;
 - EAF: 8-bit arcsine/square-root quantisation;
-- SE: 8-bit block-centred log2 residual, with sparse exceptions.
+- SE: 6-bit semantic block-centred log2 residual in a physical `uint8` stream,
+  with sparse exceptions.
 
 This is a bounded-lossy representation. The variant key remains exact, and the
 manifest records the numeric profile and tolerances. A Parquet exact store is
@@ -234,12 +235,12 @@ ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
 the package independent of the incomplete upstream wrapped C API while
 retaining Pcodec's numerical codec.
 
-The native format is `0.4.4-pcodec-native`. Identity streams use 131,072-row
+The native format is `0.4.5-pcodec-native`. Identity streams use 131,072-row
 frames, Pcodec pages use 131,072 rows, and numeric streams use 65,536-row
 frames by default (`block_rows` changes the numeric frame size). The five streams are `uint32` global position,
-`uint8` substitution code, `uint16` Z code, `uint8` EAF code, and `uint8` SE
-code. SE centres are shared across 65,536 rows, while the SE code now uses all
-eight physical bits: 254 central bins plus missing and exact-exception
+`uint8` substitution code, `uint16` Z code, `uint8` EAF code, and a physical
+`uint8` SE code. The public profile is semantic `Z9/EAF8/SE6`: SE centres are
+shared across 65,536 rows, with 62 central bins plus missing and exact-exception
 sentinels. Exceptions are a small Zstandard-compressed float32 sidecar with
 row, Z, log2(SE), EAF, and flags. The index records the byte offset and row
 count of every block, so regional and sparse reads do not decode the complete
@@ -255,8 +256,8 @@ The upstream Pcodec project documents its standalone C bindings as incomplete;
 the CompreSSoR layer therefore owns the ABI, buffer handling, format version,
 and round-trip tests rather than exposing that upstream API directly.
 
-On the Mac mini, the current native-only smoke benchmark uses a deterministic
-one-million-row SNV fixture and the self-contained identity key. The 0.4.4
+On the Mac mini, the historical native-only smoke benchmark uses a deterministic
+one-million-row SNV fixture and the self-contained identity key. Its 0.4.4
 store is 3,067,151 bytes versus 53,154,119 bytes for source TSV.gz and takes
 4.347 s to write. Five-run warm medians are 0.058 s for all-column full load,
 0.008 s for a 10 kb region, and 0.204 s for 25 canonical-key reads. Full

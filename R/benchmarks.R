@@ -42,7 +42,7 @@ benchmark_record_path <- function(relative_path, archived = FALSE) {
 #'   v0.3 full-FinnGen exported-API runs, "storage_size" for the historical
 #'   on-disk size comparison on the real release-gate GWAS, or
 #'   "storage_amortization" for the historical shared-spine experiment, or
-#'   "native_se8" for the current native implementation smoke benchmark, or
+#'   "native_se8" for the historical native implementation smoke benchmark, or
 #'   "pareto_chr1" for the current same-data FinnGen chr1 Pareto benchmark.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
