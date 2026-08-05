@@ -16,8 +16,11 @@ test_that("compact and none modes write the same trusted fixture", {
   expect_identical(compact$manifest$qc$structural_qc, "compact")
   expect_identical(none$manifest$qc$mode, "none")
   expect_identical(none$manifest$qc$structural_qc, "bypassed")
+  expect_identical(none$manifest$qc$statistic_validation, "bypassed")
   expect_identical(none$manifest$row_policy, "not_applied")
   expect_identical(none$manifest$preparation$preparation$qc$mode, "none")
+  expect_identical(none$manifest$preparation$preparation$qc$statistic_validation,
+                   "bypassed")
   expect_true(is.finite(none$manifest$timings$phases$statistic_validation))
   expect_true(is.finite(none$manifest$timings$phases$identity_safety))
   expect_equal(none$manifest$timings$phases$qc, 0)
@@ -124,26 +127,6 @@ test_that("none mode requires exact canonical columns and refuses QC policies", 
     "cannot be combined"
   )
 
-  malformed_beta <- input
-  malformed_beta$beta[1L] <- NA_real_
-  expect_error(
-    compress_sumstats(malformed_beta, tempfile("none-malformed-beta-"), qc = "none"),
-    "requires finite beta"
-  )
-  malformed_se <- input
-  malformed_se$standard_error[1L] <- 0
-  expect_error(
-    compress_sumstats(malformed_se, tempfile("none-malformed-se-"), qc = "none"),
-    "requires positive finite standard_error"
-  )
-
-  inconsistent_z <- input
-  inconsistent_z$z <- inconsistent_z$beta / inconsistent_z$standard_error
-  inconsistent_z$z[1L] <- inconsistent_z$z[1L] + 0.5
-  expect_error(
-    compress_sumstats(inconsistent_z, tempfile("none-inconsistent-z-"), qc = "none"),
-    "supplied z is inconsistent"
-  )
 })
 
 test_that("none mode retains native duplicate safety without structural QC", {

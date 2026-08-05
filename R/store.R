@@ -25,6 +25,7 @@ compressor_manifest_contract <- function(path, build, selection, profile,
   manifest$qc <- list(
     mode = qc,
     structural_qc = if (identical(qc, "none")) "bypassed" else "compact",
+    statistic_validation = if (identical(qc, "none")) "bypassed" else "compact",
     row_level_report = FALSE,
     duplicate_scan = !identical(qc, "none")
   )
@@ -245,9 +246,10 @@ compress_sumstats <- function(input, output,
       stop("qc='none' requires already-canonical columns: ",
            paste(missing_fast, collapse = ", "), call. = FALSE)
     }
-    statistic_started <- phase_clock()
-    validate_qc_none_statistics(raw)
-    phase_timings$phases$statistic_validation <- phase_seconds(statistic_started)
+    # qc='none' is the trusted prepared-input fast path: schema and native
+    # identity/build safety remain active, but per-row beta/SE/Z/EAF validation
+    # is deliberately bypassed. Use qc='compact' when those values need QC.
+    phase_timings$phases$statistic_validation <- 0
     identity_safety_started <- phase_clock()
     identity_safety <- filter_pcodec_identity_safety(raw, build = store_build)
     raw <- identity_safety$data
@@ -310,6 +312,7 @@ compress_sumstats <- function(input, output,
   preparation$qc <- list(
     mode = qc,
     structural_qc = if (identical(qc, "none")) "bypassed" else "compact",
+    statistic_validation = if (identical(qc, "none")) "bypassed" else "compact",
     row_level_report = FALSE,
     duplicate_scan = !identical(qc, "none")
   )

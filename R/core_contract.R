@@ -108,10 +108,10 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
        keep = !unsupported, report = report)
 }
 
-# This is the statistic-safety boundary for qc='none'.  It validates only the
-# canonical numerical core and does not run structural QC, row reporting, or
-# duplicate detection.  Missing EAF/P are representable; required beta/SE and
-# supplied non-missing numerical values remain fail-closed.
+# Optional statistic checker for callers that want a cheap canonical-value
+# preflight. The qc='none' compressor deliberately does not call it: that mode
+# is the trusted no-QC path. The compact path remains the safe value-validation
+# route.
 validate_qc_none_statistics <- function(data) {
   numeric_value <- function(name) {
     suppressWarnings(as.numeric(as.character(data[[name]])))

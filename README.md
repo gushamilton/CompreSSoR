@@ -209,12 +209,14 @@ canonical `chromosome`, `base_pair_location`, `reference_allele`,
 safety filter drops rows with an invalid primary chromosome, non-finite,
 non-integer, or out-of-range coordinate, or an invalid/non-distinct A/C/G/T
 REF/ALT pair. It does not run full structural QC or duplicate scans; malformed
-canonical statistics remain fail-closed, and native duplicate checks still
-apply at write time. Dropped identity counts and the pre-filter input count
+canonical statistics are not scanned in this trusted fast path, and native
+duplicate checks still apply at write time. Dropped identity counts and the pre-filter input count
 are retained in the preparation manifest so selection counts remain aligned.
-The manifest records `qc$mode = "none"` and
-`qc$structural_qc = "bypassed"`. Use this mode only for trusted,
-already-oriented input; it does not harmonise, liftover, or repair rows.
+The manifest records `qc$mode = "none"`,
+`qc$structural_qc = "bypassed"`, and
+`qc$statistic_validation = "bypassed"`. Use this mode only for trusted,
+already-oriented input; it does not harmonise, liftover, repair rows, or
+validate their numerical values.
 
 `input_build = "GRCh37", store_build = "GRCh38"` is rejected. Perform any
 liftover, reference lookup, allele alignment, rsID resolution, and source-file

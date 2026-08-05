@@ -26,12 +26,13 @@ Two ingestion modes are part of the current API:
   pre-canonicalization identity guard drops rows that cannot be represented by
   the selected native identity: non-primary chromosomes, non-finite or
   non-integer/out-of-range coordinates, and invalid or non-distinct A/C/G/T
-  REF/ALT pairs. Malformed canonical statistics remain fail-closed and native
-  duplicate checks still apply at write time. The exact canonical columns
+  REF/ALT pairs. Malformed canonical statistics are not scanned in this fast
+  path; native duplicate checks still apply at write time. The exact canonical
+  columns
   remain mandatory. Dropped identity counts and the pre-filter input count are
   recorded in preparation metadata, while selection counts describe the rows
   remaining after that guard. The manifest records the bypass under `qc.mode`,
-  `qc.structural_qc`, and `preparation.qc`.
+  `qc.structural_qc`, `qc.statistic_validation`, and `preparation.qc`.
 
 Neither mode performs harmonisation or liftover. Those transformations and
 their reference/chain provenance belong to an upstream preparation workflow.
