@@ -1,8 +1,8 @@
 # Core, HM3, and core-plus panel provenance
 
-Panel selection is a post-harmonisation operation. The package first imports,
-validates, liftover-aligns, and harmonises the GWAS; only then does it apply a
-panel or build the core-plus union. The four explicit selection scopes are
+Panel selection is a post-preparation operation. The package first imports and
+validates the prepared GWAS; only then does it apply a panel or build the
+core-plus union. The four explicit selection scopes are
 `full`, `core`, `hm3`, and `core_plus`.
 
 Every canonical panel row is the directed, allele-aware key
@@ -19,11 +19,31 @@ artifacts used for the current Mac mini benchmarks are:
 | core | `/Volumes/crucial_x9/mr_atlas/data/panels/1kg_all_tag_r2_095_shared_keep_hm3/variant_dictionary.shared.tsv.gz` | 6,271,258 | `167006fc385289160b3ab5b6dc6fede695d899df1f8decf415744da3644e7b4d` |
 | HM3 | `/Volumes/crucial_x9/mr_atlas/data/panels/hm3/hm3_grch38_canonical_from_bfile.tsv.gz` | 1,212,965 | `33d158bd879b19c07564b60d968b792f2988909ca44b1d8c2e3ff4dedd33aea4` |
 
-The core artifact is the ready `1kg_all_tag_r2_095_shared_keep_hm3` panel
-used by the existing smoke/release benchmarks. The HM3 artifact is the
-canonical GRCh38 panel produced from the HapMap3 source list and 1KG reference
-mapping; its source/provenance details are recorded in the sibling
-`hm3_panel_manifest.json` on the benchmark volume.
+The committed bundled artifact is one combined native Pcodec store:
+
+```text
+inst/extdata/panels/core_hm3.cpr/
+├── manifest.json
+├── manifest.sha256
+├── native.index.json
+├── position.pco
+├── substitution.pco
+└── hm3.pco
+```
+
+It contains 6,271,256 rows, with core membership implicit by row membership
+and one lossless `hm3` flag. There are 1,199,729 HM3-positive rows in the core
+universe; 13,236 valid HM3 source rows are outside the frozen core and are not
+added. The committed artifact is 11,081,115 bytes. Identity is exact and
+build-aware (`chromosome:position:REF:ALT`, stored as the same global-position
+and directed REF→ALT streams used by GWAS stores); the HM3 flag is lossless.
+The panel is not a FASTA, reference genome, harmonisation table, or liftover
+chain.
+
+The core source contributes 6,271,256 valid biallelic A/C/G/T SNVs after two
+source rows are excluded. The HM3 source contributes 1,212,965 canonical
+GRCh38 rows. Source and prepared hashes are recorded in the bundled manifest;
+the source files remain on the Mac mini and are not committed.
 
 These are treated as frozen upstream panel inputs. The core file is not
 reconstructed by taking a simple union of the related base tag panel and HM3:
@@ -66,6 +86,12 @@ is used and records the requested name, observed/expected hashes, build,
 source hash, local path, cache status, and identity class in selection
 provenance.
 
+When no environment variable or explicit panel path is supplied, the names
+`core` and `hm3` resolve to the bundled `core_hm3.cpr` store. The bundled
+manifest is protected by its payload and manifest checksums, so it does not
+require an external hash environment variable. User-provided named panels
+retain the existing hash-pin requirement.
+
 Remote named assets are cached under `COMPRESSOR_VARIANT_SET_CACHE` (or
 `COMPRESSOR_PANEL_CACHE`) using the panel name and pinned digest. The cache is
 content-verified on reuse; a failed verification is an error, not a silent
@@ -86,6 +112,13 @@ provided, only shards represented in the harmonised input are read; this is
 the preferred path for chromosome-local jobs. If `pigz` is available,
 compressed readers use it automatically; otherwise they retain the `gzip`
 fallback.
+
+`read_variant_panel()` supports full reads plus chromosome, one-based row, and
+canonical-key access. Row/key/chromosome requests read only the relevant
+Pcodec key/flag blocks; full membership operations naturally read the full
+core universe. `validate_variant_panel(..., full = TRUE)` verifies the manifest,
+index partitions, every payload checksum, sorted identity, valid substitution
+codes, and binary HM3 flags.
 
 ## Selection and core-plus threshold semantics
 

@@ -1,17 +1,18 @@
 Package: CompreSSoR
 Type: Package
 Title: Compressed GWAS Summary Statistics
-Version: 0.4.0
+Version: 0.5.0
 Authors@R: person("Fergus", "Hamilton", role = c("aut", "cre"),
     email = "fh6520@users.noreply.github.com")
 Author: Fergus Hamilton [aut, cre]
 Maintainer: Fergus Hamilton <fh6520@users.noreply.github.com>
-Description: Convert genome-wide association study summary statistics into a
-    compact, block-indexed Pcodec store with a self-contained GRCh38 variant
-    identity key, semantic Z/EAF/SE encoding, and explicit import, liftover,
-    allele-harmonisation, decompression, and validation tools. P-values and
-    beta are reconstructed on demand; Parquet remains available as an
-    interoperability backend.
+Description: Convert prepared genome-wide association study summary statistics
+    into a compact, block-indexed Pcodec store with a self-contained GRCh37 or
+    GRCh38 variant identity key and semantic Z/EAF/SE encoding. The core
+    validates explicit REF/ALT, effect/non-effect allele, beta and standard
+    error fields but performs no reference lookup, allele harmonisation or
+    liftover. P-values and beta are reconstructed on demand; Parquet remains
+    available as an interoperability backend.
 URL: https://github.com/gushamilton/CompreSSoR
 BugReports: https://github.com/gushamilton/CompreSSoR/issues
 License: MIT + file LICENSE
@@ -23,10 +24,7 @@ Imports:
 Suggests:
     arrow (>= 22.0.0),
     dplyr,
-    testthat (>= 3.0.0),
-    rtracklayer,
-    GenomicRanges,
-    IRanges
+    testthat (>= 3.0.0)
 Config/testthat/edition: 3
 SystemRequirements: Rust/Cargo (required to build the native Pcodec backend)
 NeedsCompilation: yes

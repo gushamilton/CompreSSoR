@@ -36,6 +36,13 @@ variant_set_sha256 <- function(value) {
   value
 }
 
+variant_set_file_digest <- function(path, algo = "sha256") {
+  if (!file.exists(path) || dir.exists(path)) {
+    stop("variant-set digest target does not exist: ", path, call. = FALSE)
+  }
+  digest::digest(path, algo = algo, file = TRUE)
+}
+
 parse_named_variant_set_request <- function(variant_set) {
   if (!is.character(variant_set) || length(variant_set) != 1L || is.na(variant_set)) {
     return(NULL)
@@ -119,7 +126,7 @@ verify_variant_set_hash <- function(path, expected, name = NULL, manifest = NULL
   if (!file.exists(target) || dir.exists(target)) {
     stop("hash-pinned variant set is missing its digest target: ", target, call. = FALSE)
   }
-  observed <- tolower(reference_file_digest(target, "sha256"))
+  observed <- tolower(variant_set_file_digest(target, "sha256"))
   if (!identical(observed, expected)) {
     stop("variant-set SHA-256 mismatch for ", name %||% "panel",
          ": expected ", expected, ", observed ", observed, call. = FALSE)
@@ -197,6 +204,14 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
       if (length(hits)) path <- hits[[1L]]
     }
   }
+  bundled <- FALSE
+  if (!nzchar(path)) {
+    bundled_path <- bundled_variant_panel_path(name)
+    if (nzchar(bundled_path)) {
+      path <- bundled_path
+      bundled <- TRUE
+    }
+  }
   if (!nzchar(path)) {
     stop("variant_set='", name, "' needs ", env_var,
          " (or COMPRESSOR_VARIANT_SET_DIR with a named panel file)", call. = FALSE)
@@ -217,7 +232,7 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
   manifest <- variant_set_manifest(path)
   declared <- variant_set_declared_sha256(path, name = name, manifest = manifest)
   if (is.na(expected)) expected <- declared
-  if (name %in% c("core", "hm3") && is.na(expected)) {
+  if (name %in% c("core", "hm3") && is.na(expected) && !bundled) {
     stop("named ", name, " panel is not hash-pinned; set ",
          variant_set_hash_environment_names(name)[[1L]],
          " or provide name@sha256:<digest>", call. = FALSE)
@@ -231,6 +246,7 @@ resolve_named_variant_set <- function(variant_set, cache_dir = NULL) {
        env_var = env_var, expected_sha256 = expected,
        sha256 = verification$sha256 %||% declared,
        hash_pinned = !is.na(expected), hash_verified = isTRUE(verification$verified),
+       bundled = bundled,
        digest_target = verification$target, source_url = source_url,
        cache_dir = if (cached) variant_set_cache_dir(cache_dir) else NULL,
        cache_hit = if (cached) cached else NULL)
@@ -249,7 +265,7 @@ variant_set_provenance <- function(path = NULL, name = NULL, named = NULL,
   }
   observed <- if (!is.null(digest_target) && file.exists(digest_target) &&
                   !dir.exists(digest_target)) {
-    tolower(reference_file_digest(digest_target, "sha256"))
+    tolower(variant_set_file_digest(digest_target, "sha256"))
   } else {
     NA_character_
   }
@@ -286,7 +302,8 @@ variant_set_provenance <- function(path = NULL, name = NULL, named = NULL,
     manifest = if (!is.null(manifest)) manifest else NULL
   )
 }
-normalise_variant_set_columns <- function(data) {
+normalise_variant_set_columns <- function(data, build = "GRCh38") {
+  build <- compressor_normalize_build(build)
   data <- clean_input_names(as.data.frame(data, stringsAsFactors = FALSE,
                                            check.names = FALSE))
   alias_map <- list(
@@ -348,7 +365,8 @@ normalise_variant_set_columns <- function(data) {
   if (any(valid_columns)) {
     canonical_from_columns[valid_columns] <- compressor_variant_key(
       data$chromosome[valid_columns], data$base_pair_location[valid_columns],
-      data$other_allele[valid_columns], data$effect_allele[valid_columns]
+      data$other_allele[valid_columns], data$effect_allele[valid_columns],
+      build = build
     )
   }
   # Coordinates plus REF/ALT are authoritative when present. This turns a
@@ -370,11 +388,12 @@ normalise_variant_set_columns <- function(data) {
   data
 }
 
-read_variant_set <- function(variant_set, chromosomes = NULL) {
+read_variant_set <- function(variant_set, chromosomes = NULL, build = "GRCh38") {
+  build <- compressor_normalize_build(build)
   named <- resolve_named_variant_set(variant_set)
   if (!is.data.frame(variant_set) && !is.null(named)) variant_set <- named$path
   if (is.data.frame(variant_set)) {
-    out <- normalise_variant_set_columns(variant_set)
+    out <- normalise_variant_set_columns(variant_set, build = build)
     metadata <- list(
       id = "in_memory", name = NULL, source = "in_memory",
       sha256 = digest::digest(out, algo = "sha256", serialize = TRUE),
@@ -391,13 +410,26 @@ read_variant_set <- function(variant_set, chromosomes = NULL) {
       stop("variant_set must be a data.frame, panel file, or chromosome-shard directory",
            call. = FALSE)
     }
-    if (dir.exists(variant_set) && file.exists(file.path(variant_set, "manifest.json"))) {
+    if (dir.exists(variant_set) && is_variant_panel_path(variant_set)) {
+      panel_name <- named$name %||% "core"
+      out <- read_variant_panel(
+        variant_set, chromosomes = chromosomes,
+        hm3_only = identical(panel_name, "hm3")
+      )
+      metadata <- attr(out, "variant_set_metadata") %||% list()
+      metadata$name <- panel_name
+      metadata$requested <- named$requested %||% NULL
+      metadata$bundled <- isTRUE(named$bundled) || is.null(named)
+      attr(out, "variant_set_metadata") <- metadata
+      return(out)
+    } else if (dir.exists(variant_set) && file.exists(file.path(variant_set, "manifest.json"))) {
       store <- open_compressor(variant_set)
+      build <- compressor_normalize_build(store$manifest$genome_build %||% build)
       out <- read_sumstats(store, columns = c("chromosome", "base_pair_location",
                                                "effect_allele", "other_allele"))
       out$variant_id <- compressor_variant_key(
         out$chromosome, out$base_pair_location,
-        out$other_allele, out$effect_allele
+        out$other_allele, out$effect_allele, build = build
       )
       out$rsid <- NA_character_
       metadata <- variant_set_provenance(
@@ -413,7 +445,7 @@ read_variant_set <- function(variant_set, chromosomes = NULL) {
     } else if (dir.exists(variant_set)) {
       # A staged panel directory contains one canonical TSV(.gz) shard per
       # chromosome. Read only the shards represented in the already
-      # harmonised input; this is especially valuable for chr-local jobs.
+      # prepared input; this is especially valuable for chr-local jobs.
       shard_dir <- if (dir.exists(file.path(variant_set, "by_chrom"))) {
         file.path(variant_set, "by_chrom")
       } else {
@@ -453,7 +485,7 @@ read_variant_set <- function(variant_set, chromosomes = NULL) {
         stop("variant-set directory has no shards for the requested chromosomes",
              call. = FALSE)
       }
-      pieces <- lapply(shard_paths, read_variant_set)
+      pieces <- lapply(shard_paths, read_variant_set, build = build)
       canonical <- all(vapply(pieces, function(x) {
         isTRUE(attr(x, "variant_set_canonical"))
       }, logical(1L)))
@@ -522,7 +554,7 @@ read_variant_set <- function(variant_set, chromosomes = NULL) {
       attr(out, "variant_set_normalized_ids") <- TRUE
       attr(out, "variant_set_canonical") <- TRUE
     } else {
-      out <- normalise_variant_set_columns(out)
+      out <- normalise_variant_set_columns(out, build = build)
       if (!is.null(canonical_ids)) {
         out$variant_id <- normalise_variant_key(out$variant_id)
         attr(out, "variant_set_normalized_ids") <- TRUE
@@ -548,7 +580,8 @@ normalise_variant_key <- function(x) {
   toupper(sub("^chr", "", x, ignore.case = TRUE))
 }
 
-variant_set_membership <- function(data, panel) {
+variant_set_membership <- function(data, panel, build = "GRCh38") {
+  build <- compressor_normalize_build(build)
   panel_values <- panel$variant_id[!is.na(panel$variant_id) & nzchar(panel$variant_id)]
   panel_id <- if (isTRUE(attr(panel, "variant_set_normalized_ids"))) {
     unique(as.character(panel_values))
@@ -573,7 +606,7 @@ variant_set_membership <- function(data, panel) {
   if (any(valid_identity)) {
     data_key[valid_identity] <- compressor_variant_key(
       data_chromosome[valid_identity], data_position[valid_identity],
-      data_other[valid_identity], data_effect[valid_identity]
+      data_other[valid_identity], data_effect[valid_identity], build = build
     )
   }
   # Canonical panels are allele-aware identity dictionaries. Do not fall back
@@ -658,13 +691,13 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
                                      region_padding = 50000L) {
   validate_pvalue_region_arguments(pvalue_threshold, region_padding)
   if (!"z" %in% names(data)) {
-    stop("p-value region selection needs the pre-encoding harmonised z statistic",
+    stop("p-value region selection needs the prepared pre-encoding z statistic",
          call. = FALSE)
   }
   n <- nrow(data)
   chromosomes <- as.character(data$chromosome)
   positions <- as.numeric(data$base_pair_location)
-  # This is deliberately evaluated on the harmonised in-memory statistic. It
+  # This is deliberately evaluated on the prepared in-memory statistic. It
   # runs before any bounded semantic encoding and is never reconstructed from
   # a lossy stored Z value.
   p_value <- 2 * stats::pnorm(-abs(as.numeric(data$z)))
@@ -696,12 +729,12 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
     tag = "core",
     method = "pvalue_regions",
     p_value_source = "derived_from_z",
-    threshold_source = "pre_encoding_harmonised",
-    threshold_statistic = "p_value_from_harmonised_z",
+    threshold_source = "pre_encoding_prepared",
+    threshold_statistic = "p_value_from_prepared_z",
     threshold_operator = "<",
     threshold_semantics = list(
-      source = "pre_encoding_harmonised",
-      statistic = "p_value_from_harmonised_z",
+      source = "pre_encoding_prepared",
+      statistic = "p_value_from_prepared_z",
       derivation = "2 * pnorm(-abs(z))",
       operator = "<",
       value = as.numeric(pvalue_threshold),
@@ -734,8 +767,9 @@ compact_panel_provenance <- function(panel) {
 }
 
 panel_selection_result <- function(data, panel, selection_name,
-                                   panel_keep = NULL, method = "panel_membership") {
-  panel_keep <- panel_keep %||% variant_set_membership(data, panel)
+                                   panel_keep = NULL, method = "panel_membership",
+                                   build = "GRCh38") {
+  panel_keep <- panel_keep %||% variant_set_membership(data, panel, build = build)
   if (!any(panel_keep)) {
     stop(selection_name, " selection retained no variants", call. = FALSE)
   }
@@ -777,21 +811,22 @@ select_full_variants <- function(data) {
   )
 }
 
-select_core_variants <- function(data, variant_set = "core") {
-  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome))
-  panel_selection_result(data, panel, "core")
+select_core_variants <- function(data, variant_set = "core", build = "GRCh38") {
+  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
+  panel_selection_result(data, panel, "core", build = build)
 }
 
-select_hm3_variants <- function(data, variant_set = "hm3") {
-  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome))
-  panel_selection_result(data, panel, "hm3")
+select_hm3_variants <- function(data, variant_set = "hm3", build = "GRCh38") {
+  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
+  panel_selection_result(data, panel, "hm3", build = build)
 }
 
 select_core_plus_variants <- function(data, variant_set = "core",
                                       pvalue_threshold = 1e-5,
-                                      region_padding = 50000L) {
-  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome))
-  panel_keep <- variant_set_membership(data, panel)
+                                      region_padding = 50000L,
+                                      build = "GRCh38") {
+  panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
+  panel_keep <- variant_set_membership(data, panel, build = build)
   regions <- pvalue_region_selection(data, pvalue_threshold = pvalue_threshold,
                                      region_padding = region_padding)
   keep <- panel_keep | regions$keep
@@ -843,17 +878,22 @@ select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
   )
 }
 
-select_variant_rows <- function(data, selection = c("full", "core", "hm3", "core_plus"),
+select_variant_rows <- function(data, selection = c("full", "core", "hm3", "core_plus", "pvalue_regions"),
                                 variant_set = NULL, pvalue_threshold = 1e-5,
-                                region_padding = 50000L) {
+                                region_padding = 50000L, build = "GRCh38") {
+  build <- compressor_normalize_build(build)
   selection <- match.arg(selection)
   switch(selection,
     full = select_full_variants(data),
-    core = select_core_variants(data, variant_set = variant_set %||% "core"),
-    hm3 = select_hm3_variants(data, variant_set = variant_set %||% "hm3"),
+    core = select_core_variants(data, variant_set = variant_set %||% "core", build = build),
+    hm3 = select_hm3_variants(data, variant_set = variant_set %||% "hm3", build = build),
+    pvalue_regions = select_pvalue_regions(
+      data, pvalue_threshold = pvalue_threshold, region_padding = region_padding
+    ),
     core_plus = select_core_plus_variants(
       data, variant_set = variant_set %||% "core",
-      pvalue_threshold = pvalue_threshold, region_padding = region_padding
+      pvalue_threshold = pvalue_threshold, region_padding = region_padding,
+      build = build
     )
   )
 }
@@ -929,150 +969,4 @@ read_delimited_variant_set <- function(path) {
   out <- do.call(data.table::fread, read_args)
   attr(out, "variant_set_columns_read") <- selected
   out
-}
-
-prepare_sumstats_data <- function(raw, reference, mode = c("qc", "convert", "all", "core", "hm3", "pvalue_regions", "core_plus"),
-                                  variant_set = NULL, strict = FALSE, chrom_threads = 1L,
-                                  drop_unresolved = TRUE, input_build = "GRCh38", chain = NULL,
-                                  pvalue_threshold = 1e-5, region_padding = 50000L,
-                                  pre_harmonised = FALSE, inherited_alignment = NULL,
-                                  target_build = "GRCh38") {
-  requested_mode <- match.arg(mode)
-  effective_mode <- if (requested_mode == "all") "qc" else requested_mode
-  target_build <- compressor_normalize_build(target_build)
-  input_build <- compressor_normalize_build(input_build)
-  if (effective_mode %in% c("core", "hm3", "core_plus") && is.null(variant_set)) {
-    # The explicit named defaults are resolved lazily. This keeps ordinary
-    # full/QC conversion independent of external panel assets while making
-    # core/HM3 selection deterministic when the corresponding named panel is
-    # configured.
-    variant_set <- if (effective_mode == "hm3") "hm3" else "core"
-  }
-  alignment_reference <- if (isTRUE(pre_harmonised)) {
-    NULL
-  } else if (effective_mode == "convert" ||
-                            (effective_mode == "pvalue_regions" && is.null(reference))) {
-    NULL
-  } else {
-    reference
-  }
-  if (!isTRUE(pre_harmonised) && effective_mode != "convert" && effective_mode != "pvalue_regions" &&
-      is.null(alignment_reference)) {
-    stop("reference is required for harmonised CompreSSoR conversion; use mode='convert' explicitly to bypass it",
-         call. = FALSE)
-  }
-  if (isTRUE(pre_harmonised)) {
-    # A harmonise_sumstats() result already has canonical coordinates, alleles,
-    # orientation and Z. Keep that object on the fast path: panel/p-value
-    # selection is post-harmonisation and no reference or coordinate work is
-    # repeated here.
-    alignment <- inherited_alignment %||% list()
-    alignment$data <- raw
-    alignment$reference_hash <- alignment$reference_hash %||% NA_character_
-    alignment$reference_rows <- alignment$reference_rows %||% NA_integer_
-    alignment$reference_metadata <- alignment$reference_metadata %||% NULL
-    alignment$alignment_stats <- alignment$alignment_stats %||% list(
-      input_rows = nrow(raw), output_rows = nrow(raw), aligned_rows = nrow(raw),
-      method = "pre_harmonised"
-    )
-  } else {
-    had_coordinate <- !is.na(raw$chromosome) & nzchar(raw$chromosome) &
-      !is.na(raw$base_pair_location) & raw$base_pair_location >= 1L
-    if (identical(input_build, target_build)) {
-      raw$.compressor_liftover_status <- rep("not_needed", nrow(raw))
-      attr(raw, "genome_build") <- target_build
-    } else if (identical(target_build, "GRCh38")) {
-      raw <- lift_table_to_grch38(raw, input_build = input_build, chain = chain)
-    } else {
-      stop("target_build='GRCh37' requires input already in GRCh37; reverse liftover is not supported", call. = FALSE)
-    }
-    if (!is.null(alignment_reference)) {
-      build <- toupper(gsub("[. -]", "", as.character(input_build %||% "GRCh38")))
-      eligible_alias <- if (build %in% c("GRCH38", "HG38", "38")) {
-        rep(TRUE, nrow(raw))
-      } else {
-        !had_coordinate
-      }
-      raw <- resolve_sumstats_aliases(raw, alignment_reference, eligible = eligible_alias)
-      resolved_alias <- raw$.compressor_reference_alias_status == "resolved"
-      raw$.compressor_liftover_status[resolved_alias] <- "resolved_by_grch38_alias"
-    }
-    partitioned_reference <- !is.null(alignment_reference) &&
-      is_partitioned_reference(alignment_reference)
-    alignment <- if (!is.null(alignment_reference) &&
-                    (as.integer(chrom_threads) > 1L || partitioned_reference)) {
-      harmonise_by_chromosome(raw, alignment_reference, strict = strict,
-                              preserve = !isTRUE(drop_unresolved),
-                              chrom_threads = chrom_threads)
-    } else {
-      harmonise_to_reference(raw, alignment_reference, strict = strict,
-                             preserve = !isTRUE(drop_unresolved))
-    }
-  }
-  data <- alignment$data
-  if (!isTRUE(pre_harmonised)) {
-    alias_status <- raw$.compressor_reference_alias_status %||% rep("not_attempted", nrow(raw))
-    liftover_status <- raw$.compressor_liftover_status %||% rep("not_needed", nrow(raw))
-    alignment$alignment_stats$alias_resolution <- as.list(table(alias_status, useNA = "ifany"))
-    alignment$alignment_stats$liftover <- as.list(table(liftover_status, useNA = "ifany"))
-  }
-  input_rows <- nrow(data)
-  selected <- if (effective_mode == "core") {
-    select_core_variants(data, variant_set = variant_set)
-  } else if (effective_mode == "hm3") {
-    select_hm3_variants(data, variant_set = variant_set)
-  } else if (effective_mode == "core_plus") {
-    select_core_plus_variants(data, variant_set = variant_set,
-                              pvalue_threshold = pvalue_threshold,
-                              region_padding = region_padding)
-  } else if (effective_mode == "pvalue_regions") {
-    select_pvalue_regions(data, pvalue_threshold = pvalue_threshold,
-                          region_padding = region_padding)
-  } else if (!is.null(variant_set)) {
-    panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome))
-    panel_selection_result(data, panel, "full", method = "panel_membership")
-  } else {
-    select_full_variants(data)
-  }
-  data <- selected$data
-  panel_metadata <- if (!is.null(selected$panel)) {
-    attr(selected$panel, "variant_set_metadata") %||% list()
-  } else {
-    NULL
-  }
-  filter_stats <- if (is.null(panel_metadata)) {
-    list(name = "all", input_rows = input_rows, kept_rows = nrow(data),
-         dropped_rows = input_rows - nrow(data))
-  } else {
-    c(
-      list(name = panel_metadata$name %||% effective_mode),
-      panel_metadata,
-      list(panel_name = selected$metadata$panel_name %||% "custom",
-           input_rows = input_rows, kept_rows = sum(selected$keep),
-           dropped_rows = sum(!selected$keep))
-    )
-  }
-  alignment$alignment_stats$variant_set <- filter_stats
-  selection <- NULL
-  if (effective_mode %in% c("pvalue_regions", "core_plus")) {
-    selection <- selected$metadata
-    selection$regions_table <- selected$regions
-    selection_stats <- selected$metadata
-    selection_stats$regions_table <- NULL
-    alignment$alignment_stats$pvalue_regions <- selection_stats
-  }
-  list(data = data, alignment = alignment, requested_mode = requested_mode,
-       effective_mode = effective_mode,
-       selection = selection,
-       selection_result = selected,
-    genome_build = if (isTRUE(pre_harmonised)) {
-         inherited_alignment$genome_build %||% target_build
-       } else if (effective_mode == "convert" || is.null(reference)) {
-         # A reference-free conversion normalises the schema but cannot prove
-         # the assembly. Keep the build unknown so a caller cannot silently
-         # publish GRCh38 coordinates as if they had been verified.
-         "unknown"
-       } else {
-         alignment$reference_metadata$build %||% "GRCh38"
-       })
 }

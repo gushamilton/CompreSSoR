@@ -9,12 +9,12 @@
 [![R-CMD-check](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/gushamilton/CompreSSoR/actions/workflows/R-CMD-check.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-CompreSSoR converts GWAS summary statistics into a self-contained, indexed
-`.cpr` store for compact storage and fast whole-file, regional, and
-variant-level access from R. The normal path is:
+CompreSSoR converts already-prepared GWAS summary statistics into a
+self-contained, indexed `.cpr` store for compact storage and fast whole-file,
+regional, and variant-level access from R. The core path is:
 
 ```text
-sumstats → import/QC → optional GRCh38 liftover → native Pcodec .cpr store
+prepared sumstats → strict schema/orientation QC → native Pcodec .cpr store
 ```
 
 ![CompreSSoR workflow](docs/figures/compressor-workflow.svg)
@@ -23,7 +23,7 @@ sumstats → import/QC → optional GRCh38 liftover → native Pcodec .cpr store
 
 The current headline comparison is the latest five-run BluePebble benchmark
 on 10 million real FinnGen SNPs. Every candidate stores its own exact variant
-identity key; the shared reference is excluded from storage accounting.
+identity key; no external reference is required by the resulting store.
 
 The locked storage contract is documented in
 [`docs/pcodec-final-spec.md`](docs/pcodec-final-spec.md).
@@ -53,7 +53,7 @@ exceptions:
 gwas.cpr/
 ├── manifest.json          format, identity, codec, source, and QC metadata
 ├── manifest.sha256        detached manifest checksum
-├── position.pco           compact global GRCh38 position stream
+├── position.pco           compact build-specific global position stream
 ├── native.index.json      block offsets and row counts
 ├── substitution.pco      four-bit REF→ALT identity code
 ├── z.pco                  quantised Z stream
@@ -67,7 +67,7 @@ required for access or comparison. The standard numerical representation is:
 
 | Logical field | Stored representation | Read-time result |
 |---|---|---|
-| Chromosome + position | GRCh38 global position | Exact chromosome and position |
+| Chromosome + position | GRCh37 or GRCh38 global position | Exact chromosome and position |
 | REF + ALT | Four-bit directed substitution code | Exact alleles |
 | Z | 9-bit semantic code plus exceptions | Quantised Z |
 | EAF | 8-bit arcsine code | Quantised EAF |
@@ -79,6 +79,27 @@ required for access or comparison. The standard numerical representation is:
 This is intentionally a core numerical format. Exact or arbitrary extra
 columns can use the Parquet backend; see
 [the technical guide](docs/README-technical.md).
+
+### Bundled core/HM3 variant panel
+
+The package also bundles one compact native Pcodec panel at
+`inst/extdata/panels/core_hm3.cpr`. It is one canonical, sorted GRCh38 list of
+6,271,256 frozen core variants. Core membership is implicit by row membership;
+the only additional logical column is the lossless `hm3` flag (`1`/`0`). The
+bundled store is 11,081,115 bytes across its payload, index, manifest, and
+checksum files. It is not a reference genome, harmonisation resource, or
+liftover chain.
+
+The bundled panel is used automatically by `selection = "core"` and
+`selection = "hm3"` without environment variables. `read_variant_panel()`
+provides panel access, while `read_variant_set("core")` and
+`read_variant_set("hm3")` preserve the existing selection API. The panel
+contains 1,199,729 HM3-positive rows within the core universe; 13,236 rows in
+the HM3 source fall outside that universe and therefore have no row in the
+combined panel.
+
+The frozen source hashes and exact output layout are documented in
+[`docs/variant-panels.md`](docs/variant-panels.md).
 
 ## Install
 
@@ -100,15 +121,22 @@ package.
 
 ## Quick start
 
-For a GRCh38-aligned, verified table:
+The installed compressor accepts a prepared table only. It must contain:
+`chromosome`, `base_pair_location`, explicit `reference_allele`/`REF`,
+explicit `alternate_allele`/`ALT`, `effect_allele`, `other_allele`, `beta`,
+and `standard_error`/`SE`, or a positive `OR`/`odds_ratio` plus `SE` that is
+resolved to log-OR. The prepared orientation is `other_allele = REF`
+and `effect_allele = ALT`; the compressor never flips alleles or resolves an
+ID against a reference. Input and store builds must match, and both GRCh37
+(`hg19`) and GRCh38 (`hg38`) are supported:
 
 ```r
 library(CompreSSoR)
 
 store <- compress_sumstats(
   "gwas.tsv.gz", "gwas.cpr",
-  mode = "convert",
-  assume_grch38_ref_alt = TRUE,
+  input_build = "GRCh38", store_build = "GRCh38",
+  threads = 4,
   overwrite = TRUE
 )
 
@@ -119,71 +147,54 @@ read_sumstats(
 )
 ```
 
-For an ordinary third-party GWAS, use the harmonisation/QC path and provide a
-GRCh38 reference or a GRCh37-to-GRCh38 chain:
+The boundary importer recognises common aliases through a deterministic
+resolution matrix: explicit beta plus `SE` is the primary route; an `OR` plus
+`SE` is also accepted directly and resolves beta to log-OR when beta is absent;
+an optional `Z` is checked against `beta / SE` or derived from it. P-values
+are not silently converted to SE in the strict writer. The standalone
+`import_sumstats(..., allow_p_to_se = TRUE)` opt-in is conflict-checked and
+records its bounded conversion rows in resolution provenance; it is not used
+by `compress_sumstats()`.
+
+For delimited-file input, the native Pcodec path discovers the header first and
+projects only columns that can affect the strict identity/statistical core
+before canonicalisation and QC. The complete source header and read-column
+counts remain in provenance. Parquet with `keep_extras = TRUE` intentionally
+reads and retains the full input table; use that mode when arbitrary source
+columns are required.
+
+Native and default compression manifests retain aggregate structural-QC counts,
+bounded row examples, source/projection provenance, and phase timings for read,
+normalisation, QC, identity/sort, encoding, and the final atomic commit. Full
+row-level QC status and canonical-key audits remain available through the
+explicit `preflight_sumstats()` path rather than being retained through a
+large compression job.
+
+For a prepared GRCh37 table, write a native GRCh37 store directly:
 
 ```r
 store <- compress_sumstats(
   "gwas.tsv.gz", "gwas.cpr",
-  input_build = "GRCh37",
-  chain = "/data/reference/hg19ToHg38.over.chain.gz",
-  reference = "GRCh38",
-  mode = "qc",
-  chrom_threads = 4,
+  input_build = "hg19", store_build = "GRCh37",
+  threads = 4,
   overwrite = TRUE
 )
 ```
 
-The reference is an ingestion dependency. The completed `.cpr` store carries
-its own identity and does not need the reference beside it for reading.
+`input_build = "GRCh37", store_build = "GRCh38"` is rejected. Perform any
+liftover, reference lookup, allele alignment, rsID resolution, and source-file
+specific field mapping in an upstream preparation workflow, then pass its
+explicit result to CompreSSoR.
 
-### Reference provenance
+### External preparation and archived workflows
 
-The canonical reference used by `reference = "GRCh38"` is built from the
-Ensembl 95 human GRCh38 variation VCFs, one chromosome file at a time, from
-the [Ensembl release-95 variation VCF directory](https://ftp.ensembl.org/pub/release-95/variation/vcf/homo_sapiens/).
-Materialise those inputs with `build_ebi_reference()` and point
-`COMPRESSOR_CANONICAL_REFERENCE` at the resulting partitioned dictionary.
-The dictionary manifest records the source release, source-file checksums,
-canonical-key definition, build, and dataset checksum. The default descriptor
-does not silently download a reference.
-
-For GRCh37/hg19 summary statistics, use the UCSC
-[`hg19ToHg38.over.chain.gz`](https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz)
-chain file locally, for example:
-
-```r
-store <- compress_sumstats(
-  "gwas.tsv.gz", "gwas.cpr", reference = "GRCh38", mode = "qc",
-  input_build = "GRCh37",
-  chain = "/data/reference/hg19ToHg38.over.chain.gz",
-  overwrite = TRUE
-)
-```
-
-Liftover currently supports GRCh37/hg19 to GRCh38/hg38 only. It requires
-`rtracklayer`, accepts the caller-supplied chain path, reverse-complements
-alleles for reverse-strand mappings, and records unmapped, multi-mapped, and
-non-primary-target rows in the harmonisation diagnostics. It does not fetch or
-silently substitute a chain file.
-
-For a core-plus store, harmonise first and then select the canonical core panel
-plus a 50 kb window around variants with derived `p < 1e-5`:
-
-```r
-harmonised <- harmonise_sumstats(
-  "gwas.tsv.gz", reference = "GRCh38", mode = "qc", chrom_threads = 4
-)
-store <- compress_sumstats(
-  harmonised, "gwas-core-plus.cpr", reference = NULL,
-  mode = "core_plus", variant_set = "/data/panels/core_by_chrom",
-  overwrite = TRUE
-)
-```
-
-The selection is deterministic, recorded in the manifest, and accompanied by a
-small region sidecar. See [the panel preparation guide](docs/variant-panels.md)
-for reproducing the canonical core/HM3 inputs and chromosome shards.
+The former reference-backed harmonisation and liftover implementation is kept
+under [`archive/harmonisation/`](archive/harmonisation/). It is not sourced by
+the installed package and is retained only as a migration reference. An
+external adapter—such as a GWASLab/MR-Atlas preparation step—should record its
+own reference, chain, QC, and timing provenance before calling the strict core.
+Panel selection (`core`, `hm3`, and `core_plus`) remains available after the
+strict contract has been satisfied; it is filtering, not harmonisation.
 
 ## Reading and FastMR
 

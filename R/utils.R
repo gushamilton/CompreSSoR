@@ -1,5 +1,11 @@
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+phase_clock <- function() unname(proc.time()[["elapsed"]])
+
+phase_seconds <- function(start) {
+  as.numeric(phase_clock() - start)
+}
+
 require_parquet_backend <- function(feature = "this operation", dplyr = FALSE) {
   if (!requireNamespace("arrow", quietly = TRUE)) {
     stop(feature, " requires the optional R package 'arrow'", call. = FALSE)
@@ -11,9 +17,113 @@ require_parquet_backend <- function(feature = "this operation", dplyr = FALSE) {
 }
 
 required_sumstats_columns <- function() {
-  # Coordinates can be recovered from the canonical rsID alias table. Alleles
-  # remain required because they determine orientation and effect flipping.
-  c("effect_allele", "other_allele")
+  c("chromosome", "base_pair_location", "reference_allele",
+    "alternate_allele", "effect_allele", "other_allele", "beta",
+    "standard_error")
+}
+
+sumstats_column_alias_map <- function() {
+  list(
+    chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
+    base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
+    reference_allele = c("reference_allele", "reference", "ref", "REF"),
+    alternate_allele = c("alternate_allele", "alternate", "alt", "ALT"),
+    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1",
+                      "ALLELE1", "alleleB", "ALLELEB"),
+    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2",
+                     "ALLELE0", "alleleA", "ALLELEA"),
+    # A single-letter B is used by some sources for expected non-reference
+    # counts. It must not compete with an exact beta column (or be silently
+    # interpreted as an effect size when its meaning is schema-dependent).
+    beta = c("beta", "BETA", "effect", "effect_size", "estimate",
+             "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM"),
+    z = c("z", "Z", "zscore", "Z_SCORE", "z_stat", "ZSTAT", "zstatistic",
+          "Z_STATISTIC", "Z_BOLT_LMM"),
+    odds_ratio = c("odds_ratio", "OR", "ODDSRATIO", "oddsratio"),
+    standard_error = c("standard_error", "SE", "se", "sebeta", "SEBETA", "stderr", "std_err"),
+    effect_allele_frequency = c("effect_allele_frequency", "eaf", "EAF", "af", "AF",
+                                "effect_af", "A1FREQ", "ALT_FREQ", "ALT_AF", "EAF_ALT"),
+    p_value = c("p_value", "P", "p", "pval", "pvalue", "P_VALUE", "P_BOLT_LMM"),
+    minus_log10_p = c("minus_log10_p", "LP", "lp", "neglog10p", "-LOG10P", "LOG10P"),
+    variant_id = c("variant_id", "SNPID", "SNP_ID", "SNP", "snp", "variant", "ID"),
+    sample_size = c("sample_size", "N", "n", "SS", "N_TOTAL", "TOTALSAMPLESIZE", "N_SUMMARY"),
+    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP"),
+    expected_count = c("expected_count", "B", "expected_nonref_count", "nonref_count")
+  )
+}
+
+sumstats_resolution_matrix <- function() {
+  data.frame(
+    field = c("beta", "standard_error", "z", "odds_ratio", "p_value"),
+    primary_route = c(
+      "explicit beta alias",
+      "explicit standard_error alias",
+      "explicit z alias checked against beta/standard_error, otherwise derived",
+      "positive OR alias resolved to log(OR) when beta is absent",
+      "input aid only; never stored"
+    ),
+    strict_fallback = c(
+      "positive OR -> log(OR) only at the boundary when beta is absent",
+      "none",
+      "beta / standard_error",
+      "positive OR -> log(OR) when beta is absent; SE remains required",
+      "none; p-to-SE inference is disabled"
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
+                                         p_to_se_rows = integer()) {
+  list(
+    id = "beta_se_primary_v1",
+    beta = "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
+    standard_error = "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
+    z = "explicit_z_checked_against_beta_over_standard_error_or_derived",
+    odds_ratio = "positive_OR_to_log_OR_only_when_beta_is_absent",
+    p_value = "input_aid_only;_never_stored",
+    p_to_se = list(
+      enabled = isTRUE(allow_p_to_se),
+      method = if (isTRUE(allow_p_to_se))
+        "explicit_opt_in_conflict_checked" else "disabled_in_strict_core",
+      rows = as.integer(length(p_to_se_rows)),
+      example_rows = as.integer(utils::head(p_to_se_rows, 5L))
+    )
+  )
+}
+
+sumstats_projection_aliases <- function(core_only = FALSE,
+                                        allow_p_to_se = FALSE) {
+  alias_map <- sumstats_column_alias_map()
+  if (isTRUE(core_only)) {
+    alias_map <- alias_map[c(
+      "chromosome", "base_pair_location", "reference_allele",
+      "alternate_allele", "effect_allele", "other_allele", "beta",
+      "standard_error", "effect_allele_frequency", "z", "odds_ratio"
+    )]
+  }
+  if (isTRUE(allow_p_to_se) && isTRUE(core_only)) {
+    alias_map$p_value <- sumstats_column_alias_map()$p_value
+  }
+  unique(c(
+    if (isTRUE(core_only)) character() else
+      c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"),
+    unlist(alias_map, use.names = FALSE)
+  ))
+}
+
+sumstats_projection_indices <- function(source_columns, core_only = FALSE,
+                                        allow_p_to_se = FALSE) {
+  source_columns <- as.character(source_columns %||% character())
+  indices <- which(alias_key(source_columns) %in%
+                     alias_key(sumstats_projection_aliases(
+                       core_only = core_only, allow_p_to_se = allow_p_to_se
+                     )))
+  # Retain one source field when no recognized names exist. This preserves the
+  # row count so the normal schema validator can issue its precise missing-
+  # column diagnostic without materialising the rest of a wide input.
+  if (!length(indices) && length(source_columns)) indices <- 1L
+  indices
 }
 
 sumstats_primary_chromosomes <- function() {
@@ -203,55 +313,6 @@ alias_values_equal <- function(x, y) {
 
 alias_key <- function(x) gsub("[^a-z0-9#]", "", tolower(as.character(x)), perl = TRUE)
 
-gwas_catalog_hm_diagnostic <- function(columns) {
-  columns <- as.character(columns %||% character())
-  keys <- alias_key(columns)
-  hm_fields <- grep("^hm_", tolower(trimws(columns)), value = TRUE)
-  if (!length(hm_fields)) return(NULL)
-  source_column <- function(name) {
-    hit <- which(keys == alias_key(name))
-    if (length(hit)) columns[hit[1L]] else NA_character_
-  }
-  fields <- stats::setNames(vapply(c(
-    "hm_chrom", "hm_pos", "hm_other_allele", "hm_effect_allele",
-    "hm_beta", "hm_odds_ratio", "hm_effect_allele_frequency", "hm_code"
-  ), source_column, character(1)), c(
-    "chromosome", "position", "other_allele", "effect_allele",
-    "beta", "odds_ratio", "effect_allele_frequency", "code"
-  ))
-  required <- c("chromosome", "position", "other_allele", "effect_allele", "code")
-  list(
-    schema = "gwas_catalog_harmonised",
-    detected = sort(unique(hm_fields)),
-    fields = fields,
-    required = required,
-    missing = required[is.na(fields[required])],
-    orientation_codes = 1:13,
-    non_oriented_codes = 14:18
-  )
-}
-
-gwas_catalog_hm_orientation_message <- function(diagnostic) {
-  if (is.null(diagnostic)) return(NULL)
-  detected <- paste(diagnostic$detected, collapse = ", ")
-  fields <- diagnostic$fields
-  mapping <- paste(names(fields)[!is.na(fields)], fields[!is.na(fields)],
-                   sep = " <- ", collapse = ", ")
-  missing <- diagnostic$missing
-  suffix <- if (length(missing)) {
-    paste0(" Required harmonised fields are missing: ", paste(missing, collapse = ", "), ".")
-  } else ""
-  paste0(
-    "GWAS Catalog harmonised hm_* fields detected (", detected, "). ",
-    "They are not used implicitly for REF/ALT orientation; the reference-free ",
-    "identity safety guard remains active. Detected mapping: ", mapping, ". ",
-    "Verify hm_code is in 1-13 (codes 14-18 are not oriented), then explicitly ",
-    "copy hm_chrom/hm_pos, hm_other_allele -> other_allele, hm_effect_allele -> ",
-    "effect_allele, and the matching hm effect fields before calling ",
-    "compress_sumstats(..., assume_grch38_ref_alt = TRUE).", suffix
-  )
-}
-
 normalise_chromosome <- function(x) {
   out <- toupper(trimws(sub("^chr", "", as.character(x), ignore.case = TRUE)))
   out[out == "23"] <- "X"
@@ -326,7 +387,27 @@ input_probe_lines <- function(input, n = 32L) {
   readLines(connection, n = n, warn = FALSE)
 }
 
-read_delimited_file <- function(input, skip = NULL) {
+read_delimited_header <- function(input, skip = NULL) {
+  compression <- input_compression(input)
+  probe <- if (!identical(compression, "zst")) {
+    tryCatch(input_probe_lines(input), error = function(e) character())
+  } else {
+    character()
+  }
+  separator <- detect_delimited_separator(probe)
+  arguments <- list(data.table = FALSE, showProgress = FALSE, check.names = FALSE,
+                    fill = FALSE, nrows = 0L)
+  if (nzchar(separator)) arguments$sep <- separator
+  if (!is.null(skip)) arguments$skip <- skip
+  if (identical(compression, "none")) {
+    arguments$file <- input
+  } else {
+    arguments$cmd <- compressed_read_command(input)
+  }
+  clean_input_names(do.call(strict_fread, arguments))
+}
+
+read_delimited_file <- function(input, skip = NULL, select = NULL) {
   compression <- input_compression(input)
   probe <- if (!identical(compression, "zst")) {
     tryCatch(input_probe_lines(input), error = function(e) character())
@@ -338,6 +419,7 @@ read_delimited_file <- function(input, skip = NULL) {
                     fill = FALSE)
   if (nzchar(separator)) arguments$sep <- separator
   if (!is.null(skip)) arguments$skip <- skip
+  if (!is.null(select)) arguments$select <- select
   if (identical(compression, "none")) {
     arguments$file <- input
   } else {
@@ -408,6 +490,8 @@ read_vcf_input <- function(input, parse_policy = c("error", "report")) {
   out <- data.frame(
     chromosome = data[[chrom_i]],
     base_pair_location = data[[pos_i]],
+    reference_allele = data[[ref_i]],
+    alternate_allele = alt,
     effect_allele = alt,
     other_allele = data[[ref_i]],
     beta = beta,
@@ -443,7 +527,6 @@ read_vcf_input <- function(input, parse_policy = c("error", "report")) {
   extra_names <- setdiff(names(data), exclude)
   if (length(extra_names)) out[extra_names] <- data[extra_names]
   attr(out, "source_columns") <- names(data)
-  attr(out, "explicit_ref_alt") <- TRUE
   out
 }
 
@@ -455,16 +538,71 @@ looks_like_vcf <- function(input) {
     any(grepl("^#CHROM(?:\\t|\\s)", probe, ignore.case = TRUE))
 }
 
-read_sumstats_input <- function(input, parse_policy = c("error", "report")) {
+read_sumstats_input <- function(input, parse_policy = c("error", "report"),
+                                project_columns = FALSE, core_only = FALSE,
+                                allow_p_to_se = FALSE) {
   parse_policy <- match.arg(parse_policy)
-  if (is.data.frame(input)) return(clean_input_names(input))
+  if (length(project_columns) != 1L || !is.logical(project_columns) || is.na(project_columns) ||
+      length(core_only) != 1L || !is.logical(core_only) || is.na(core_only)) {
+    stop("project_columns and core_only must be TRUE or FALSE", call. = FALSE)
+  }
+  if (length(allow_p_to_se) != 1L || !is.logical(allow_p_to_se) || is.na(allow_p_to_se)) {
+    stop("allow_p_to_se must be TRUE or FALSE", call. = FALSE)
+  }
+  started <- unname(proc.time()[["elapsed"]])
+  if (is.data.frame(input)) {
+    data <- clean_input_names(input)
+    source_columns <- names(data)
+    selected <- if (isTRUE(project_columns)) {
+      sumstats_projection_indices(source_columns, core_only = core_only,
+                                  allow_p_to_se = allow_p_to_se)
+    } else {
+      seq_along(source_columns)
+    }
+    data <- data[, selected, drop = FALSE]
+    attr(data, "source_columns") <- source_columns
+    attr(data, "source_columns_read") <- names(data)
+    attr(data, "input_read_metadata") <- list(
+      projected = isTRUE(project_columns),
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(selected)),
+      elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+    )
+    return(data)
+  }
   if (length(input) != 1L || !is.character(input) || !file.exists(input)) {
     stop("input must be a data.frame or an existing delimited file path", call. = FALSE)
   }
   if (looks_like_vcf(input)) {
-    return(read_vcf_input(input, parse_policy = parse_policy))
+    data <- read_vcf_input(input, parse_policy = parse_policy)
+    source_columns <- attr(data, "source_columns") %||% names(data)
+    attr(data, "source_columns_read") <- source_columns
+    attr(data, "input_read_metadata") <- list(
+      projected = FALSE,
+      columns_before = as.integer(length(source_columns)),
+      columns_read = as.integer(length(source_columns)),
+      elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+    )
+    return(data)
   }
-  clean_input_names(read_delimited_file(input))
+  header <- read_delimited_header(input)
+  source_columns <- names(header)
+  selected <- if (isTRUE(project_columns)) {
+    sumstats_projection_indices(source_columns, core_only = core_only,
+                                allow_p_to_se = allow_p_to_se)
+  } else {
+    seq_along(source_columns)
+  }
+  data <- clean_input_names(read_delimited_file(input, select = selected))
+  attr(data, "source_columns") <- source_columns
+  attr(data, "source_columns_read") <- names(data)
+  attr(data, "input_read_metadata") <- list(
+    projected = isTRUE(project_columns),
+    columns_before = as.integer(length(source_columns)),
+    columns_read = as.integer(length(selected)),
+    elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
+  )
+  data
 }
 
 rename_first_alias <- function(data, target, aliases) {
@@ -492,8 +630,13 @@ rename_first_alias <- function(data, target, aliases) {
   data
 }
 
-normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")) {
+normalise_sumstats_columns <- function(data, parse_policy = c("error", "report"),
+                                       allow_p_to_se = FALSE) {
   parse_policy <- match.arg(parse_policy)
+  if (length(allow_p_to_se) != 1L || !is.logical(allow_p_to_se) ||
+      is.na(allow_p_to_se)) {
+    stop("allow_p_to_se must be TRUE or FALSE", call. = FALSE)
+  }
   data <- clean_input_names(data)
   parse_failures <- list()
   assign_parsed <- function(target, value) {
@@ -503,48 +646,30 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   }
   data <- rename_first_alias(data, "rsid",
                              c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"))
-  alias_map <- list(
-    chromosome = c("chromosome", "chr", "CHR", "#chrom", "#CHROM", "CHROM", "chrom"),
-    base_pair_location = c("base_pair_location", "position", "pos", "POS", "bp", "BP", "GENPOS"),
-    effect_allele = c("effect_allele", "ea", "EA", "a1", "A1", "alt", "ALT",
-                      "ALLELE1", "alleleB", "ALLELEB"),
-    other_allele = c("other_allele", "oa", "NEA", "nea", "a2", "A2", "ref", "REF",
-                     "ALLELE0", "alleleA", "ALLELEA"),
-    # A single-letter B is used by some sources for expected non-reference
-    # counts. It must not compete with an exact beta column (or be silently
-    # interpreted as an effect size when its meaning is schema-dependent).
-    beta = c("beta", "BETA", "effect", "effect_size", "estimate",
-             "ES", "LOGOR", "LOG_OR", "log_odds", "BETA_LINREG", "BETA_LMM"),
-    z = c("z", "Z", "zscore", "Z_SCORE", "z_stat", "ZSTAT", "zstatistic",
-          "Z_STATISTIC", "Z_BOLT_LMM"),
-    odds_ratio = c("odds_ratio", "OR", "ODDSRATIO", "oddsratio"),
-    standard_error = c("standard_error", "SE", "se", "sebeta", "SEBETA", "stderr", "std_err"),
-    effect_allele_frequency = c("effect_allele_frequency", "eaf", "EAF", "af", "AF",
-                                "effect_af", "A1FREQ", "ALT_FREQ", "ALT_AF", "EAF_ALT"),
-    p_value = c("p_value", "P", "p", "pval", "pvalue", "P_VALUE", "P_BOLT_LMM"),
-    minus_log10_p = c("minus_log10_p", "LP", "lp", "neglog10p", "-LOG10P", "LOG10P"),
-    variant_id = c("variant_id", "SNPID", "SNP_ID", "SNP", "snp", "variant", "ID"),
-    sample_size = c("sample_size", "N", "n", "SS", "N_TOTAL", "TOTALSAMPLESIZE", "N_SUMMARY"),
-    info = c("info", "INFO_SCORE", "IMPINFO", "INFO", "R2", "RSQ", "INFO_SCORE_IMP"),
-    expected_count = c("expected_count", "B", "expected_nonref_count", "nonref_count")
-  )
+  alias_map <- sumstats_column_alias_map()
   for (target in names(alias_map)) data <- rename_first_alias(data, target, alias_map[[target]])
+  beta_source_present <- "beta" %in% names(data)
+  standard_error_source_present <- "standard_error" %in% names(data)
+  z_source_present <- "z" %in% names(data)
+  odds_ratio_source_present <- "odds_ratio" %in% names(data)
+  # Keep source-level missingness for provenance, but delay the parse-policy
+  # error until the unambiguous positive-OR boundary conversion has had a
+  # chance to provide beta. The strict writer still checks source columns and
+  # therefore never treats OR as a strict-core beta field.
   missing <- setdiff(required_sumstats_columns(), names(data))
-  if (length(missing)) {
-    if (identical(parse_policy, "error")) {
-      stop("Missing required summary-statistics columns: ", paste(missing, collapse = ", "),
-           call. = FALSE)
-    }
-    for (column in missing) data[[column]] <- NA_character_
-  }
+  for (column in missing) data[[column]] <- NA_character_
   if (!"chromosome" %in% names(data)) data$chromosome <- NA_character_
   if (!"base_pair_location" %in% names(data)) data$base_pair_location <- NA_integer_
   data$chromosome <- normalise_chromosome(data$chromosome)
   assign_parsed("base_pair_location",
                 parse_integer_column(data$base_pair_location, "base_pair_location",
                                      invalid = parse_policy))
+  data$reference_allele <- toupper(trimws(as.character(data$reference_allele)))
+  data$alternate_allele <- toupper(trimws(as.character(data$alternate_allele)))
   data$effect_allele <- toupper(trimws(as.character(data$effect_allele)))
   data$other_allele <- toupper(trimws(as.character(data$other_allele)))
+  data$reference_allele[data$reference_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
+  data$alternate_allele[data$alternate_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$effect_allele[data$effect_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$other_allele[data$other_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   if (!"beta" %in% names(data)) data$beta <- NA_real_
@@ -561,8 +686,27 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   if (any(bad_or) && identical(parse_policy, "error")) {
     stop("odds_ratio must be finite and positive when supplied", call. = FALSE)
   }
-  beta_missing <- is.na(data$beta) & is.finite(data$odds_ratio) & data$odds_ratio > 0
-  data$beta[beta_missing] <- log(data$odds_ratio[beta_missing])
+  if (beta_source_present && odds_ratio_source_present) {
+    comparable <- is.finite(data$beta) & is.finite(data$odds_ratio) &
+      data$odds_ratio > 0
+    if (any(comparable)) {
+      beta_from_or <- log(data$odds_ratio[comparable])
+      tolerance <- 1e-6 + 0.01 * pmax(abs(data$beta[comparable]),
+                                       abs(beta_from_or))
+      conflict <- abs(data$beta[comparable] - beta_from_or) > tolerance
+      if (any(conflict)) {
+        rows <- which(comparable)[conflict]
+        stop("beta and odds_ratio are inconsistent at row(s): ",
+             paste(utils::head(rows, 5L), collapse = ", "), call. = FALSE)
+      }
+    }
+  }
+  beta_from_or <- integer()
+  if (!beta_source_present && odds_ratio_source_present) {
+    beta_from_or <- which(is.na(data$beta) & is.finite(data$odds_ratio) &
+                            data$odds_ratio > 0)
+    if (length(beta_from_or)) data$beta[beta_from_or] <- log(data$odds_ratio[beta_from_or])
+  }
   if (!"effect_allele_frequency" %in% names(data)) data$effect_allele_frequency <- NA_real_
   assign_parsed("effect_allele_frequency",
                 parse_numeric_column(data$effect_allele_frequency,
@@ -576,21 +720,43 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
     fill <- is.na(data$p_value) & is.finite(lp)
     data$p_value[fill] <- 10^(-lp[fill])
   }
-  # Accept beta/SE, explicit Z/SE, or beta plus p (with the usual Wald
-  # approximation). P is an input aid only; it is never written to a store.
+  # The strict route is explicit beta + standard error. An optional supplied Z
+  # is checked against beta / standard_error, or derived when absent. P-value
+  # to SE inference is deliberately opt-in and is conflict-checked below.
   z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
   data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
-  beta_missing_from_z <- is.na(data$beta) & is.finite(data$z) & is.finite(data$standard_error) & data$standard_error > 0
-  data$beta[beta_missing_from_z] <- data$z[beta_missing_from_z] * data$standard_error[beta_missing_from_z]
-  se_missing <- is.na(data$standard_error) & is.finite(data$beta) & is.finite(data$p_value) &
-    data$p_value > 0 & data$p_value < 1 & data$beta != 0
-  if (any(se_missing)) {
-    data$standard_error[se_missing] <- abs(data$beta[se_missing]) /
-      abs(stats::qnorm(data$p_value[se_missing] / 2))
+  p_to_se_rows <- integer()
+  if (isTRUE(allow_p_to_se)) {
+    p_to_se_candidate <- is.finite(data$beta) & is.finite(data$p_value) &
+      data$p_value > 0 & data$p_value < 1 & data$beta != 0
+    derived_se <- rep(NA_real_, nrow(data))
+    derived_se[p_to_se_candidate] <- abs(data$beta[p_to_se_candidate]) /
+      abs(stats::qnorm(data$p_value[p_to_se_candidate] / 2))
+    supplied_se <- is.finite(data$standard_error) & data$standard_error > 0
+    conflict <- p_to_se_candidate & supplied_se &
+      abs(data$standard_error - derived_se) >
+        (1e-6 + 0.01 * pmax(abs(data$standard_error), abs(derived_se)))
+    if (any(conflict)) {
+      stop("standard_error conflicts with the explicitly enabled p-value-derived value at row(s): ",
+           paste(utils::head(which(conflict), 5L), collapse = ", "), call. = FALSE)
+    }
+    p_to_se_rows <- which(p_to_se_candidate & !supplied_se)
+    if (length(p_to_se_rows)) data$standard_error[p_to_se_rows] <- derived_se[p_to_se_rows]
+  }
+  if (identical(parse_policy, "error")) {
+    resolved_missing <- missing
+    if (length(beta_from_or)) resolved_missing <- setdiff(resolved_missing, "beta")
+    if (isTRUE(allow_p_to_se) && length(p_to_se_rows)) {
+      resolved_missing <- setdiff(resolved_missing, "standard_error")
+    }
+    if (length(resolved_missing)) {
+      stop("Missing required summary-statistics columns: ",
+           paste(resolved_missing, collapse = ", "), call. = FALSE)
+    }
   }
   z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
   data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
-  consistent <- is.finite(data$beta) & is.finite(data$z) &
+  consistent <- z_source_present & is.finite(data$beta) & is.finite(data$z) &
     is.finite(data$standard_error) & data$standard_error > 0
   if (any(consistent)) {
     beta_from_z <- data$z[consistent] * data$standard_error[consistent]
@@ -632,50 +798,93 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   data$rsid[fill_rsid] <- data$variant_id[fill_rsid]
   attr(data, "parse_failures") <- parse_failures
   attr(data, "missing_columns") <- missing
+  attr(data, "resolution_provenance") <- sumstats_resolution_contract(
+    allow_p_to_se = allow_p_to_se, p_to_se_rows = p_to_se_rows
+  )
+  attr(data, "resolution_provenance")$beta_route <- if (length(beta_from_or)) {
+    "positive_OR_to_log_OR_boundary_conversion"
+  } else if (beta_source_present) {
+    "explicit_beta_alias"
+  } else {
+    "missing"
+  }
+  attr(data, "resolution_provenance")$standard_error_route <- if (standard_error_source_present) {
+    "explicit_standard_error_alias"
+  } else if (length(p_to_se_rows)) {
+    "explicit_opt_in_p_value_to_standard_error_conversion"
+  } else {
+    "missing"
+  }
+  attr(data, "resolution_provenance")$z_source <- if (z_source_present) {
+    "supplied_and_checked_when_beta_and_standard_error_are_finite"
+  } else {
+    "derived_from_beta_over_standard_error"
+  }
   data
 }
 
-new_structural_qc_report <- function(n, input_build, max_examples = 5L) {
-  list(
+new_structural_qc_report <- function(n, input_build, max_examples = 5L,
+                                     detail = c("full", "compact")) {
+  detail <- match.arg(detail)
+  report <- list(
     input_rows = as.integer(n),
     accepted_rows = NA_integer_,
     rejected_rows = NA_integer_,
     dropped_rows = NA_integer_,
     input_build = normalise_build_name(input_build),
     valid = FALSE,
-    row_status = data.frame(
-      row = seq_len(n), structurally_valid = logical(n), accepted = logical(n),
-      reasons = rep("", n), stringsAsFactors = FALSE
-    ),
     rejection_counts = integer(),
     examples = list(),
-    max_examples = as.integer(max_examples)
+    max_examples = as.integer(max_examples),
+    detail = detail
   )
+  if (identical(detail, "full")) {
+    report$row_status <- data.frame(
+      row = seq_len(n), structurally_valid = logical(n), accepted = logical(n),
+      reasons = rep("", n), stringsAsFactors = FALSE
+    )
+  }
+  report
 }
 
 structural_qc_report <- function(data, input_build = "GRCh38",
-                                 require_statistics = TRUE, max_examples = 5L) {
+                                 require_statistics = TRUE, max_examples = 5L,
+                                 detail = c("full", "compact")) {
+  detail <- match.arg(detail)
   data <- clean_input_names(data)
   n <- nrow(data)
-  report <- new_structural_qc_report(n, input_build, max_examples = max_examples)
+  report <- new_structural_qc_report(
+    n, input_build, max_examples = max_examples, detail = detail
+  )
   report$missing_columns <- attr(data, "missing_columns") %||% character()
   if (!n) {
     report$accepted_rows <- 0L
     report$rejected_rows <- 0L
     report$dropped_rows <- 0L
     report$valid <- TRUE
-    report$row_status$structurally_valid <- logical()
-    report$row_status$accepted <- logical()
+    if (identical(detail, "full")) {
+      report$row_status$structurally_valid <- logical()
+      report$row_status$accepted <- logical()
+    }
     return(report)
   }
 
-  reasons <- list()
+  reasons <- if (identical(detail, "full")) list() else NULL
+  rejection_counts <- integer()
+  examples <- list()
+  invalid <- rep(FALSE, n)
+  reason_count <- integer(n)
   add_reason <- function(name, mask) {
     mask <- as.logical(mask)
     mask[is.na(mask)] <- FALSE
     if (length(mask) != n) stop("structural QC mask has the wrong number of rows",
                                 call. = FALSE)
-    reasons[[name]] <<- mask
+    if (identical(detail, "full")) reasons[[name]] <<- mask
+    count <- sum(mask)
+    rejection_counts[name] <<- as.integer(count)
+    examples[[name]] <<- utils::head(which(mask), max(0L, as.integer(max_examples)))
+    invalid <<- invalid | mask
+    reason_count <<- reason_count + as.integer(mask)
   }
   values <- function(name, default = NA_real_) {
     if (name %in% names(data)) return(data[[name]])
@@ -690,6 +899,8 @@ structural_qc_report <- function(data, input_build = "GRCh38",
 
   chromosome <- normalise_chromosome(values("chromosome", NA_character_))
   position <- suppressWarnings(as.numeric(values("base_pair_location", NA_real_)))
+  reference <- toupper(text_values("reference_allele"))
+  alternate <- toupper(text_values("alternate_allele"))
   effect <- toupper(text_values("effect_allele"))
   other <- toupper(text_values("other_allele"))
   rsid <- text_values("rsid")
@@ -718,17 +929,32 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   add_reason("coordinate_out_of_range", known_chromosome & is.finite(position) &
                position >= 1 & position > unname(lengths[chromosome]))
 
+  add_reason("missing_reference_allele", is.na(reference) | !nzchar(reference))
+  add_reason("missing_alternate_allele", is.na(alternate) | !nzchar(alternate))
   add_reason("missing_effect_allele", is.na(effect) | !nzchar(effect))
   add_reason("missing_other_allele", is.na(other) | !nzchar(other))
-  add_reason("multiallelic", (!is.na(effect) & grepl(",", effect, fixed = TRUE)) |
-               (!is.na(other) & grepl(",", other, fixed = TRUE)))
-  add_reason("symbolic_allele", (!is.na(effect) & grepl("^(?:<.*>|\\*)$", effect)) |
-               (!is.na(other) & grepl("^(?:<.*>|\\*)$", other)))
-  add_reason("indel", (!is.na(effect) & nchar(effect) != 1L) |
-               (!is.na(other) & nchar(other) != 1L))
-  add_reason("invalid_allele", (!is.na(effect) & !grepl("^[ACGT]$", effect)) |
-               (!is.na(other) & !grepl("^[ACGT]$", other)))
-  add_reason("same_alleles", !is.na(effect) & !is.na(other) & effect == other)
+  alleles <- cbind(reference, alternate, effect, other)
+  present_alleles <- !is.na(alleles)
+  grepl_alleles <- function(pattern, fixed = FALSE) {
+    matrix(grepl(pattern, alleles, fixed = fixed), nrow = n)
+  }
+  add_reason("multiallelic",
+             rowSums(present_alleles & grepl_alleles(",", fixed = TRUE), na.rm = TRUE) > 0L)
+  add_reason("symbolic_allele",
+             rowSums(present_alleles & grepl_alleles("^(?:<.*>|\\*)$"), na.rm = TRUE) > 0L)
+  add_reason("indel",
+             rowSums(present_alleles & nchar(alleles) != 1L, na.rm = TRUE) > 0L)
+  add_reason("invalid_allele",
+             rowSums(present_alleles & !grepl_alleles("^[ACGT]$"), na.rm = TRUE) > 0L)
+  add_reason("same_alleles", (
+    !is.na(reference) & !is.na(alternate) & reference == alternate
+  ) | (
+    !is.na(effect) & !is.na(other) & effect == other
+  ))
+  orientation_defined <- !is.na(reference) & !is.na(alternate) &
+    !is.na(effect) & !is.na(other)
+  add_reason("orientation_mismatch", orientation_defined &
+               (effect != alternate | other != reference))
 
   numeric_fields <- c("beta", "standard_error", "z", "effect_allele_frequency",
                       "p_value", "odds_ratio", "sample_size", "info")
@@ -760,7 +986,8 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     add_reason("nonfinite_minus_log10_p", !is.na(lp) & !is.finite(lp))
   }
   if (isTRUE(require_statistics)) {
-    add_reason("missing_statistics", !is.finite(z) | !is.finite(se) | se <= 0)
+    add_reason("missing_statistics", !is.finite(beta) | !is.finite(z) |
+                 !is.finite(se) | se <= 0)
   }
 
   key <- ifelse(!is.na(chromosome) & is.finite(position) &
@@ -768,37 +995,37 @@ structural_qc_report <- function(data, input_build = "GRCh38",
                 paste(chromosome, as.integer(position), other, effect, sep = ":"), NA_character_)
   duplicate <- !is.na(key) & (duplicated(key) | duplicated(key, fromLast = TRUE))
   add_reason("duplicate_variant", duplicate)
-  report$canonical_key <- key
-
-  reason_names <- names(reasons)
-  reason_matrix <- if (length(reason_names)) {
-    do.call(cbind, lapply(reasons, as.integer))
-  } else {
-    matrix(0L, nrow = n, ncol = 0L)
-  }
-  if (length(reason_names)) colnames(reason_matrix) <- reason_names
-  invalid <- if (ncol(reason_matrix)) rowSums(reason_matrix) > 0L else rep(FALSE, n)
-  reason_text <- if (length(reason_names)) {
-    apply(reason_matrix, 1L, function(row) {
-      paste(reason_names[which(row != 0L)], collapse = ",")
-    })
-  } else {
-    rep("", n)
-  }
-  report$row_status$structurally_valid <- !invalid
-  report$row_status$reasons <- reason_text
-  report$rejection_counts <- sort(
-    vapply(reasons, sum, integer(1)), decreasing = TRUE
-  )
+  report$rejection_counts <- sort(rejection_counts, decreasing = TRUE)
   report$counts <- report$rejection_counts
   report$rejections <- report$rejection_counts[report$rejection_counts > 0L]
-  report$examples <- lapply(reasons, function(mask) {
-    utils::head(which(mask), max(0L, as.integer(max_examples)))
-  })
-  report$invalid_rows <- which(invalid)
-  report$duplicate_rows <- which(duplicate)
-  report$structurally_valid_rows <- which(!invalid)
+  report$examples <- examples
+  report$rejected_rows <- as.integer(sum(invalid))
   report$valid <- !any(invalid)
+  if (identical(detail, "full")) {
+    reason_names <- names(reasons)
+    reason_text <- rep("", n)
+    for (name in reason_names) {
+      rows <- reasons[[name]]
+      reason_text[rows] <- ifelse(
+        nzchar(reason_text[rows]), paste0(reason_text[rows], ",", name), name
+      )
+    }
+    report$row_status$structurally_valid <- !invalid
+    report$row_status$reasons <- reason_text
+    report$canonical_key <- key
+    report$invalid_rows <- which(invalid)
+    report$duplicate_rows <- which(duplicate)
+    report$structurally_valid_rows <- which(!invalid)
+  } else {
+    # Private, short-lived state consumed by apply_structural_qc(). It is
+    # removed before the compact report is attached to a store or returned.
+    report$internal <- list(
+      invalid = invalid,
+      duplicate = duplicate,
+      canonical_key = key,
+      reason_count = reason_count
+    )
+  }
   report
 }
 
@@ -818,43 +1045,69 @@ format_structural_qc_failure <- function(report) {
   }, character(1))
   example_text <- example_text[nzchar(example_text)]
   if (length(example_text)) summary <- paste(summary, paste(example_text, collapse = "; "), sep = "; ")
-  paste0("structural QC rejected ", length(report$invalid_rows), " row(s): ", summary)
+  rejected <- report$rejected_rows %||% length(report$invalid_rows %||% integer())
+  paste0("structural QC rejected ", as.integer(rejected), " row(s): ", summary)
 }
 
 apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
                                 row_policy = c("report", "error"),
                                 require_statistics = TRUE, max_examples = 5L,
-                                drop_duplicates = TRUE, check_duplicates = TRUE) {
+                                drop_duplicates = TRUE, check_duplicates = TRUE,
+                                detail = c("full", "compact")) {
   row_policy <- match.arg(row_policy)
+  detail <- match.arg(detail)
   if (isTRUE(strict)) row_policy <- "error"
   report <- structural_qc_report(data, input_build = input_build,
-                                  require_statistics = require_statistics,
-                                  max_examples = max_examples)
-  invalid <- report$invalid_rows
+                                 require_statistics = require_statistics,
+                                 max_examples = max_examples, detail = detail)
+  if (identical(detail, "compact")) {
+    internal <- report$internal %||% list(
+      invalid = logical(nrow(data)), duplicate = logical(nrow(data)),
+      canonical_key = character(nrow(data)), reason_count = integer(nrow(data))
+    )
+  } else {
+    internal <- list(
+      invalid = rep(FALSE, nrow(data)),
+      duplicate = rep(FALSE, nrow(data)),
+      canonical_key = report$canonical_key %||% rep(NA_character_, nrow(data)),
+      reason_count = integer(nrow(data))
+    )
+    internal$invalid[report$invalid_rows %||% integer()] <- TRUE
+    internal$duplicate[report$duplicate_rows %||% integer()] <- TRUE
+  }
+  invalid_mask <- internal$invalid
+  duplicate_mask <- internal$duplicate
+  invalid <- which(invalid_mask)
   if (!isTRUE(check_duplicates)) {
-    invalid <- setdiff(invalid, report$duplicate_rows)
+    invalid <- setdiff(invalid, which(duplicate_mask))
   }
   keep <- rep(TRUE, nrow(data))
   if (length(invalid)) {
     keep[invalid] <- FALSE
     # In report mode keep the first copy of an otherwise valid duplicate and
     # reject later copies. Strict/error mode still rejects every duplicate row.
-    duplicate <- report$duplicate_rows
+    duplicate <- which(duplicate_mask)
     if (isTRUE(drop_duplicates) && identical(row_policy, "report") && length(duplicate)) {
-      duplicate_key <- report$canonical_key[duplicate]
+      duplicate_key <- internal$canonical_key[duplicate]
       first <- !duplicated(duplicate_key)
       duplicate_first <- duplicate[first]
-      only_duplicate_reason <- report$row_status$reasons[duplicate_first] == "duplicate_variant"
+      only_duplicate_reason <- if (identical(detail, "compact")) {
+        internal$reason_count[duplicate_first] == 1L
+      } else {
+        report$row_status$reasons[duplicate_first] == "duplicate_variant"
+      }
       keep[duplicate_first[only_duplicate_reason]] <- TRUE
     }
   }
   if (identical(row_policy, "error") && length(invalid)) {
     stop(format_structural_qc_failure(report), call. = FALSE)
   }
-  report$row_status$accepted <- keep
+  if (identical(detail, "full")) report$row_status$accepted <- keep
   report$accepted_rows <- as.integer(sum(keep))
   report$rejected_rows <- as.integer(length(invalid))
   report$dropped_rows <- as.integer(sum(!keep))
+  report$valid <- !length(invalid)
+  report$internal <- NULL
   out <- data[keep, , drop = FALSE]
   attr(out, "structural_qc_report") <- report
   list(data = out, report = report)
@@ -863,6 +1116,12 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
 compact_structural_qc_report <- function(report) {
   if (is.null(report)) return(NULL)
   compact <- report
+  # Named atomic vectors are serialized by jsonlite as unnamed arrays. Keep
+  # rejection reasons addressable in manifests by storing these aggregates as
+  # named lists instead.
+  compact$rejection_counts <- as.list(report$rejection_counts)
+  compact$counts <- compact$rejection_counts
+  compact$rejections <- as.list(report$rejections)
   # The public workflows retain aggregate counts and bounded examples in
   # manifests. Full row status/key vectors remain available from
   # preflight_sumstats() for callers that explicitly request an audit table,
@@ -872,6 +1131,7 @@ compact_structural_qc_report <- function(report) {
   compact$invalid_rows <- NULL
   compact$duplicate_rows <- NULL
   compact$structurally_valid_rows <- NULL
+  compact$internal <- NULL
   compact
 }
 
@@ -927,12 +1187,6 @@ read_manifest <- function(path) {
 now_utc <- function() format(Sys.time(), tz = "UTC", usetz = TRUE)
 
 safe_file_size <- function(path) if (file.exists(path)) file.info(path)$size else NA_real_
-
-chain_manifest_metadata <- function(chain) {
-  if (is.null(chain)) return(NULL)
-  path <- normalizePath(chain, mustWork = TRUE)
-  list(path = path, sha256 = digest::digest(path, algo = "sha256", file = TRUE))
-}
 
 stage_store_output <- function(output, overwrite = FALSE) {
   if (length(output) != 1L || !is.character(output) || is.na(output) || !nzchar(output)) {

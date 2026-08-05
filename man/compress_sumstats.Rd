@@ -2,22 +2,20 @@
 \alias{compress_sumstats}
 \title{Write a CompreSSoR Store}
 \description{
-  Imports summary statistics and writes a CompreSSoR store. The canonical
-  public path is a self-contained GRCh38 Pcodec store: pass already verified
-  GRCh38 REF/ALT data with \code{reference = NULL}. Supplying a reference
-  enables optional reference-backed harmonisation before selection and
-  compression. Parquet is the explicit interoperability backend for exact
-  doubles and arbitrary extra columns.
+  Writes a compact CompreSSoR store from already-prepared summary statistics.
+  The input must contain chromosome, position, explicit REF and ALT,
+  effect/non-effect alleles, beta and standard error, or a positive OR and
+  standard error that resolve to log-OR. The core performs
+  structural QC and compression only: it does not look up a reference, flip
+  alleles, resolve rsIDs, or liftover coordinates. GRCh37 and GRCh38 are
+  supported when the input and store builds are the same.
 }
 \usage{
-compress_sumstats(input, output, reference = NULL,
-                  profile = c("standard", "exact"), overwrite = FALSE,
-                  cache = FALSE, strict = NULL, keep_extras = FALSE,
-                  block_rows = 65536L, mode = NULL, variant_set = NULL,
-                  chrom_threads = NULL, drop_unresolved = NULL,
-                  input_build = "GRCh38", chain = NULL,
+compress_sumstats(input, output, profile = c("standard", "exact"),
+                  overwrite = FALSE, cache = FALSE, strict = NULL,
+                  keep_extras = FALSE, block_rows = 65536L,
+                  variant_set = NULL, input_build = "GRCh38",
                   backend = c("pcodec", "parquet"),
-                  assume_grch38_ref_alt = FALSE,
                   pvalue_threshold = 1e-05, region_padding = 50000L,
                   store_build = "GRCh38",
                   selection = c("full", "core", "hm3", "core_plus"),
@@ -26,60 +24,35 @@ compress_sumstats(input, output, reference = NULL,
 \arguments{
   \item{input}{A data frame or delimited summary-statistics file.}
   \item{output}{Destination directory for the store.}
-  \item{reference}{Optional GRCh38 reference data frame, descriptor, or
-    readable reference file. \code{NULL} selects the self-contained path and
-    skips reference alignment.}
-  \item{store_build}{Build represented by the store. The current public
-    identity interface supports \code{"GRCh37"} and \code{"GRCh38"}; the
-    native writer records the selected build and rejects unsupported reverse
-    liftover combinations.}
-  \item{selection}{Storage scope: \code{"full"}, \code{"core"},
-    \code{"hm3"}, or \code{"core_plus"}. Selection is applied after import,
-    structural preparation, and any requested harmonisation. Named core/HM3
-    panels are resolved through the existing panel interface.}
-  \item{threads}{Positive scalar integer requested for preparation. It is
-    passed to eligible chromosome harmonisation and its requested/effective
-    values are recorded in the manifest.}
-  \item{row_policy}{Either \code{"report"}, which drops unresolved rows and
-    records aggregate counts, or \code{"error"}, which rejects them.}
-  \item{profile}{\code{"standard"} uses the semantic bounded-lossy numeric
-    profile; \code{"exact"} is available with the Parquet backend. Beta and
-    p-values are derived rather than stored in either profile.}
-  \item{backend}{Storage backend. \code{"pcodec"} is the compact native
-    self-contained format; \code{"parquet"} is the interoperability backend.}
-  \item{mode}{Compatibility alias for the historical overloaded argument.
-    It accepts \code{"qc"}, \code{"convert"}, \code{"all"}, \code{"core"},
-    \code{"hm3"}, \code{"pvalue_regions"}, and \code{"core_plus"}. New code
-    should use \code{reference}, \code{selection}, and \code{row_policy}
-    independently.}
-  \item{variant_set}{Optional panel data frame, file, or chromosome-shard
-    directory. If omitted for \code{selection = "core"}, \code{"hm3"}, or
-    \code{"core_plus"}, the corresponding existing named-panel resolver is
-    used.}
-  \item{input_build}{Build of the input rows. Non-matching builds require a
-    compatible chain when the selected store build needs liftover.}
-  \item{chain}{Optional GRCh37-to-GRCh38 chain file. Its path and checksum are
-    recorded in provenance metadata.}
-  \item{strict}{Legacy alias for \code{row_policy = "error"}.}
-  \item{drop_unresolved}{Legacy compatibility switch controlling whether
-    unresolved rows are dropped before writing. Pcodec stores cannot retain
-    unresolved identity rows.}
-  \item{chrom_threads}{Legacy alias for \code{threads}.}
-  \item{assume_grch38_ref_alt}{For reference-free Pcodec conversion, asserts
-    that coordinates are GRCh38, \code{other_allele} is REF,
-    \code{effect_allele} is ALT, and statistics refer to ALT. Explicit REF
-    and ALT columns establish the same orientation contract.}
-  \item{pvalue_threshold}{Strict threshold for p-value-region or core-plus
-    selection; p-values are derived from the pre-encoding canonical Z score.}
-  \item{region_padding}{Base pairs added on each side of significant variants
-    for p-value-region or core-plus selection.}
+  \item{profile}{\code{"standard"} uses the semantic bounded-lossy
+    Z9/EAF8/SE6 profile. \code{"exact"} is available with the Parquet backend.}
   \item{overwrite}{Whether an existing destination may be replaced.}
   \item{cache}{Whether to build the optional Parquet regional cache. Native
     Pcodec stores are already independently block-framed.}
+  \item{strict}{Whether structural QC failures should stop the operation.
+    This is an alias for \code{row_policy = "error"}.}
   \item{keep_extras}{Whether arbitrary non-core input columns should be kept
     in a Parquet extras sidecar.}
   \item{block_rows}{Rows per Parquet write chunk; native Pcodec uses its
     measured key and value frame sizes.}
+  \item{variant_set}{Optional prevalidated panel used for post-import
+    filtering with \code{selection = "core"}, \code{"hm3"}, or
+    \code{"core_plus"}. It is not used as an allele reference.}
+  \item{input_build}{Build of the input rows: \code{"GRCh37"}/\code{"hg19"}
+    or \code{"GRCh38"}/\code{"hg38"}.}
+  \item{backend}{\code{"pcodec"} is the compact native format;
+    \code{"parquet"} is the interoperability backend.}
+  \item{pvalue_threshold}{Threshold used by p-value-region or core-plus
+    selection, derived from the prepared Z statistic.}
+  \item{region_padding}{Base pairs added around p-value-region seeds.}
+  \item{store_build}{Build represented by the store. It must be the same as
+    \code{input_build}; cross-build conversion is outside the package.}
+  \item{selection}{Storage scope: \code{"full"}, \code{"core"},
+    \code{"hm3"}, or \code{"core_plus"}.}
+  \item{threads}{Positive worker count requested for compression and recorded
+    in the manifest.}
+  \item{row_policy}{\code{"report"} drops structurally invalid rows and
+    records aggregate QC counts; \code{"error"} rejects them.}
 }
 \value{A \code{compressor_store} object.}
 \examples{
@@ -87,11 +60,9 @@ compress_sumstats(input, output, reference = NULL,
 example <- system.file("extdata", "example-grch38.tsv", package = "CompreSSoR")
 store <- compress_sumstats(
   example, file.path(tempdir(), "example.cpr"),
-  store_build = "GRCh38", selection = "full", reference = NULL,
-  assume_grch38_ref_alt = TRUE, overwrite = TRUE
+  input_build = "GRCh38", store_build = "GRCh38", overwrite = TRUE
 )
 read_sumstats(store, columns = c("chromosome", "base_pair_location", "z"))
 }
 }
-\seealso{\link{read_sumstats}, \link{validate_compressor},
-  \link{harmonise_sumstats}}
+\seealso{\link{read_sumstats}, \link{validate_compressor}}

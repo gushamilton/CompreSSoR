@@ -1,0 +1,157 @@
+{
+  "format": "CompreSSoR-variant-panel",
+  "format_version": "0.1.0-pcodec-native-panel",
+  "backend": "pcodec",
+  "panel_universe": "core",
+  "genome_build": "GRCh38",
+  "build": "GRCh38",
+  "rows": 6271256,
+  "n_rows": 6271256,
+  "core_rows": 6271256,
+  "hm3_rows": 1199729,
+  "hm3_flag": {
+    "name": "hm3",
+    "dtype": "uint8",
+    "values": [
+      0,
+      1
+    ],
+    "lossless": true
+  },
+  "identity": {
+    "encoding": "native_global_position_plus_full_ref_alt_code",
+    "key": "chromosome:position:REF:ALT",
+    "sorted": true,
+    "exact": true,
+    "position_storage": "within-block delta-coded uint32; block first positions are in the index",
+    "substitution_storage": "directed REF-to-ALT code in uint8",
+    "external_reference_required": false,
+    "chromosome_lengths": {
+      "1": 248956422,
+      "2": 242193529,
+      "3": 198295559,
+      "4": 190214555,
+      "5": 181538259,
+      "6": 170805979,
+      "7": 159345973,
+      "8": 145138636,
+      "9": 138394717,
+      "10": 133797422,
+      "11": 135086622,
+      "12": 133275309,
+      "13": 114364328,
+      "14": 107043718,
+      "15": 101991189,
+      "16": 90338345,
+      "17": 83257441,
+      "18": 80373285,
+      "19": 58617616,
+      "20": 64444167,
+      "21": 46709983,
+      "22": 50818468,
+      "X": 156040895,
+      "Y": 57227415
+    },
+    "chromosome_offsets": {
+      "1": 0,
+      "2": 248956422,
+      "3": 491149951,
+      "4": 689445510,
+      "5": 879660065,
+      "6": 1061198324,
+      "7": 1232004303,
+      "8": 1391350276,
+      "9": 1536488912,
+      "10": 1674883629,
+      "11": 1808681051,
+      "12": 1943767673,
+      "13": 2077042982,
+      "14": 2191407310,
+      "15": 2298451028,
+      "16": 2400442217,
+      "17": 2490780562,
+      "18": 2574038003,
+      "19": 2654411288,
+      "20": 2713028904,
+      "21": 2777473071,
+      "22": 2824183054,
+      "X": 2875001522,
+      "Y": 3031042417
+    },
+    "effect_allele_is_alt": true,
+    "other_allele_is_ref": true
+  },
+  "codec": {
+    "name": "pcodec_native_variant_panel_key_hm3_u8",
+    "library": "pcodec",
+    "pco_version": "1.0.3",
+    "abi": "standalone",
+    "page_rows": 131072,
+    "key_block_rows": 131072,
+    "flag_block_rows": 65536
+  },
+  "files": {
+    "position": "position.pco",
+    "substitution": "substitution.pco",
+    "hm3": "hm3.pco",
+    "index": "native.index.json"
+  },
+  "logical_columns": [
+    "variant_id",
+    "hm3"
+  ],
+  "reference": {
+    "id": "none",
+    "status": "not_a_reference_genome_or_harmonisation"
+  },
+  "preparation": {
+    "method": "frozen_core_universe_plus_hm3_membership"
+  },
+  "source_provenance": {
+    "core": {
+      "source": "/Volumes/crucial_x9/mr_atlas/data/panels/1kg_all_tag_r2_095_shared_keep_hm3/variant_dictionary.shared.tsv.gz",
+      "source_sha256": "167006fc385289160b3ab5b6dc6fede695d899df1f8decf415744da3644e7b4d",
+      "source_rows": 6271258,
+      "valid_core_rows": 6271256,
+      "excluded_invalid_rows": 2,
+      "prepared_sha256": "3d769e34f8f968a64b98b34e6a1b5cf4ea7d17161b57eaf8faab19f0f4a24993"
+    },
+    "hm3": {
+      "source": "/Volumes/crucial_x9/mr_atlas/data/panels/hm3/hm3_grch38_canonical_from_bfile.tsv.gz",
+      "source_sha256": "33d158bd879b19c07564b60d968b792f2988909ca44b1d8c2e3ff4dedd33aea4",
+      "source_rows": 1212965,
+      "valid_hm3_rows": 1212965,
+      "prepared_sha256": "e6865de5be1973623bc3849b03665c12208450d70898a534ed524b354c1b8ad6"
+    },
+    "hm3_rows_in_core_universe": 1199729
+  },
+  "tolerances": {
+    "identity": "exact",
+    "hm3": "lossless_binary_flag"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "position.pco": {
+        "bytes": 7967653,
+        "sha256": "52db932e6e17d276693fd3a48db8757506d0e9cb6d6fb714e13ebbb799f739a4"
+      },
+      "substitution.pco": {
+        "bytes": 2504249,
+        "sha256": "d39a6471465a2de3feabf352558c7c8bb886568ebf29edb22de0e9c3721421b8"
+      },
+      "hm3.pco": {
+        "bytes": 552471,
+        "sha256": "e2b81b4f5368b071ede0874bc0de4e0e8ecebc6307a14f1c1a4fd99eacc4673f"
+      },
+      "native.index.json": {
+        "bytes": 52139,
+        "sha256": "6935184cc18802a9a747ccbfd3f69fa39ebb71ccb77a63df083d6f17a6885a6e"
+      }
+    },
+    "payload_sha256": "e9979b2296c457a12e01191c04282385ccf9dc3755154cd95e2ba50b807e7b4d",
+    "payload_definition": "sha256 over sorted relative payload paths, byte counts, and file sha256 values",
+    "canonical_sha256": "dbb0c622ab05a34e08382d28350936997ae41996ca08ad8dbf6d552630ede67f"
+  },
+  "created_utc": "2026-08-05 18:29:20 UTC"
+}

@@ -1,3 +1,16 @@
+# CompreSSoR 0.5.0
+
+- Refactors the installed package around a strict compression-only contract.
+  Inputs must already contain chromosome, position, explicit REF/ALT,
+  effect/non-effect alleles, beta, and standard error. The core performs
+  structural QC and compression only; it does not look up references, flip
+  alleles, resolve rsIDs, or liftover coordinates.
+- Adds native GRCh37/hg19 stores alongside GRCh38/hg38. Input and store builds
+  must match; cross-build conversion is intentionally outside this package.
+- Moves the former reference, harmonisation, liftover, and legacy workflow
+  implementation into `archive/harmonisation/` for recovery without loading it
+  as part of the installed package.
+
 # CompreSSoR 0.4.0
 
 - Adds the final same-data BP FinnGen chr1 Pareto record: nine formats, five

@@ -1,14 +1,12 @@
-compressor_manifest_contract <- function(path, input_build, store_build,
-                                         selection, profile, backend, threads,
-                                         row_policy, source, reference,
-                                         chain, alignment_stats = NULL,
-                                         panel = NULL) {
+compressor_manifest_contract <- function(path, build, selection, profile,
+                                         backend, threads, row_policy, source,
+                                         preparation = NULL, panel = NULL) {
   manifest_path <- file.path(path, "manifest.json")
   manifest <- read_manifest(manifest_path)
-  manifest$genome_build <- store_build
-  manifest$input_build <- input_build
-  manifest$stored_build <- store_build
-  manifest$assembly <- store_build
+  manifest$genome_build <- build
+  manifest$input_build <- build
+  manifest$stored_build <- build
+  manifest$assembly <- build
   manifest$selection_scope <- selection
   manifest$profile <- manifest$profile %||% profile
   manifest$backend <- manifest$backend %||% backend
@@ -19,30 +17,43 @@ compressor_manifest_contract <- function(path, input_build, store_build,
   manifest$threads <- list(
     requested = as.integer(threads),
     effective = effective_writer_workers,
-    harmonisation = as.integer(threads),
+    compression = as.integer(threads),
     compression_writer_parallel = effective_writer_workers > 1L
   )
   manifest$row_policy <- row_policy
   manifest$provenance <- list(
     input = source %||% NULL,
-    input_build = input_build,
-    stored_build = store_build,
-    reference = reference %||% NULL,
-    chain = chain %||% NULL,
+    input_build = build,
+    stored_build = build,
+    reference = list(status = "not_used"),
+    chain = list(status = "not_used"),
     panel = panel %||% NULL,
-    alignment = alignment_stats %||% NULL
+    preparation = preparation %||% list(method = "strict_prepared_input")
   )
   if (is.null(manifest$selection)) {
     manifest$selection <- list(name = selection, method = "full_store")
   }
   manifest$metadata <- c(
     manifest$metadata %||% list(),
-    list(api = list(selection = selection, store_build = store_build,
-                    input_build = input_build, threads = as.integer(threads),
+    list(api = list(selection = selection, store_build = build,
+                    input_build = build, threads = as.integer(threads),
                     row_policy = row_policy))
   )
   write_manifest(manifest, manifest_path)
   if (identical(backend, "pcodec")) seal_pcodec_manifest(manifest_path)
+  invisible(manifest)
+}
+
+record_commit_timing <- function(path, seconds) {
+  manifest_path <- file.path(path, "manifest.json")
+  manifest <- read_manifest(manifest_path)
+  timings <- manifest$timings %||% list(unit = "seconds", phases = list())
+  timings$unit <- timings$unit %||% "seconds"
+  timings$phases <- timings$phases %||% list()
+  timings$phases$commit <- as.numeric(seconds)
+  manifest$timings <- timings
+  write_manifest(manifest, manifest_path)
+  if (identical(manifest$backend, "pcodec")) seal_pcodec_manifest(manifest_path)
   invisible(manifest)
 }
 
@@ -82,65 +93,32 @@ write_selection_regions <- function(output, selection) {
 #'
 #' @param input A data.frame or a delimited summary-statistics file.
 #' @param output Destination directory for the store.
-#' @param reference Optional GRCh38 reference used for allele alignment. Use
-#'   `NULL` for the canonical self-contained path when the input already has
-#'   verified GRCh38 coordinates and REF/ALT orientation.
 #' @param selection Storage scope: `"full"`, `"core"`, `"hm3"`, or
-#'   `"core_plus"`. The legacy `mode` argument remains accepted as an alias.
-#' @param store_build Genome build encoded by the store. The current native
-#'   self-contained writer supports `"GRCh38"`; other builds are rejected
-#'   until their identity tables are available.
-#' @param threads Positive worker count requested for preparation. Existing
-#'   chromosome harmonisation uses this value; the current writer records its
-#'   compression worker as serial.
-#' @param row_policy `"report"` drops unresolved rows and records aggregate
-#'   counts; `"error"` rejects them. The legacy `strict` and
-#'   `drop_unresolved` arguments remain accepted as aliases.
-#' @param variant_set Optional panel data.frame, file, or chromosome-shard
-#'   directory. Named `core` and `hm3` selections use the existing panel
-#'   resolver when no explicit panel is supplied. Panel filtering remains
-#'   downstream of preparation and harmonisation.
-#' @param mode Legacy overloaded mode alias. It accepts `"qc"`,
-#'   `"convert"`, `"all"`, `"core"`, `"hm3"`, `"pvalue_regions"`, and
-#'   `"core_plus"`; new code should use `selection`, `reference`, and
-#'   `row_policy` independently.
+#'   `"core_plus"`. Selection is applied after the strict input contract and
+#'   structural QC; it never changes identity or allele orientation.
+#' @param store_build Build encoded by the store. It must normalize to the
+#'   same build as `input_build`; cross-build conversion is rejected.
+#' @param threads Positive worker count requested for compression.
+#' @param row_policy `"report"` drops structurally invalid rows and records
+#'   aggregate counts; `"error"` rejects them. `strict = TRUE` is an alias.
+#' @param variant_set Optional prevalidated panel used only for deterministic
+#'   post-import selection; it is never used as a reference.
 #' @param strict If `TRUE`, fail when variants are absent, incompatible,
 #'   ambiguous, duplicated, or unsupported by the selected backend.
-#' @param drop_unresolved Whether unmatched, incompatible, ambiguous and
-#'   duplicate rows are dropped. The default is `TRUE`.
-#' @param input_build Build of the input. Non-GRCh38 input requires `chain`.
-#' @param chain Optional GRCh37-to-GRCh38 chain file.
-#' @param store_build Genome build represented by the written store. This is
-#'   independent of `input_build`; direct GRCh37 input can therefore be stored
-#'   as GRCh37 without a liftover. Reference-backed harmonisation currently
-#'   targets GRCh38.
-#' @param selection Storage scope: one of `"full"`, `"core"`, `"hm3"`, or
-#'   `"core_plus"`. This is an orthogonal spelling of the legacy selection
-#'   modes and is applied after preparation/QC.
-#' @param threads Positive integer worker request. It is used for eligible
-#'   preparation work and recorded in the manifest; native stream writing is
-#'   deterministic and may use fewer effective workers.
-#' @param row_policy Either `"report"` (drop/report unsupported rows) or
-#'   `"error"` (fail on structural or identity violations).
-#' @param pvalue_threshold Strict p-value threshold for `mode = "pvalue_regions"`
-#'   or `mode = "core_plus"`; p-values are derived from canonical Z.
+#' @param input_build Input build, explicitly GRCh37/hg19 or GRCh38/hg38.
+#' @param pvalue_threshold Strict p-value threshold for `selection = "pvalue_regions"`
+#'   or `selection = "core_plus"`; p-values are derived from canonical Z.
 #' @param region_padding Number of base pairs added on each side of significant
-#'   SNPs for `mode = "pvalue_regions"` or `mode = "core_plus"`.
-#' @param chrom_threads Legacy alias for `threads` during harmonisation.
+#'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
 #' @param backend Storage backend. The default, `"pcodec"`, is the compact
-#'   block-framed Pcodec format with a self-contained GRCh38 identity key.
+#'   block-framed Pcodec format with a self-contained build-aware identity key.
 #'   `"parquet"` retains the interoperable legacy backend.
-#' @param assume_grch38_ref_alt Required for Pcodec `mode = "convert"` unless
-#'   the input has explicit REF and ALT columns. Set `TRUE` only when positions
-#'   are GRCh38, `other_allele` is REF, `effect_allele` is ALT, and beta/Z/EAF
-#'   refer to ALT. Normal QC mode establishes this contract from the reference.
 #' @param keep_extras Whether arbitrary non-core input columns should be kept
-#'   in an extras sidecar. The default is `FALSE`; harmonisation/QC summaries
-#'   remain in the manifest, while row-wise QC labels are retained only when
-#'   this is explicitly set to `TRUE`.
+#'   in an extras sidecar. The default is `FALSE`; aggregate QC counts remain
+#'   in the manifest.
 #' @param overwrite Whether an existing destination may be replaced.
 #' @param cache Whether to build the optional q8 framed cache after writing.
 #' @param block_rows Number of rows per Parquet row group; Pcodec uses its
@@ -150,42 +128,34 @@ write_selection_regions <- function(output, selection) {
 #' \dontrun{
 #' example <- system.file("extdata", "example-grch38.tsv", package = "CompreSSoR")
 #' store <- compress_sumstats(
-#'   example, file.path(tempdir(), "example.cpr"), mode = "convert",
-#'   reference = NULL, assume_grch38_ref_alt = TRUE, overwrite = TRUE
+#'   example, file.path(tempdir(), "example.cpr"),
+#'   input_build = "GRCh38", store_build = "GRCh38", overwrite = TRUE
 #' )
 #' read_sumstats(store, columns = c("chromosome", "base_pair_location", "z"))
 #' }
 #' @export
-compress_sumstats <- function(input, output, reference = NULL,
+compress_sumstats <- function(input, output,
                               profile = c("standard", "exact"),
                               overwrite = FALSE, cache = FALSE, strict = NULL,
                               keep_extras = FALSE,
                               block_rows = 65536L,
-                              mode = NULL, variant_set = NULL, chrom_threads = NULL,
-                              drop_unresolved = NULL,
-                              input_build = "GRCh38", chain = NULL,
+                              variant_set = NULL, input_build = "GRCh38",
                               backend = c("pcodec", "parquet"),
-                              assume_grch38_ref_alt = FALSE,
                               pvalue_threshold = 1e-5,
                               region_padding = 50000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
                               threads = NULL,
                               row_policy = c("report", "error")) {
-  store_build <- compressor_normalize_build(store_build)
-  input_build <- compressor_normalize_build(input_build)
+  builds <- core_builds(input_build, store_build)
+  input_build <- builds$input_build
+  store_build <- builds$store_build
   if (missing(selection)) selection <- NULL
   if (is.null(threads)) {
-    threads <- if (is.null(chrom_threads)) 1L else
-      pcodec_validate_threads(chrom_threads)
+    threads <- 1L
   } else {
     threads <- pcodec_validate_threads(threads)
-    if (!is.null(chrom_threads) &&
-        !identical(threads, pcodec_validate_threads(chrom_threads, "chrom_threads"))) {
-      stop("threads and legacy chrom_threads disagree; use threads alone", call. = FALSE)
-    }
   }
-  chrom_threads <- threads
   if (missing(row_policy) || is.null(row_policy)) {
     row_policy <- if (isTRUE(strict)) "error" else "report"
   } else {
@@ -197,58 +167,26 @@ compress_sumstats <- function(input, output, reference = NULL,
     }
   }
   if (is.null(strict)) strict <- identical(row_policy, "error")
-  if (is.null(drop_unresolved)) drop_unresolved <- TRUE
-  if (length(drop_unresolved) != 1L || !is.logical(drop_unresolved) ||
-      is.na(drop_unresolved)) {
-    stop("drop_unresolved must be TRUE or FALSE", call. = FALSE)
-  }
   if (!is.null(selection)) {
     if (length(selection) != 1L || is.na(selection) ||
-        !selection %in% c("full", "core", "hm3", "core_plus")) {
-      stop("selection must be one of full, core, hm3, or core_plus", call. = FALSE)
+        !selection %in% c("full", "core", "hm3", "core_plus", "pvalue_regions")) {
+      stop("selection must be one of full, core, hm3, core_plus, or pvalue_regions", call. = FALSE)
     }
-    if (selection == "full") {
-      if (is.null(mode)) mode <- if (is.null(reference)) "convert" else "qc"
-    } else {
-      selected_mode <- selection
-      if (!is.null(mode) && !identical(match.arg(mode), selected_mode)) {
-        stop("selection and legacy mode specify different storage scopes", call. = FALSE)
-      }
-      mode <- if (is.null(reference) && selection != "core_plus") "convert" else selected_mode
-    }
-  } else if (is.null(mode)) {
-    # The canonical public default is a full, self-contained conversion. A
-    # supplied reference opts into the one-call harmonisation path.
+  } else {
     selection <- "full"
-    mode <- if (is.null(reference)) "convert" else "qc"
   }
   profile <- match.arg(profile)
   backend <- match.arg(backend)
-  mode <- match.arg(mode,
-                    c("qc", "convert", "all", "core", "hm3",
-                      "pvalue_regions", "core_plus"))
-  if (is.null(selection)) {
-    selection <- switch(mode, core = "core", hm3 = "hm3", core_plus = "core_plus",
-                        pvalue_regions = "full", "full")
+  if (identical(backend, "pcodec") && isTRUE(keep_extras)) {
+    stop("backend='pcodec' currently stores only the core summary-statistics "
+         , "columns; use backend='parquet' to retain extras", call. = FALSE)
   }
   if (selection %in% c("core", "hm3", "core_plus") && is.null(variant_set)) {
     variant_set <- if (selection == "hm3") "hm3" else "core"
   }
   selection_scope <- selection
-  if (!is.null(reference) && !identical(store_build, "GRCh38")) {
-    stop("reference-backed harmonisation currently writes GRCh38 stores; use a reference-free, already validated GRCh37 input for store_build='GRCh37'", call. = FALSE)
-  }
   if (identical(backend, "parquet")) {
     require_parquet_backend("backend='parquet'", dplyr = TRUE)
-  }
-  if (length(assume_grch38_ref_alt) != 1L || !is.logical(assume_grch38_ref_alt) ||
-      is.na(assume_grch38_ref_alt)) {
-    stop("assume_grch38_ref_alt must be TRUE or FALSE", call. = FALSE)
-  }
-  if (identical(backend, "pcodec") && !identical(mode, "convert") &&
-      !isTRUE(drop_unresolved)) {
-    stop("Pcodec canonical stores cannot retain unresolved rows; use the Parquet backend for an audit store",
-         call. = FALSE)
   }
   if (length(keep_extras) != 1L || !is.logical(keep_extras) || is.na(keep_extras)) {
     stop("keep_extras must be TRUE or FALSE", call. = FALSE)
@@ -260,69 +198,59 @@ compress_sumstats <- function(input, output, reference = NULL,
   }, add = TRUE)
   output <- transaction$staging
 
-  pre_harmonised <- is.null(reference) &&
-    isTRUE(attr(input, "compressor_identity_verified"))
-  inherited_alignment <- if (pre_harmonised) {
-    list(
-      reference_hash = attr(input, "reference_hash"),
-      reference_rows = attr(input, "reference_rows"),
-      reference_metadata = attr(input, "reference_metadata"),
-      alignment_stats = attr(input, "alignment_stats"),
-      genome_build = attr(input, "genome_build")
-    )
-  } else {
-    NULL
-  }
-  raw <- import_sumstats(input)
+  raw <- import_sumstats_impl(
+    input, input_build = input_build,
+    project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
+    core_only = identical(backend, "pcodec") || !isTRUE(keep_extras),
+    allow_p_to_se = FALSE,
+    run_qc = FALSE
+  )
   source_columns <- attr(raw, "source_columns")
+  source_columns_read <- attr(raw, "source_columns_read")
   source_provenance <- attr(raw, "source_provenance")
-  hm_diagnostic <- attr(raw, "gwas_catalog_hm_diagnostic")
-  imported_explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt"))
+  phase_timings <- attr(raw, "phase_timings") %||%
+    list(unit = "seconds", phases = list())
+  phase_timings$unit <- phase_timings$unit %||% "seconds"
+  phase_timings$phases <- phase_timings$phases %||% list()
+  qc_started <- phase_clock()
+  validate_core_schema(raw, source_columns = source_columns,
+                       input_build = input_build, store_build = store_build)
+  raw <- validate_core_orientation(raw, row_policy = row_policy)
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
     row_policy = row_policy, require_statistics = TRUE,
-    drop_duplicates = FALSE,
-    check_duplicates = is.null(reference) && isTRUE(strict)
+    drop_duplicates = TRUE, check_duplicates = TRUE, detail = "compact"
   )
+  phase_timings$phases$qc <- phase_seconds(qc_started)
   raw <- structural$data
-  attr(raw, "source_columns") <- source_columns
-  attr(raw, "source_provenance") <- source_provenance
-  attr(raw, "explicit_ref_alt") <- imported_explicit_ref_alt
-  attr(raw, "gwas_catalog_hm_diagnostic") <- hm_diagnostic
-  source_keys <- alias_key(source_columns %||% character())
-  explicit_ref_alt <- imported_explicit_ref_alt ||
-    isTRUE(attr(input, "compressor_identity_verified")) ||
-    (any(source_keys %in% c("ref", "referenceallele")) &&
-    any(source_keys %in% c("alt", "alternateallele"))
-    )
-  if (identical(backend, "pcodec") && mode %in% c("convert", "pvalue_regions") &&
-      !isTRUE(assume_grch38_ref_alt) && !explicit_ref_alt) {
-    message <- gwas_catalog_hm_orientation_message(hm_diagnostic)
-    stop(message %||%
-           "Pcodec mode='convert' needs explicit REF/ALT columns or assume_grch38_ref_alt=TRUE; ordinary effect/other alleles do not prove REF/ALT orientation",
-         call. = FALSE)
+  if (structural$report$input_rows > 0L && !nrow(raw)) {
+    failure <- format_structural_qc_failure(structural$report)
+    orientation_rejections <- structural$report$rejection_counts[["orientation_mismatch"]] %||% 0L
+    if (orientation_rejections > 0L) {
+      failure <- paste(
+        "effect_allele and other_allele are inconsistent with explicit REF/ALT;",
+        failure
+      )
+    }
+    stop(failure, call. = FALSE)
   }
-  prepared <- prepare_sumstats_data(raw, reference, mode = mode, variant_set = variant_set,
-                                    strict = strict, chrom_threads = chrom_threads,
-                                    drop_unresolved = drop_unresolved,
-                                    input_build = input_build, chain = chain,
-                                    pvalue_threshold = pvalue_threshold,
-                                    region_padding = region_padding,
-                                    pre_harmonised = pre_harmonised,
-                                    inherited_alignment = inherited_alignment,
-                                    target_build = store_build)
-  alignment <- prepared$alignment
-  alignment$alignment_stats$structural_qc <-
+  identity_started <- phase_clock()
+  raw <- canonicalize_core_identity(raw, build = store_build)
+  phase_timings$phases$identity_sort <- phase_seconds(identity_started)
+  attr(raw, "source_columns") <- source_columns
+  attr(raw, "source_columns_read") <- source_columns_read
+  attr(raw, "source_provenance") <- source_provenance
+  prepared <- prepare_core_sumstats_data(
+    raw, selection = selection, variant_set = variant_set,
+    pvalue_threshold = pvalue_threshold, region_padding = region_padding,
+    build = store_build
+  )
+  preparation <- prepared$preparation
+  preparation$structural_qc <-
     compact_structural_qc_report(structural$report)
   data <- prepared$data
-  reference_index <- if (".compressor_reference_index" %in% names(data)) {
-    as.integer(data$.compressor_reference_index)
-  } else {
-    NULL
-  }
-  data$.compressor_reference_index <- NULL
   selection <- prepared$selection
-  validate_sumstats_values(data, require_identity = identical(backend, "pcodec") || isTRUE(drop_unresolved))
+  validate_sumstats_values(data, require_identity = TRUE)
   if (identical(backend, "pcodec")) {
     if (!identical(profile, "standard")) {
       stop("backend='pcodec' currently provides the standard semantic profile; "
@@ -331,10 +259,6 @@ compress_sumstats <- function(input, output, reference = NULL,
     if (isTRUE(cache)) {
       stop("backend='pcodec' is already block-framed for regional access; "
            , "cache=TRUE is not needed", call. = FALSE)
-    }
-    if (isTRUE(keep_extras)) {
-      stop("backend='pcodec' currently stores only the core summary-statistics "
-           , "columns; use backend='parquet' to retain extras", call. = FALSE)
     }
     supported_chromosome <- as.character(data$chromosome) %in%
       names(compressor_chromosome_lengths(store_build))
@@ -352,66 +276,55 @@ compress_sumstats <- function(input, output, reference = NULL,
     }
     if (unsupported_rows) {
       data <- data[!bad_allele, , drop = FALSE]
-      stats <- alignment$alignment_stats %||% list()
+      stats <- preparation %||% list()
       stats$unsupported_pcodec_rows <- as.integer(unsupported_rows)
       stats$dropped_unsupported_pcodec <- as.integer(unsupported_rows)
-      alignment$alignment_stats <- stats
+      preparation <- stats
     }
     if (!nrow(data)) {
       stop("no supported biallelic primary-chromosome SNVs remain for the Pcodec store", call. = FALSE)
     }
-    if (!identical(input_build, store_build) && is.null(chain)) {
-      stop("backend='pcodec' requires a chain when input_build and store_build differ", call. = FALSE)
-    }
-    if (!identical(input_build, store_build) && !identical(store_build, "GRCh38")) {
-      stop("reverse liftover into GRCh37 stores is not supported; provide input already in GRCh37 or use store_build='GRCh38'", call. = FALSE)
-    }
-    reference_metadata <- alignment$reference_metadata %||% list(
-      id = "none", build = store_build, status = "reference alignment skipped"
-    )
-    reference_metadata$sha256 <- alignment$reference_hash
-    reference_metadata$rows <- alignment$reference_rows
+    reference_metadata <- list(id = "none", build = store_build, status = "not_used",
+                               external_reference_required = FALSE)
     pcodec_metadata <- list(
       block_rows = as.integer(block_rows),
       genome_build = store_build,
       identity = compressor_identity_manifest(
-        input_build = input_build, stored_build = store_build,
-        reference = reference_metadata, chain = chain
+        input_build = input_build, stored_build = store_build
       ),
       reference = reference_metadata,
-      harmonisation = list(
-        method = if (pre_harmonised) "pre_harmonised" else
-          if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
-        mode = prepared$requested_mode,
-        chrom_threads = as.integer(chrom_threads),
+      preparation = list(
+        method = "strict_prepared_input",
         threads_requested = as.integer(threads),
         row_policy = row_policy,
         strict = isTRUE(strict),
-        drop_unresolved = isTRUE(drop_unresolved),
         input_build = as.character(input_build),
-        liftover_chain = chain_manifest_metadata(chain),
-        gwas_catalog_hm = hm_diagnostic,
-        alignment = alignment$alignment_stats
+        preparation = preparation
       ),
       source_columns = attr(raw, "source_columns") %||% names(raw),
+      source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
       source = attr(raw, "source_provenance") %||% NULL,
-      selection = selection
+      selection = selection,
+      timings = phase_timings
     )
     pcodec_write_store(data, output, metadata = pcodec_metadata)
     compressor_manifest_contract(
-      output, input_build = input_build, store_build = store_build,
-      selection = selection_scope, profile = profile, backend = backend,
+      output, build = store_build, selection = selection_scope,
+      profile = profile, backend = backend,
       threads = threads, row_policy = row_policy,
       source = attr(raw, "source_provenance") %||% NULL,
-      reference = reference_metadata, chain = chain_manifest_metadata(chain),
-      alignment_stats = alignment$alignment_stats,
-      panel = alignment$alignment_stats$variant_set %||% NULL
+      preparation = preparation,
+      panel = preparation$variant_set %||% NULL
     )
+    commit_started <- phase_clock()
     commit_store_output(transaction)
+    commit_seconds <- phase_seconds(commit_started)
     completed <- TRUE
+    record_commit_timing(transaction$target, commit_seconds)
     return(open_compressor(transaction$target))
   }
 
+  encode_started <- phase_clock()
   n <- nrow(data)
   if (!is.null(selection)) {
     selection$kept_rows <- as.integer(n)
@@ -419,8 +332,9 @@ compress_sumstats <- function(input, output, reference = NULL,
     selection <- write_selection_regions(output, selection)
   }
 
-  variant_names <- intersect(c("row", "chromosome", "base_pair_location", "effect_allele",
-                               "other_allele", "variant_id", "rsid"), names(data))
+  variant_names <- intersect(c("row", "chromosome", "base_pair_location",
+                               "reference_allele", "alternate_allele",
+                               "effect_allele", "other_allele", "variant_id", "rsid"), names(data))
   if (all(c("variant_id", "rsid") %in% variant_names)) {
     same_identity <- (is.na(data$variant_id) & is.na(data$rsid)) |
       (!is.na(data$variant_id) & !is.na(data$rsid) &
@@ -430,41 +344,13 @@ compress_sumstats <- function(input, output, reference = NULL,
   variants <- data[intersect(variant_names, names(data))]
   variants$row <- seq_len(n) - 1L
   variants <- variants[c("row", setdiff(names(variants), "row"))]
-  reference_metadata <- alignment$reference_metadata %||% list()
-  reusable_reference <- !identical(reference_metadata$id %||% "", "in_memory") &&
-    any(vapply(c("local_path", "normalized_cache_path", "source_url"),
-               function(field) !is.null(reference_metadata[[field]]) &&
-                 nzchar(as.character(reference_metadata[[field]])), logical(1)))
-  # New Parquet stores are self-contained. Shared-reference index stores are
-  # retained only as a legacy read path in `read_variant_table()`.
-  reference_indexed <- FALSE
   files <- list(variants = "variants.parquet", values = "values.parquet",
                 exceptions = NULL, unmatched = NULL, extras = NULL,
                 selection_regions = if (is.null(selection)) NULL else selection$file)
-  if (reference_indexed) {
-    index_table <- data.frame(
-      row = seq_len(n) - 1L,
-      reference_index = reference_index,
-      stringsAsFactors = FALSE
-    )
-    arrow::write_parquet(index_table, file.path(output, "variants.parquet"),
-                         compression = "zstd", compression_level = 7,
-                         write_statistics = TRUE, use_dictionary = TRUE,
-                         chunk_size = as.integer(block_rows))
-    unmatched <- variants[is.na(reference_index), , drop = FALSE]
-    if (nrow(unmatched)) {
-      arrow::write_parquet(unmatched, file.path(output, "unmatched.parquet"),
-                           compression = "zstd", compression_level = 7,
-                           write_statistics = TRUE, use_dictionary = TRUE,
-                           chunk_size = as.integer(block_rows))
-      files$unmatched <- "unmatched.parquet"
-    }
-  } else {
-    arrow::write_parquet(variants, file.path(output, "variants.parquet"),
-                         compression = "zstd", compression_level = 7,
-                         write_statistics = TRUE, use_dictionary = TRUE,
-                         chunk_size = as.integer(block_rows))
-  }
+  arrow::write_parquet(variants, file.path(output, "variants.parquet"),
+                       compression = "zstd", compression_level = 7,
+                       write_statistics = TRUE, use_dictionary = TRUE,
+                       chunk_size = as.integer(block_rows))
 
   logical_columns <- c("z", "standard_error", "effect_allele_frequency")
   if (profile == "exact") {
@@ -492,7 +378,7 @@ compress_sumstats <- function(input, output, reference = NULL,
     files$exceptions <- "exceptions.parquet"
   }
 
-  # Harmonisation/QC is performed before writing and its aggregate counts are
+  # Structural QC is performed before writing and its aggregate counts are
   # retained in the manifest. Row-wise status strings are deliberately not
   # part of the standard durable payload; callers can retain them explicitly
   # with keep_extras = TRUE.
@@ -509,14 +395,10 @@ compress_sumstats <- function(input, output, reference = NULL,
                          chunk_size = as.integer(block_rows))
     files$extras <- file.path("extras", "values.parquet")
   }
+  phase_timings$phases$encode <- phase_seconds(encode_started)
 
-  reference_manifest <- alignment$reference_metadata %||% list(
-    id = "none",
-    build = store_build,
-    status = "reference alignment skipped"
-  )
-  reference_manifest$sha256 <- alignment$reference_hash
-  reference_manifest$rows <- alignment$reference_rows
+  reference_manifest <- list(id = "none", build = store_build, status = "not_used",
+                             external_reference_required = FALSE)
   manifest <- list(
     format = "CompreSSoR",
     format_version = "0.1.0",
@@ -524,37 +406,32 @@ compress_sumstats <- function(input, output, reference = NULL,
     backend = "parquet",
     genome_build = store_build,
     identity = compressor_identity_manifest(
-      input_build = input_build, stored_build = store_build,
-      reference = reference_manifest, chain = chain
+      input_build = input_build, stored_build = store_build
     ),
     reference = reference_manifest,
-    harmonisation = list(
-      method = if (pre_harmonised) "pre_harmonised" else
-        if (identical(prepared$effective_mode, "convert") || is.null(reference)) "none" else "reference_spine",
-      mode = prepared$requested_mode,
-      chrom_threads = as.integer(chrom_threads),
+    preparation = list(
+      method = "strict_prepared_input",
       threads_requested = as.integer(threads),
       row_policy = row_policy,
       strict = isTRUE(strict),
-      drop_unresolved = isTRUE(drop_unresolved),
       input_build = as.character(input_build),
-      liftover_chain = chain_manifest_metadata(chain),
-      alignment = alignment$alignment_stats
+      preparation = preparation
     ),
     n_rows = n,
     block_rows = as.integer(block_rows),
     logical_columns = logical_columns,
     derived_columns = list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))"),
     source_columns = attr(raw, "source_columns") %||% names(raw),
+    source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
     source = attr(raw, "source_provenance") %||% NULL,
     codec = codec,
-    variant_storage = if (reference_indexed) "shared_reference_index" else "inline",
-    reference_index_base = if (reference_indexed) 0L else NULL,
+    variant_storage = "inline",
     variant_identity = list(
       rsid = if ("rsid" %in% variant_names) "stored" else "derived_from_variant_id"
     ),
     selection = selection,
     files = files,
+    timings = phase_timings,
     benchmark = benchmark_metadata(),
     benchmark_comparisons = list(
       vcf_tabix = vcf_benchmark_metadata(),
@@ -571,18 +448,20 @@ compress_sumstats <- function(input, output, reference = NULL,
   )
   write_manifest(manifest, file.path(output, "manifest.json"))
   compressor_manifest_contract(
-    output, input_build = input_build, store_build = store_build,
-    selection = selection_scope, profile = profile, backend = backend,
+    output, build = store_build, selection = selection_scope,
+    profile = profile, backend = backend,
     threads = threads, row_policy = row_policy,
     source = attr(raw, "source_provenance") %||% NULL,
-    reference = reference_manifest, chain = chain_manifest_metadata(chain),
-    alignment_stats = alignment$alignment_stats,
-    panel = alignment$alignment_stats$variant_set %||% NULL
+    preparation = preparation,
+    panel = preparation$variant_set %||% NULL
   )
   store <- open_compressor(output)
   if (isTRUE(cache)) build_cache(store, overwrite = TRUE, block_rows = block_rows)
+  commit_started <- phase_clock()
   commit_store_output(transaction)
+  commit_seconds <- phase_seconds(commit_started)
   completed <- TRUE
+  record_commit_timing(transaction$target, commit_seconds)
   open_compressor(transaction$target)
 }
 
@@ -656,104 +535,7 @@ read_parquet_rows <- function(path, rows) {
   dplyr::collect(query)
 }
 
-store_reference_descriptor <- function(store) {
-  metadata <- store$manifest$reference %||% list()
-  if (identical(metadata$id %||% "none", "none")) return(NULL)
-  normalized <- metadata$normalized_cache_path %||% NULL
-  local <- metadata$local_path %||% NULL
-  variants <- if (!is.null(normalized) && file.exists(normalized)) {
-    normalized
-  } else if (!is.null(local) && file.exists(local)) {
-    local
-  } else if (!is.null(metadata$source_url) && nzchar(metadata$source_url)) {
-    list(url = metadata$source_url, filename = metadata$filename,
-         md5 = metadata$md5, sha256 = metadata$sha256)
-  } else {
-    stop("shared reference is not available; restore the canonical GRCh38 reference or pass its recorded path",
-         call. = FALSE)
-  }
-  list(id = metadata$id %||% "canonical",
-       build = metadata$build %||% "GRCh38",
-       source = metadata$source %||% NULL,
-       source_url = metadata$source_url %||% NULL,
-       variants = variants,
-       cache_dir = reference_cache_dir())
-}
-
-store_reference_table <- function(store) {
-  reference <- store_reference_descriptor(store)
-  if (is.null(reference)) return(NULL)
-  out <- reference_table(reference)
-  required <- c("chromosome", "base_pair_location", "reference_allele",
-                "alternate_allele", "variant_id")
-  missing <- setdiff(required, names(out))
-  if (length(missing)) stop("canonical reference is missing columns: ", paste(missing, collapse = ", "), call. = FALSE)
-  if (!"rsid" %in% names(out)) out$rsid <- NA_character_
-  out$effect_allele <- out$alternate_allele
-  out$other_allele <- out$reference_allele
-  out$reference_index <- seq_len(nrow(out)) - 1L
-  out
-}
-
-read_shared_reference_variants <- function(store, bounds = NULL) {
-  index_path <- file.path(store$path, store$manifest$files$variants)
-  reference <- store_reference_table(store)
-  if (is.null(bounds)) {
-    index <- arrow::read_parquet(index_path)
-    ref <- reference
-  } else {
-    keep <- reference$chromosome == bounds$chromosome &
-      reference$base_pair_location >= bounds$start &
-      reference$base_pair_location <= bounds$end
-    ref <- reference[keep, , drop = FALSE]
-    wanted <- ref$reference_index
-    if (length(wanted)) {
-      dataset <- arrow::open_dataset(index_path, format = "parquet")
-      index <- dplyr::collect(dplyr::filter(dataset, reference_index %in% !!wanted))
-    } else {
-      index <- data.frame(row = integer(), reference_index = integer())
-    }
-  }
-  if (nrow(index)) {
-    hit <- match(index$reference_index, ref$reference_index)
-    matched <- !is.na(hit)
-    out <- data.frame(row = index$row[matched],
-                      chromosome = ref$chromosome[hit[matched]],
-                      base_pair_location = ref$base_pair_location[hit[matched]],
-                      effect_allele = ref$alternate_allele[hit[matched]],
-                      other_allele = ref$reference_allele[hit[matched]],
-                      variant_id = ref$variant_id[hit[matched]],
-                      rsid = ref$rsid[hit[matched]],
-                      stringsAsFactors = FALSE)
-  } else {
-    out <- data.frame(row = integer(), chromosome = character(),
-                      base_pair_location = integer(), effect_allele = character(),
-                      other_allele = character(), variant_id = character(),
-                      rsid = character(), stringsAsFactors = FALSE)
-  }
-  unmatched_file <- store$manifest$files$unmatched %||% NULL
-  if (!is.null(unmatched_file) && nzchar(unmatched_file) &&
-      file.exists(file.path(store$path, unmatched_file))) {
-    unmatched_path <- file.path(store$path, unmatched_file)
-    unmatched <- if (is.null(bounds)) arrow::read_parquet(unmatched_path) else {
-      read_parquet_region(unmatched_path, bounds)
-    }
-    if (nrow(unmatched)) {
-      keep <- intersect(names(out), names(unmatched))
-      out <- rbind(out[keep], unmatched[keep])
-    }
-  }
-  identity <- store$manifest$variant_identity$rsid %||% "stored"
-  if (!"rsid" %in% names(out) && identical(identity, "derived_from_variant_id")) {
-    out$rsid <- out$variant_id
-  }
-  out[order(out$row), , drop = FALSE]
-}
-
 read_variant_table <- function(store, bounds = NULL) {
-  if (identical(store$manifest$variant_storage %||% "inline", "shared_reference_index")) {
-    return(read_shared_reference_variants(store, bounds = bounds))
-  }
   path <- file.path(store$path, store$manifest$files$variants)
   variants <- if (is.null(bounds)) arrow::read_parquet(path) else read_parquet_region(path, bounds)
   identity <- store$manifest$variant_identity$rsid %||% "stored"
