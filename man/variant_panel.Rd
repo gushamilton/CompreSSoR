@@ -17,7 +17,8 @@ write_variant_panel(data, output, build = "GRCh38",
                    overwrite = FALSE)
 open_variant_panel(path, verify_payload = FALSE)
 read_variant_panel(panel, chromosomes = NULL, rows = NULL, keys = NULL,
-                   hm3_only = FALSE, verify_payload = FALSE)
+                   hm3_only = FALSE, verify_payload = FALSE,
+                   identity_only = FALSE)
 validate_variant_panel(panel, full = FALSE)
 }
 \arguments{
@@ -37,6 +38,10 @@ validate_variant_panel(panel, full = FALSE)
   \item{rows}{Optional one-based panel row numbers.}
   \item{keys}{Optional canonical \code{chromosome:position:REF:ALT} keys.}
   \item{hm3_only}{Whether to return only rows whose HM3 flag is one.}
+  \item{identity_only}{Whether to return numeric identity columns
+    \code{global_position} and \code{substitution} instead of materialising
+    character variant IDs. This is used by the compression core for bounded
+    memory panel matching.}
   \item{full}{Whether to verify payload checksums and decode all streams.}
 }
 \value{

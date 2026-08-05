@@ -13,6 +13,7 @@
 \usage{
 compress_sumstats(input, output, profile = c("standard", "exact"),
                   overwrite = FALSE, cache = FALSE, strict = NULL,
+                  qc = c("compact", "none"),
                   keep_extras = FALSE, block_rows = 65536L,
                   variant_set = NULL, input_build = "GRCh38",
                   backend = c("pcodec", "parquet"),
@@ -31,6 +32,11 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     Pcodec stores are already independently block-framed.}
   \item{strict}{Whether structural QC failures should stop the operation.
     This is an alias for \code{row_policy = "error"}.}
+  \item{qc}{QC mode. \code{"compact"} is the default bounded-memory
+    structural-QC path. \code{"none"} is an explicit fast path for already
+    canonical prepared input; it bypasses structural QC, duplicate scans,
+    row-level reports, alias resolution, and temporary variant-ID creation.
+    Build-aware identity and native codec safety checks still apply.}
   \item{keep_extras}{Whether arbitrary non-core input columns should be kept
     in a Parquet extras sidecar.}
   \item{block_rows}{Rows per Parquet write chunk; native Pcodec uses its
