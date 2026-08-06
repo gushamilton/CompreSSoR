@@ -19,6 +19,20 @@ output="$bench/stores/${selection}-${qc}.cpr"
 summary="$bench/results/${selection}-${qc}.json"
 rust_root="${COMPRESSOR_ISSUE27_RUST_ROOT:-}"
 
+if ! [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "benchmark setup failed: COMPRESSOR_ISSUE27_COMMIT must be a 40-hex commit" >&2
+  exit 2
+fi
+actual_commit="$(git -C "$repo" rev-parse --verify HEAD^{commit} 2>/dev/null || true)"
+if ! [[ "$actual_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
+    [[ "$actual_commit" != "$commit" ]]; then
+  echo "benchmark setup failed: requested commit $commit does not match repository HEAD $actual_commit" >&2
+  exit 2
+fi
+if [[ "${COMPRESSOR_ISSUE27_GUARD_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
+
 mkdir -p "$bench/logs" "$bench/stores" "$bench/results" "$rlib"
 module purge
 module load languages/R/4.5.1
