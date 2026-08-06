@@ -26,7 +26,8 @@ pcodec_canonical_manifest_sha256 <- function(manifest) {
     names_value <- names(value)
     if (!is.null(names_value)) {
       value <- value[!names_value %in% c("timings", "elapsed_seconds",
-                                         "read_elapsed_seconds")]
+                                         "read_elapsed_seconds",
+                                         "projection_elapsed_seconds")]
     }
     lapply(value, strip_observational)
   }

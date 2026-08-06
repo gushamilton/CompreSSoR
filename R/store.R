@@ -235,6 +235,7 @@ compress_sumstats <- function(input, output,
   }
   raw <- import_sumstats_impl(
     input, input_build = input_build,
+    row_policy = row_policy,
     project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
     core_only = identical(backend, "pcodec") || !isTRUE(keep_extras),
     allow_p_to_se = FALSE,
