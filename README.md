@@ -189,6 +189,24 @@ toolchain in the external Slurm log. If Cargo or native installation fails,
 do not claim a benchmark. Keep raw inputs, stores, logs, and results outside
 the synced repository.
 
+On BP, resolve the checkout commit on the login node before submission. Some
+compute nodes do not provide `git`; the harness therefore fails closed unless
+the login-side value is passed as `COMPRESSOR_ISSUE27_ACTUAL_COMMIT` and it
+matches `COMPRESSOR_ISSUE27_COMMIT` exactly. The maintained helper performs
+that resolution and exports the value through `sbatch`:
+
+```bash
+export COMPRESSOR_ISSUE27_REPO=/user/work/fh6520/CompreSSoR-issue27/repo
+export COMPRESSOR_ISSUE27_COMMIT=$(git -C "$COMPRESSOR_ISSUE27_REPO" rev-parse HEAD)
+scripts/submit_issue27_ntrk3.sh \
+  --output=/user/work/fh6520/CompreSSoR-issue27/logs/slurm-%j.out \
+  --error=/user/work/fh6520/CompreSSoR-issue27/logs/slurm-%j.err \
+  scripts/benchmark_issue27_ntrk3.sbatch
+```
+
+Do not invent or hand-edit the actual commit value. If `git` is unavailable
+on the submission node, stop rather than submitting an unverified benchmark.
+
 The historical Python backend is archived and is not part of the installed
 package.
 

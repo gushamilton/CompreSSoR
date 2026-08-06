@@ -108,6 +108,16 @@ and validation status. The Slurm record supplies peak RSS. A native install
 requires Cargo/Rust >= 1.87.0; the job fails before reading data if that
 toolchain is unavailable rather than silently using a non-native backend.
 
+Commit provenance is resolved before `sbatch`. Use the login-side helper
+`scripts/submit_issue27_ntrk3.sh` with `COMPRESSOR_ISSUE27_REPO` and
+`COMPRESSOR_ISSUE27_COMMIT` set. It resolves `git -C "$repo" rev-parse HEAD`
+on the login node and exports `COMPRESSOR_ISSUE27_ACTUAL_COMMIT` through
+Slurm. The compute-side harness uses Git directly when available; when Git is
+absent, it requires that pre-resolved value, validates its 40-hex form, and
+compares it exactly to the requested commit before creating benchmark
+directories or installing the package. Missing, malformed, or mismatched
+provenance is a setup failure and is never a benchmark result.
+
 Prior external runs provide the following evidence (the commit and job IDs are
 retained here so they are not confused with a fresh exact-base rerun):
 

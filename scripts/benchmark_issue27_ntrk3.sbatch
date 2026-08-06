@@ -23,7 +23,16 @@ if ! [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "benchmark setup failed: COMPRESSOR_ISSUE27_COMMIT must be a 40-hex commit" >&2
   exit 2
 fi
-actual_commit="$(git -C "$repo" rev-parse --verify HEAD^{commit} 2>/dev/null || true)"
+
+if command -v git >/dev/null 2>&1; then
+  actual_commit="$(git -C "$repo" rev-parse --verify HEAD^{commit} 2>/dev/null || true)"
+else
+  actual_commit="${COMPRESSOR_ISSUE27_ACTUAL_COMMIT:-}"
+  if ! [[ "$actual_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "benchmark setup failed: git is unavailable; COMPRESSOR_ISSUE27_ACTUAL_COMMIT must be a 40-hex commit resolved before sbatch" >&2
+    exit 2
+  fi
+fi
 if ! [[ "$actual_commit" =~ ^[0-9a-fA-F]{40}$ ]] ||
     [[ "$actual_commit" != "$commit" ]]; then
   echo "benchmark setup failed: requested commit $commit does not match repository HEAD $actual_commit" >&2
@@ -72,6 +81,7 @@ R_LIBS="$rlib" R_LIBS_USER="$rlib" R CMD INSTALL --library="$rlib" "$repo" \
 export R_LIBS="$rlib"
 export R_LIBS_USER="$rlib"
 export COMPRESSOR_ISSUE27_COMMIT="$commit"
+export COMPRESSOR_ISSUE27_ACTUAL_COMMIT="$actual_commit"
 export COMPRESSOR_ISSUE27_NATIVE_LIBRARY_COMMIT="${COMPRESSOR_ISSUE27_NATIVE_LIBRARY_COMMIT:-$commit}"
 
 /usr/bin/time -v Rscript --vanilla "$repo/scripts/benchmark_issue27_ntrk3.R" \
