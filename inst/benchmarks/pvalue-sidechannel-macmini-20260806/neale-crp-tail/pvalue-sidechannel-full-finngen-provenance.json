@@ -1,0 +1,20 @@
+{
+  "benchmark": "pvalue_flag_full_finngen",
+  "timestamp_utc": "2026-08-06 12:26:52 UTC",
+  "source": "/Volumes/crucial_x9/CompreSSoR-benchmarks/raw/neale_ukb_crp_30710.csv",
+  "store": "/Volumes/crucial_x9/CompreSSoR-benchmarks/pvalue-sidechannel-neale-crp-20260806/finngen-full-current.cpr",
+  "rows": 12524077,
+  "thresholds": [9.9999999999999995e-21, 9.9999999999999991e-31, 9.9999999999999989e-51, 9.9999999999999977e-101, 9.999999999999996e-151, 9.9999999999999955e-201],
+  "dataset_label": "Neale_UKB_CRP_30710_tail",
+  "build": "GRCh37",
+  "mr_columns": ["chromosome", "base_pair_location", "effect_allele", "other_allele", "beta", "standard_error", "effect_allele_frequency"],
+  "repeats": 5,
+  "threads": 4,
+  "rebuild": false,
+  "store_bytes": 50706092,
+  "build_seconds": "NA",
+  "source_commit": "5bd1b73b3050a4b3d14999dc8a47127fa1ccbedc",
+  "r": "R version 4.5.2 (2025-10-31)",
+  "platform": "Darwin",
+  "architecture": "aarch64"
+}

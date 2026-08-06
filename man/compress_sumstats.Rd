@@ -17,7 +17,8 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
                   keep_extras = FALSE, block_rows = 65536L,
                   variant_set = NULL, input_build = "GRCh38",
                   backend = c("pcodec", "parquet"),
-                  pvalue_threshold = 1e-05, region_padding = 10000L,
+                  pvalue_threshold = 1e-05, pvalue_flag = NULL,
+                  pvalue_flag_threshold = 5e-08, region_padding = 10000L,
                   store_build = "GRCh38",
                   selection = c("full", "core", "hm3", "core_plus"),
                   threads = NULL, row_policy = c("report", "error"))
@@ -53,6 +54,12 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     \code{"parquet"} is the interoperability backend.}
   \item{pvalue_threshold}{Threshold used by p-value-region or core-plus
     selection, derived from the prepared Z statistic.}
+  \item{pvalue_flag}{For native Pcodec stores, whether to write the aligned
+    uint8 p-value flag domain. \code{NULL} uses the standard native default
+    of \code{TRUE}; set \code{FALSE} to omit it.}
+  \item{pvalue_flag_threshold}{Inclusive threshold for the aligned p-value
+    flag domain. The standard convention is \code{5e-8}; this is separate
+    from \code{pvalue_threshold}, which controls variant selection.}
   \item{region_padding}{Base pairs added around p-value-region seeds. The
     default is 10,000 bp and endpoints are inclusive.}
   \item{store_build}{Build represented by the store. It must be the same as

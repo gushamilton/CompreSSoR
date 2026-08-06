@@ -1,0 +1,17 @@
+{
+  "benchmark": "pvalue_flag_full_finngen",
+  "timestamp_utc": "2026-08-06 11:13:39 UTC",
+  "source": "/Volumes/crucial_x9/CompreSSoR-benchmarks/raw/finngen_r2_ANTIDEPRESSANTS.gz",
+  "store": "/Volumes/crucial_x9/CompreSSoR-benchmarks/pvalue-sidechannel-full-finngen-20260806/finngen-full-current.cpr",
+  "rows": 14923434,
+  "thresholds": [1.0000000000000001e-05, 9.9999999999999995e-07, 9.9999999999999995e-08],
+  "repeats": 5,
+  "threads": 4,
+  "rebuild": false,
+  "store_bytes": 57632964,
+  "build_seconds": 83.146000000000001,
+  "source_commit": "5bd1b73b3050a4b3d14999dc8a47127fa1ccbedc",
+  "r": "R version 4.5.2 (2025-10-31)",
+  "platform": "Darwin",
+  "architecture": "aarch64"
+}

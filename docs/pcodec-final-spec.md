@@ -70,8 +70,16 @@ shared spine, chain file, or any other external variant reference to be read
 or matched.
 
 The default Pcodec store contains only the core GWAS fields and its identity
-key. It does not store `rsid`, `p`, or `beta` per row. Extra columns belong in
-the Parquet backend and are outside this locked Pcodec format.
+key. It does not store exact `p` values, `rsid`, or `beta` per row. Extra
+columns belong in the Parquet backend and are outside this locked Pcodec
+format. Native stores may additionally carry the optional aligned
+`pvalue_flag.pco` domain: one physical `uint8` value per immutable native row,
+with `0/1` semantics and manifest metadata recording the inclusive threshold,
+source, row alignment, and hit count. The standard API writes this domain at
+`p <= 5e-8`; `pvalue_flag = FALSE` omits it. This side domain does not alter
+the core stream encodings or the native format version, and
+`read_pvalue_flag()` returns zero-based row IDs suitable for downstream
+`read_sumstats(..., variants = ...)` projection.
 
 The canonical public numerical profile is `Z9/EAF8/SE6`: Z has 9 semantic bits,
 EAF has 8 semantic bits, and SE has 6 semantic bits. The SE semantic codes are
@@ -109,8 +117,9 @@ structural/numeric pass is recorded as `qc`; in the trusted `qc = "none"` mode,
 `statistic_validation` is explicitly zero/bypassed and the native-identity
 safety filter is timed separately. Effective requested and writer worker
 counts are recorded in the manifest. The none path does not create an absent
-full-length p-value column or row-level QC objects; p-value projection is
-enabled only for p-value-based selection such as `core_plus`. Missing EAF
+full-length p-value column or row-level QC objects; when the standard native
+flag is enabled, p-value projection is limited to the temporary input needed
+to create the aligned `pvalue_flag.pco` domain. Missing EAF
 values remain bounded, block-partitioned exception records and are not
 biologically imputed.
 
@@ -150,6 +159,10 @@ Pcodec 1.0.3, level 8:
 | EAF | `eaf.pco` | 8-bit arcsine code, physically `uint8` |
 | SE | `se.pco` | 6-bit semantic block-centred log2 residual (62 bins plus two sentinels), physically `uint8` |
 | Exceptions | `exceptions.bin` | block-local Zstandard level 19 sidecar |
+
+Optional aligned domains are separate from the core numerical streams. The
+current `pvalue_flag` domain is an independently framed Pcodec `uint8` stream
+with the same value-block row partition as `z.pco`, `eaf.pco`, and `se.pco`.
 
 Key frames contain 131,072 rows. Numerical value frames contain 65,536
 rows. Pcodec pages use 131,072 rows.

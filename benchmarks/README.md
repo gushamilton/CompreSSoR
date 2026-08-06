@@ -164,4 +164,53 @@ The duplicate path is a current native `Z9/EAF8/SE6` store containing only the
 selected rows. The flag path is a standalone Pcodec `uint8` stream containing
 one 0/1 value per main-store row; its payload and small metadata/index are
 counted as incremental bytes. This is a storage/time design measurement, not a
-change to the locked native format.
+change to the locked native format. The extension also measures filtering the
+baseline store by reading reconstructed p and applying `p <= 1e-5`, and adds a
+10,000-designated-row cardinality stress case. The 10,000-row case is not
+presented as a source-level significance result.
+
+The full-file extension uses the 14,923,434-row FinnGen
+`finngen_r2_ANTIDEPRESSANTS.gz` source plus a second real FinnGen chromosome-1
+file already held in the Mac mini benchmark workspace. It compares the
+quickest current API path for reading reconstructed p and filtering the whole
+file at `p <= 1e-4`, `1e-5`, `1e-6`, `1e-7`, and `1e-8` with reading an aligned
+Pcodec `uint8` flag stream. For the downstream MR access contract, both paths
+then fetch exactly the same identity, beta, standard-error, and effect-allele
+frequency columns. The headline plot is therefore flag inspection + selected
+field fetch versus p filtering + the same selected field fetch. The benchmark
+also times an ordinary whole-store statistical read before and after the flag
+streams exist to detect any read-time effect when flags are not requested.
+Each dataset uses five timed repeats; raw inputs, stores, and logs remain
+external, while compact summaries and the comparison plot are retained in the
+dated benchmark directory.
+
+The full source contributes 14,923,434 valid SNP rows and the chromosome-1
+file contributes 1,124,344 rows. The retained headline table is
+`inst/benchmarks/pvalue-sidechannel-macmini-20260806/pvalue-sidechannel-mr-comparison.csv`,
+with the plot in
+`inst/benchmarks/pvalue-sidechannel-macmini-20260806/pvalue-sidechannel-mr-comparison.png`.
+The relative-scale plot is
+`inst/benchmarks/pvalue-sidechannel-macmini-20260806/pvalue-sidechannel-mr-relative.png`;
+its y-axis is the percentage of p-filtering time saved by flag inspection.
+
+The Neale CRP extension uses the full 986 MB CSV copy of UK Biobank field
+30710 (`ukb-d-30710_irnt`, GRCh37/HG19), downloaded from the Zenodo record
+that identifies it as Neale Lab/OpenGWAS CRP summary statistics. After strict
+native-valid filtering it contains 12,524,077 stored rows, with 113,378,
+74,928, 54,247, 40,822, 33,095, 27,511, 23,281, 19,599, 16,689, 14,797,
+13,170, and 11,621 source hits at `1e-4` through `1e-15`. It repeats the same
+five-run access contract and MR field projection. A sparse tail pass adds
+`1e-20`, `1e-30`, `1e-50`, `1e-100`, `1e-150`, and `1e-200`, with 7,615,
+4,160, 2,501, 1,411, 856, and 682 source hits respectively. The raw
+download, native store, and flag streams remain external; only compact results
+and plots are retained here.
+The Neale-specific summary is under
+`inst/benchmarks/pvalue-sidechannel-macmini-20260806/neale-crp/`, with the
+relative plot at
+`inst/benchmarks/pvalue-sidechannel-macmini-20260806/neale-crp/pvalue-sidechannel-mr-relative.png`.
+
+The implementation convention proposed from this benchmark is to enable the
+aligned flag by default for native Pcodec stores at `p <= 5e-8` (inclusive).
+This is deliberately a separate API setting from the existing
+`pvalue_threshold` argument used by core/core-plus selection; callers can use
+`pvalue_flag_threshold` or disable the domain with `pvalue_flag = FALSE`.

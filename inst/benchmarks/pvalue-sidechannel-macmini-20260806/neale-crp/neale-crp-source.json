@@ -1,0 +1,14 @@
+{
+  "dataset": "ukb-d-30710_irnt",
+  "trait": "C-reactive protein",
+  "author": "Neale Lab",
+  "build": "GRCh37/HG19",
+  "download_source": "https://zenodo.org/api/records/18238543/files/ukb-d-30710_irnt.csv/content",
+  "source_record": "https://zenodo.org/records/18238543",
+  "source_file": "ukb-d-30710_irnt.csv",
+  "source_bytes": 986497845,
+  "source_md5": "04978abd0aa0c02fc7ef2b25e97610fa",
+  "download_rows_including_header": 13770979,
+  "native_valid_rows": 12524077,
+  "open_gwas_dataset": "https://gwas.mrcieu.ac.uk/datasets/ukb-d-30710_irnt/"
+}
