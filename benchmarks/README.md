@@ -105,8 +105,13 @@ The maintained harness is
 source hash and columns, build, commit, requested/effective workers, retained
 rows, exception rows, EAF observability, manifest phase timings, output bytes,
 and validation status. The Slurm record supplies peak RSS. A native install
-requires Cargo/Rust >= 1.87.0; the job fails before reading data if that
-toolchain is unavailable rather than silently using a non-native backend.
+requires `rustc >= 1.87.0` and Cargo >= 1.78.0; the job fails before reading
+data if either tool is unavailable rather than silently using a non-native
+backend. On BP these may be split: `COMPRESSOR_ISSUE27_RUST_ROOT` supplies
+`bin/rustc` and `lib`, while Cargo is supplied independently by a module or
+another `PATH` entry. The harness prepends the Rust root for `rustc` and
+resolves/checks Cargo separately; `rust_root/bin/cargo` is neither required
+nor assumed.
 
 Commit provenance is resolved before `sbatch`. Use the login-side helper
 `scripts/submit_issue27_ntrk3.sh` with `COMPRESSOR_ISSUE27_REPO` and
@@ -135,3 +140,28 @@ supporting evidence, not final exact-base acceptance evidence. On 2026-08-06,
 an exact-`4a0ef5c` rerun was blocked before input read because the current BP
 module catalogue exposes Rust 1.78 only, while the native package requires
 Rust 1.87.0. No timing or RSS result is claimed for that blocked run.
+
+## P-value side-channel benchmark
+
+The dated `inst/benchmarks/pvalue-sidechannel-macmini-20260806/` result is a
+non-authoritative design benchmark for keeping associations below several
+p-value thresholds in a separate object. Its question is how much size and
+write time are added by either (1) duplicating selected rows in a second native
+Pcodec store or (2) adding an aligned binary flag stream to the main store.
+The thresholds are `p <= 1e-7`, `1e-6`, and `1e-5`; the exact cutoff is
+deliberately a sweep because study-specific association sets differ.
+
+The maintained harness is `scripts/benchmark_pvalue_sidechannel.R`. It uses
+100,000 valid, prepared GRCh38 FinnGen rows from the Mac mini's local
+`finngen_r2_ANTIDEPRESSANTS.gz` source and ensures the fixture includes all
+source rows through `p <= 1e-5`. The selected-row counts are therefore driven by
+the real source p-values (the full valid-SNP source has 1, 17, and 432 rows at
+the three thresholds). The harness runs five repeats. Raw input, generated
+stores, and logs remain outside the repository; only compact CSV/Markdown
+summaries are retained in the dated directory.
+
+The duplicate path is a current native `Z9/EAF8/SE6` store containing only the
+selected rows. The flag path is a standalone Pcodec `uint8` stream containing
+one 0/1 value per main-store row; its payload and small metadata/index are
+counted as incremental bytes. This is a storage/time design measurement, not a
+change to the locked native format.

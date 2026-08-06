@@ -49,29 +49,45 @@ if [[ -n "${COMPRESSOR_ISSUE27_RUST_MODULE:-}" ]]; then
   module load "$COMPRESSOR_ISSUE27_RUST_MODULE"
 fi
 if [[ -n "$rust_root" ]]; then
-  if [[ ! -x "$rust_root/bin/rustc" || ! -x "$rust_root/bin/cargo" ||
-        ! -d "$rust_root/lib" ]]; then
-    echo "benchmark setup failed: COMPRESSOR_ISSUE27_RUST_ROOT must contain bin/rustc, bin/cargo, and lib" >&2
+  if [[ ! -x "$rust_root/bin/rustc" || ! -d "$rust_root/lib" ]]; then
+    echo "benchmark setup failed: COMPRESSOR_ISSUE27_RUST_ROOT must contain bin/rustc and lib; Cargo is resolved separately from PATH" >&2
     exit 2
   fi
   export PATH="$rust_root/bin:$PATH"
   export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
+rustc_bin="$(command -v rustc 2>/dev/null || true)"
+if [[ -z "$rustc_bin" ]]; then
+  echo "benchmark setup failed: rustc is unavailable after loading the configured Rust root/modules" >&2
+  exit 2
+fi
+cargo_bin="$(command -v cargo 2>/dev/null || true)"
+if [[ -z "$cargo_bin" ]]; then
   module avail 2>&1 | grep -i rust | head -20 >&2 || true
   echo "benchmark setup failed: cargo is unavailable after loading R" >&2
   exit 2
 fi
 
 echo "R=$(R --version | head -1)" >&2
-echo "rustc=$(rustc --version)" >&2
-echo "cargo=$(cargo --version)" >&2
-rust_major=$(rustc --version | awk '{print $2}' | cut -d. -f1)
-rust_minor=$(rustc --version | awk '{print $2}' | cut -d. -f2)
+rustc_version="$($rustc_bin --version)"
+cargo_version="$($cargo_bin --version)"
+echo "rustc=$rustc_version" >&2
+echo "cargo=$cargo_version" >&2
+rust_major=$(printf '%s\n' "$rustc_version" | awk '{print $2}' | cut -d. -f1)
+rust_minor=$(printf '%s\n' "$rustc_version" | awk '{print $2}' | cut -d. -f2)
 if [[ -z "$rust_major" || -z "$rust_minor" ||
       "$rust_major" -lt 1 || ( "$rust_major" -eq 1 && "$rust_minor" -lt 87 ) ]]; then
   echo "benchmark setup failed: native Pcodec requires Rust >= 1.87.0; set COMPRESSOR_ISSUE27_RUST_MODULE" >&2
+  exit 2
+fi
+cargo_major=$(printf '%s\n' "$cargo_version" | awk '{print $2}' | cut -d. -f1)
+cargo_minor=$(printf '%s\n' "$cargo_version" | awk '{print $2}' | cut -d. -f2)
+if [[ ! "$cargo_version" =~ ^cargo[[:space:]][0-9]+\.[0-9]+(\.[0-9]+)?([[:space:]]|$) ]] ||
+    [[ -z "$cargo_major" || -z "$cargo_minor" ||
+       "$cargo_major" -lt 1 ||
+       ( "$cargo_major" -eq 1 && "$cargo_minor" -lt 78 ) ]]; then
+  echo "benchmark setup failed: native Pcodec requires Cargo >= 1.78.0; Cargo is resolved independently from COMPRESSOR_ISSUE27_RUST_ROOT" >&2
   exit 2
 fi
 

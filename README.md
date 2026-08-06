@@ -142,7 +142,7 @@ remotes::install_github("gushamilton/CompreSSoR")
 
 ### BluePebble native Pcodec setup
 
-The native backend requires Rust/Cargo **>= 1.87.0**, as pinned by
+The native backend requires `rustc` **>= 1.87.0**, as pinned by
 [`src/pcodec_native/Cargo.toml`](src/pcodec_native/Cargo.toml). On BluePebble,
 run setup in an interactive or login shell so the module environment is
 available. Inspect the current catalogue on the day of the run; module names
@@ -152,9 +152,11 @@ and project-local toolchain paths are not stable:
 bash -lic 'module purge; module load languages/R/4.5.1; module spider rust 2>&1'
 ```
 
-The established BP jobs load `rust/1.78.0-n5bm` for the Cargo environment and
-then prepend the project-local pinned Rust 1.87 toolchain to both executable
-and shared-library lookup. Substitute the current, verified project path; do
+The established BP jobs load `rust/1.78.0-n5bm` for Cargo and then prepend the
+project-local pinned Rust 1.87 toolchain for `rustc` and shared-library lookup.
+These are deliberately split: `COMPRESSOR_ISSUE27_RUST_ROOT` must contain
+`bin/rustc` and `lib`, but it does not need `bin/cargo`; Cargo is resolved
+independently from `PATH`. Substitute the current, verified project path; do
 not copy a stale path from an old job:
 
 ```bash
@@ -165,14 +167,15 @@ rust_root=/path/to/project-local/rust-1.87.0/rustc  # verify on the day
 export PATH="$rust_root/bin:$PATH"
 export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-command -v cargo
 command -v rustc
+command -v cargo
 rustc --version
 cargo --version
 ```
 
-Stop if `rustc` or `cargo` reports a version below 1.87.0; there is no
-supported generic fallback backend for the native benchmark. Set isolated
+Stop if `rustc` reports a version below 1.87.0, or if Cargo is unavailable or
+reports a version below 1.78.0. There is no supported generic fallback backend
+for the native benchmark. Set isolated
 `R_LIBS` and `R_LIBS_USER` paths, then install only after the toolchain check:
 
 ```bash
