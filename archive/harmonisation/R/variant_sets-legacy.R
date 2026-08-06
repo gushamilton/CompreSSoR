@@ -937,6 +937,7 @@ prepare_sumstats_data <- function(raw, reference, mode = c("qc", "convert", "all
                                   pvalue_threshold = 1e-5, region_padding = 50000L,
                                   pre_harmonised = FALSE, inherited_alignment = NULL,
                                   target_build = "GRCh38") {
+  observability <- .compressor_harmonise_context$observability %||% NULL
   requested_mode <- match.arg(mode)
   effective_mode <- if (requested_mode == "all") "qc" else requested_mode
   target_build <- compressor_normalize_build(target_build)
@@ -978,6 +979,9 @@ prepare_sumstats_data <- function(raw, reference, mode = c("qc", "convert", "all
   } else {
     had_coordinate <- !is.na(raw$chromosome) & nzchar(raw$chromosome) &
       !is.na(raw$base_pair_location) & raw$base_pair_location >= 1L
+    liftover_phase <- compressor_observability_start_phase(
+      observability, "liftover", rows_in = nrow(raw)
+    )
     if (identical(input_build, target_build)) {
       raw$.compressor_liftover_status <- rep("not_needed", nrow(raw))
       attr(raw, "genome_build") <- target_build
@@ -986,6 +990,9 @@ prepare_sumstats_data <- function(raw, reference, mode = c("qc", "convert", "all
     } else {
       stop("target_build='GRCh37' requires input already in GRCh37; reverse liftover is not supported", call. = FALSE)
     }
+    compressor_observability_finish_phase(
+      observability, liftover_phase, rows_out = nrow(raw)
+    )
     if (!is.null(alignment_reference)) {
       build <- toupper(gsub("[. -]", "", as.character(input_build %||% "GRCh38")))
       eligible_alias <- if (build %in% c("GRCH38", "HG38", "38")) {

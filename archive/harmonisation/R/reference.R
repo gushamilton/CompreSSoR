@@ -1034,8 +1034,20 @@ alignment_diagnostics <- function(data, status, counts, limit = 5L,
 harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = FALSE,
                                    reference_data = NULL, reference_key = NULL) {
   qc <- .compressor_harmonise_context$qc %||% normalise_reference_qc()
+  observability <- .compressor_harmonise_context$observability %||% NULL
   input_rows <- nrow(data)
+  reference_phase <- NULL
+  if (is.null(reference_data)) {
+    reference_phase <- compressor_observability_start_phase(
+      observability, "reference_discovery_load_normalisation", rows_in = input_rows
+    )
+  }
   ref <- if (!is.null(reference_data)) reference_data else reference_table(reference)
+  if (!is.null(reference_phase)) {
+    compressor_observability_finish_phase(
+      observability, reference_phase, rows_out = if (is.null(ref)) 0L else nrow(ref)
+    )
+  }
   if (is.null(ref)) {
     data$harmonisation_status <- rep("unreferenced", input_rows)
     data$harmonisation_flip <- rep(FALSE, input_rows)
@@ -1054,12 +1066,22 @@ harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = F
                                                 counts$diagnostic_counts, qc$example_limit)
     return(list(data = data, reference_hash = NA_character_,
                 reference_rows = NA_integer_, reference_metadata = NULL,
-                alignment_stats = counts))
+                alignment_stats = counts,
+                observability_phases = if (!is.null(observability)) observability$phases else NULL))
   }
+  matching_phase <- compressor_observability_start_phase(
+    observability, "matching_alignment", rows_in = input_rows
+  )
   input_key <- paste(data$chromosome, data$base_pair_location,
                      data$other_allele, data$effect_allele, sep = ":")
   input_key[is.na(data$chromosome) | is.na(data$base_pair_location) |
               is.na(data$other_allele) | is.na(data$effect_allele)] <- NA_character_
+  strand_phase <- NULL
+  if (isTRUE(qc$strand)) {
+    strand_phase <- compressor_observability_start_phase(
+      observability, "strand_handling", rows_in = input_rows
+    )
+  }
   input_effect_complement <- complement_allele(data$effect_allele)
   input_other_complement <- complement_allele(data$other_allele)
   complement_key <- paste(data$chromosome, data$base_pair_location,
@@ -1075,6 +1097,11 @@ harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = F
     rep(NA_integer_, input_rows)
   complement_reverse_i <- if (isTRUE(qc$strand)) match(complement_reverse_key, ref_key) else
     rep(NA_integer_, input_rows)
+  if (!is.null(strand_phase)) {
+    compressor_observability_finish_phase(
+      observability, strand_phase, rows_out = input_rows
+    )
+  }
   candidates <- cbind(!is.na(direct_i), !is.na(reverse_i),
                       !is.na(complement_i), !is.na(complement_reverse_i))
   candidate_count <- rowSums(candidates)
@@ -1226,9 +1253,13 @@ harmonise_to_reference <- function(data, reference, strict = FALSE, preserve = F
   counts$diagnostics <- alignment_diagnostics(diagnostic_data, status,
                                               counts$diagnostic_counts,
                                               qc$example_limit, frequency_status)
+  compressor_observability_finish_phase(
+    observability, matching_phase, rows_out = nrow(data)
+  )
   list(data = data, reference_hash = reference_hash(ref), reference_rows = nrow(ref),
        reference_metadata = attr(ref, "reference_metadata"),
-       alignment_stats = counts)
+       alignment_stats = counts,
+       observability_phases = if (!is.null(observability)) observability$phases else NULL)
 }
 
 is_partitioned_reference <- function(reference) {
@@ -1268,12 +1299,19 @@ combine_alignment_statistics <- function(parts, input_rows, output_rows) {
 
 harmonise_by_chromosome <- function(data, reference, strict = FALSE, preserve = FALSE,
                                     chrom_threads = 1L) {
+  observability <- .compressor_harmonise_context$observability %||% NULL
+  reference_phase <- compressor_observability_start_phase(
+    observability, "reference_discovery_load_normalisation", rows_in = nrow(data)
+  )
   resolved <- resolve_reference(reference)
   partitioned <- (is.character(resolved$variants) &&
                   length(resolved$variants) == 1L &&
                   dir.exists(resolved$variants)) ||
     isTRUE(resolved$metadata$partitioned)
   ref <- if (partitioned) NULL else reference_table(resolved)
+  compressor_observability_finish_phase(
+    observability, reference_phase, rows_out = if (is.null(ref)) 0L else nrow(ref)
+  )
 
   if (!partitioned && (is.null(ref) || nrow(data) < 2L ||
                        as.integer(chrom_threads) <= 1L)) {
@@ -1291,11 +1329,29 @@ harmonise_by_chromosome <- function(data, reference, strict = FALSE, preserve = 
     stop("reserved column name is present: ", order_column, call. = FALSE)
   }
   data[[order_column]] <- seq_len(nrow(data))
+  partition_phase <- compressor_observability_start_phase(
+    observability, "chromosome_partitioning", rows_in = nrow(data)
+  )
   group_label <- as.character(data$chromosome)
   group_label[is.na(group_label) | !nzchar(group_label)] <- "__UNRESOLVED__"
   groups <- split(seq_len(nrow(data)), group_label, drop = TRUE)
+  compressor_observability_finish_phase(
+    observability, partition_phase, rows_out = nrow(data), rows_dropped = 0L,
+    extra = list(chromosomes = length(groups))
+  )
+  compressor_observability_set_workers(
+    observability, requested = chrom_threads,
+    effective = min(chrom_threads, max(1L, length(groups)))
+  )
   alignment_qc <- .compressor_harmonise_context$qc %||% normalise_reference_qc()
   worker <- function(idx) {
+    child_observability <- compressor_observability_child(observability, workers = 1L)
+    if (!is.null(child_observability)) {
+      .compressor_harmonise_context$observability <- child_observability
+      on.exit({
+        .compressor_harmonise_context$observability <- observability
+      }, add = TRUE)
+    }
     had_qc <- exists("qc", envir = .compressor_harmonise_context, inherits = FALSE)
     old_qc <- if (had_qc) .compressor_harmonise_context$qc else NULL
     .compressor_harmonise_context$qc <- alignment_qc
@@ -1303,12 +1359,23 @@ harmonise_by_chromosome <- function(data, reference, strict = FALSE, preserve = 
       if (had_qc) .compressor_harmonise_context$qc <- old_qc else
         rm("qc", envir = .compressor_harmonise_context)
     }, add = TRUE)
+    worker_reference_phase <- if (partitioned) {
+      compressor_observability_start_phase(
+        child_observability, "reference_discovery_load_normalisation", rows_in = length(idx)
+      )
+    } else NULL
     ref_part <- if (partitioned) {
       chromosome <- as.character(data$chromosome[idx[1L]])
       if (is.na(chromosome) || !nzchar(chromosome)) empty_reference_table() else
         reference_table(resolved, chromosome = chromosome)
     } else {
       ref
+    }
+    if (!is.null(worker_reference_phase)) {
+      compressor_observability_finish_phase(
+        child_observability, worker_reference_phase,
+        rows_out = if (is.null(ref_part)) 0L else nrow(ref_part)
+      )
     }
     harmonise_to_reference(
       data[idx, , drop = FALSE], NULL, strict = FALSE, preserve = preserve,
@@ -1331,6 +1398,20 @@ harmonise_by_chromosome <- function(data, reference, strict = FALSE, preserve = 
     stop("chromosome-parallel harmonisation worker failed: ",
          as.character(parts[[which(failed)[1L]]]), call. = FALSE)
   }
+  if (!is.null(observability) && isTRUE(observability$enabled)) {
+    for (part in parts) {
+      compressor_observability_merge_phases(
+        observability, part$observability_phases %||% list()
+      )
+    }
+    compressor_observability_emit(
+      observability, "progress", phase = "chromosome_partitioning",
+      rows_in = nrow(data), rows_out = nrow(data), rows_dropped = 0L,
+      workers = min(chrom_threads, length(groups)),
+      extra = list(chromosomes_completed = length(groups),
+                   chromosomes_total = length(groups))
+    )
+  }
   combined <- do.call(rbind, lapply(parts, function(x) x$data))
   combined <- combined[order(combined[[order_column]]), , drop = FALSE]
   combined[[order_column]] <- NULL
@@ -1348,7 +1429,8 @@ harmonise_by_chromosome <- function(data, reference, strict = FALSE, preserve = 
   list(data = combined, reference_hash = parts[[1L]]$reference_hash,
        reference_rows = if (partitioned) resolved$metadata$rows else parts[[1L]]$reference_rows,
        reference_metadata = if (partitioned) resolved$metadata else parts[[1L]]$reference_metadata,
-       alignment_stats = stats)
+       alignment_stats = stats,
+       observability_phases = if (!is.null(observability)) observability$phases else NULL)
 }
 
 # Keep alias lookup on the same bounded query path as coordinate lookup. The
