@@ -141,7 +141,8 @@ test_that("import timings and canonical output fields are recorded", {
   imported <- import_sumstats(input)
   timings <- attr(imported, "phase_timings")
   expect_identical(timings$unit, "seconds")
-  expect_true(all(c("read", "normalise", "qc") %in% names(timings$phases)))
+  expect_true(all(c("read", "projection", "statistic_resolution", "normalise", "qc") %in%
+                  names(timings$phases)))
   expect_true(all(vapply(timings$phases, function(value) is.finite(value) && value >= 0,
                          logical(1))))
   expect_true(all(CompreSSoR:::required_sumstats_columns() %in% names(imported)))
@@ -155,8 +156,9 @@ test_that("native manifests record compact phase timings", {
                              overwrite = TRUE, threads = 2L)
   timings <- store$manifest$timings
   expect_identical(timings$unit, "seconds")
-  expect_true(all(c("read", "normalise", "qc", "identity_sort", "encode", "commit") %in%
-                  names(timings$phases)))
+  expect_true(all(c("read", "projection", "statistic_resolution", "normalise", "qc",
+                    "identity_sort", "quantisation", "exceptions", "write", "encode",
+                    "commit") %in% names(timings$phases)))
   expect_true(all(vapply(timings$phases, function(value) is.finite(value) && value >= 0,
                          logical(1))))
   expect_true(validate_compressor(store, full = TRUE)$valid)
@@ -180,6 +182,29 @@ test_that("A1FREQ is preserved as finite canonical EAF", {
   expect_identical(imported$effect_allele_frequency, input$A1FREQ)
   expect_identical(attr(imported, "source_provenance")$eaf$present, 4L)
   expect_identical(attr(imported, "source_provenance")$eaf$missing, 0L)
+})
+
+test_that("projected A1FREQ survives while supplied SE remains authoritative", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- a1freq_fixture()
+  input$SE <- c(0.02, 0.15, 0.7, 2.3)
+  projected <- CompreSSoR:::read_sumstats_input(
+    input, project_columns = TRUE, core_only = TRUE
+  )
+  expect_identical(attr(projected, "input_read_metadata")$columns_read, 9L)
+  expect_true("A1FREQ" %in% attr(projected, "source_columns_read"))
+
+  store <- compress_sumstats(input, tempfile("a1freq-authoritative-"),
+                             overwrite = TRUE)
+  observed <- read_sumstats(store, columns = c("standard_error",
+                                                "effect_allele_frequency"))
+  expect_lt(max(abs(observed$standard_error - input$SE) / input$SE), 0.08)
+  expect_equal(observed$effect_allele_frequency, input$A1FREQ, tolerance = 0.006)
+  expect_identical(store$manifest$source$eaf$present, 4L)
+  expect_identical(store$manifest$eaf_observability$eaf_missing_exception_rows, 0L)
+  expect_true(all(c("quantisation", "exceptions", "write") %in%
+                  names(store$manifest$timings$phases)))
 })
 
 test_that("native Pcodec records EAF coverage without EAF-missing exceptions", {
@@ -257,4 +282,50 @@ test_that("native missing-EAF provenance explains flagged exception records", {
                                                 "effect_allele_frequency"))
   expect_equal(observed$standard_error, input$standard_error, tolerance = 0.01)
   expect_true(is.na(observed$effect_allele_frequency[2L]))
+})
+
+test_that("an absent EAF column uses only the documented predictor fallback", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- a1freq_fixture()
+  input$A1FREQ <- NULL
+  store <- compress_sumstats(input, tempfile("absent-eaf-column-"),
+                             overwrite = TRUE)
+  observed <- read_sumstats(store, columns = c("standard_error",
+                                                "effect_allele_frequency"))
+  eaf <- store$manifest$eaf_observability
+  expect_identical(eaf$present, 0L)
+  expect_identical(eaf$missing, 4L)
+  expect_identical(eaf$predictor_imputation$rows, 4L)
+  expect_identical(eaf$eaf_missing_exception_rows, 4L)
+  expect_identical(eaf$eaf_missing_only_exception_rows, 4L)
+  expect_true(all(is.na(observed$effect_allele_frequency)))
+  expect_lt(max(abs(observed$standard_error - input$SE) / input$SE), 0.08)
+  expect_identical(store$manifest$preparation$preparation$eaf$output$missing, 4L)
+})
+
+test_that("malformed EAF, SE, and absent SE follow explicit input policy", {
+  malformed_eaf <- a1freq_fixture()
+  malformed_eaf$A1FREQ[2L] <- 1.2
+  expect_error(
+    compress_sumstats(malformed_eaf, tempfile("invalid-eaf-"),
+                      row_policy = "error"),
+    "invalid_effect_allele_frequency"
+  )
+
+  malformed_se <- a1freq_fixture()
+  malformed_se$SE[2L] <- 0
+  expect_error(
+    compress_sumstats(malformed_se, tempfile("invalid-se-"),
+                      row_policy = "error"),
+    "invalid_standard_error"
+  )
+
+  absent_se <- a1freq_fixture()
+  absent_se$SE <- NULL
+  expect_error(
+    compress_sumstats(absent_se, tempfile("absent-se-"),
+                      row_policy = "error"),
+    "Missing required summary-statistics columns: standard_error"
+  )
 })

@@ -578,6 +578,7 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
   started <- unname(proc.time()[["elapsed"]])
   if (is.data.frame(input)) {
     data <- clean_input_names(input)
+    projection_started <- phase_clock()
     source_columns <- names(data)
     selected <- if (isTRUE(project_columns)) {
       sumstats_projection_indices(source_columns, core_only = core_only,
@@ -587,12 +588,18 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
       seq_along(source_columns)
     }
     data <- data[, selected, drop = FALSE]
+    projection_seconds <- if (isTRUE(project_columns)) {
+      phase_seconds(projection_started)
+    } else {
+      0
+    }
     attr(data, "source_columns") <- source_columns
     attr(data, "source_columns_read") <- names(data)
     attr(data, "input_read_metadata") <- list(
       projected = isTRUE(project_columns),
       columns_before = as.integer(length(source_columns)),
       columns_read = as.integer(length(selected)),
+      projection_elapsed_seconds = as.numeric(projection_seconds),
       elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
     )
     return(data)
@@ -608,12 +615,14 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
       projected = FALSE,
       columns_before = as.integer(length(source_columns)),
       columns_read = as.integer(length(source_columns)),
+      projection_elapsed_seconds = 0,
       elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
     )
     return(data)
   }
   header <- read_delimited_header(input)
   source_columns <- names(header)
+  projection_started <- phase_clock()
   selected <- if (isTRUE(project_columns)) {
     sumstats_projection_indices(source_columns, core_only = core_only,
                                 allow_p_to_se = allow_p_to_se,
@@ -622,12 +631,18 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
     seq_along(source_columns)
   }
   data <- clean_input_names(read_delimited_file(input, select = selected))
+  projection_seconds <- if (isTRUE(project_columns)) {
+    phase_seconds(projection_started)
+  } else {
+    0
+  }
   attr(data, "source_columns") <- source_columns
   attr(data, "source_columns_read") <- names(data)
   attr(data, "input_read_metadata") <- list(
     projected = isTRUE(project_columns),
     columns_before = as.integer(length(source_columns)),
     columns_read = as.integer(length(selected)),
+    projection_elapsed_seconds = as.numeric(projection_seconds),
     elapsed_seconds = unname(proc.time()[["elapsed"]]) - started
   )
   data

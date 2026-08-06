@@ -548,8 +548,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   ordered <- data[order, , drop = FALSE]
   identity_seconds <- phase_seconds(identity_started)
   encode_started <- phase_clock()
+  quantisation_started <- phase_clock()
   values <- pcodec_native_quantise(ordered)
+  quantisation_seconds <- phase_seconds(quantisation_started)
   n <- nrow(ordered)
+  exceptions_started <- phase_clock()
   eaf_observability <- pcodec_native_eaf_observability(
     ordered$effect_allele_frequency, values$exceptions,
     predictor_rows = values$eaf_predictor_rows
@@ -559,6 +562,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   key_block_rows <- pcodec_native_validate_block_rows(
     metadata$key_block_rows %||% PCODEC_NATIVE_KEY_BLOCK_ROWS,
     "native Pcodec key_block_rows")
+  write_started <- phase_clock()
   block_template <- pcodec_native_block_template(ordered_position, block_rows)
   key_block_template <- pcodec_native_block_template(ordered_position, key_block_rows)
   streams <- list(
@@ -582,6 +586,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   exception_stream <- pcodec_native_write_exceptions(
     values$exceptions, output, block_template, workers = requested_workers
   )
+  exceptions_seconds <- phase_seconds(exceptions_started)
   task_count <- max(length(key_block_template), length(block_template))
   effective_workers <- pcodec_native_effective_workers(requested_workers, task_count)
   writer_metadata <- list(
@@ -664,6 +669,9 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   phase_timings$phases$identity_sort <- as.numeric(
     (phase_timings$phases$identity_sort %||% 0) + identity_seconds
   )
+  phase_timings$phases$quantisation <- as.numeric(quantisation_seconds)
+  phase_timings$phases$exceptions <- as.numeric(exceptions_seconds)
+  phase_timings$phases$write <- as.numeric(phase_seconds(write_started))
   phase_timings$phases$encode <- phase_seconds(encode_started)
   files <- list(
     position = "position.pco", substitution = "substitution.pco",

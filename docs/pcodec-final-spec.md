@@ -93,6 +93,19 @@ For the current EAF8 domain, the `0.5` seed is code `128`, whose decoded
 predictor is approximately `0.50307997331906917`; the manifest records this
 code and decoded value rather than treating the seed as the stored EAF.
 
+The boundary projection recognises common EAF aliases including `EAF`, `AF`,
+`effect_af`, `A1FREQ`, `ALT_FREQ`, `ALT_AF`, and `EAF_ALT`. A finite supplied
+standard error is likewise resolved from the standard SE aliases and remains
+authoritative. Required SE is not inferred from EAF; p-value-to-SE conversion
+is disabled in the strict writer and is available only through the explicit
+checked `import_sumstats(..., allow_p_to_se = TRUE)` boundary option.
+
+Timing provenance is observational and excluded from the canonical manifest
+identity. Import records read/projection and statistic-resolution phases; the
+native writer additionally records quantisation, sparse-exception, payload
+write, aggregate encoding, and commit phases. These timings do not imply a
+second full-table copy or a row-level QC pass.
+
 ## Variant identity
 
 Every row has an unambiguous identity key:

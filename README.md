@@ -221,9 +221,12 @@ read_sumstats(
 ```
 
 The boundary importer recognises common aliases through a deterministic
-resolution matrix: explicit beta plus `SE` is the primary route; an `OR` plus
-`SE` is also accepted directly and resolves beta to log-OR when beta is absent;
-an optional `Z` is checked against `beta / SE` or derived from it. P-values
+resolution matrix. This includes EAF aliases such as `EAF`, `AF`, and the
+UKB-PPP allele-frequency field `A1FREQ`; a finite supplied EAF is projected and
+preserved. Explicit beta plus `SE` is the primary route; an `OR` plus `SE` is
+also accepted directly and resolves beta to log-OR when beta is absent. A
+finite supplied `SE` is authoritative and is never derived from EAF. An
+optional `Z` is checked against `beta / SE` or derived from it. P-values
 are not silently converted to SE in the strict writer. The standalone
 `import_sumstats(..., allow_p_to_se = TRUE)` opt-in is conflict-checked and
 records its bounded conversion rows in resolution provenance; it is not used
@@ -238,10 +241,12 @@ columns are required.
 
 Native and default compression manifests retain aggregate structural-QC counts,
 bounded row examples, source/projection provenance, and phase timings for read,
-normalisation, QC, identity/sort, encoding, and the final atomic commit. Full
-row-level QC status and canonical-key audits remain available through the
-explicit `preflight_sumstats()` path rather than being retained through a
-large compression job.
+column projection, statistic resolution, QC, identity/sort, native
+quantisation, sparse exception handling, payload writing, aggregate encoding,
+and the final atomic commit. Full row-level QC status and canonical-key audits
+remain available through the explicit `preflight_sumstats()` path rather than
+being retained through a large compression job. The native writer records the
+component phases without adding a second full-table validation pass.
 
 For a prepared GRCh37 table, write a native GRCh37 store directly:
 

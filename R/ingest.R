@@ -74,6 +74,9 @@ import_sumstats_impl <- function(input, strict = FALSE,
       columns_before = as.integer(length(source_columns)),
       columns_read = as.integer(length(source_columns_read)),
       projected = isTRUE(input_read_metadata$projected),
+      projection_elapsed_seconds = as.numeric(
+        input_read_metadata$projection_elapsed_seconds %||% 0
+      ),
       read_elapsed_seconds = as.numeric(input_read_metadata$elapsed_seconds %||% NA_real_)
     )
   } else {
@@ -86,6 +89,9 @@ import_sumstats_impl <- function(input, strict = FALSE,
       columns_before = as.integer(length(source_columns)),
       columns_read = as.integer(length(source_columns_read)),
       projected = isTRUE(input_read_metadata$projected),
+      projection_elapsed_seconds = as.numeric(
+        input_read_metadata$projection_elapsed_seconds %||% 0
+      ),
       read_elapsed_seconds = as.numeric(input_read_metadata$elapsed_seconds %||% NA_real_)
     )
   }
@@ -129,7 +135,12 @@ import_sumstats_impl <- function(input, strict = FALSE,
   attr(out, "phase_timings") <- list(
     unit = "seconds",
     phases = c(
-      list(read = read_seconds, normalise = normalise_seconds),
+      list(
+        read = read_seconds,
+        projection = as.numeric(input_read_metadata$projection_elapsed_seconds %||% 0),
+        statistic_resolution = normalise_seconds,
+        normalise = normalise_seconds
+      ),
       if (is.null(qc_seconds)) list() else list(qc = qc_seconds)
     )
   )
