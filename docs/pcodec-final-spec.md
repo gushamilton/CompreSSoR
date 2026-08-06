@@ -37,6 +37,15 @@ Two ingestion modes are part of the current API:
 Neither mode performs harmonisation or liftover. Those transformations and
 their reference/chain provenance belong to an upstream preparation workflow.
 
+The installed package does not include a position-selective dual-build
+reference backend. It does not download or silently substitute dbSNP155 (or
+another external table), resolve rsIDs, align alleles, or perform liftover.
+An upstream tidyGWAS/dbSNP-style or GWASLab preparation workflow may perform
+those operations, but must hand CompreSSoR an explicitly prepared table and
+retain its own reference version, build mapping, QC, chain, and timing
+provenance. Once written, the native store is self-contained and does not
+depend on that upstream reference.
+
 For `selection = "core_plus"`, selection is evaluated before lossy encoding
 and retains the core-panel union with inclusive windows around rows at
 `p <= pvalue_threshold` (default `1e-5`, with `region_padding = 10000`). A

@@ -296,6 +296,31 @@ liftover, reference lookup, allele alignment, rsID resolution, and source-file
 specific field mapping in an upstream preparation workflow, then pass its
 explicit result to CompreSSoR.
 
+### Reference-backend boundary
+
+CompreSSoR does **not** ship a position-selective dual-build reference
+backend. In particular, it does not download or silently substitute dbSNP155,
+materialise a canonical reference, resolve rsIDs, align alleles, or perform
+liftover. The native `.cpr` store is self-contained after writing: its
+identity is the stored build's position plus directed REF→ALT code, and it
+does not require a FASTA, dbSNP table, chain file, or shared variant spine to
+be read.
+
+If a study needs reference-backed preparation, use an external workflow such
+as the BluePebble tidyGWAS/dbSNP-style dual-build Parquet/Arrow workflow or
+the GWASLab workflow used by MR-Atlas. Those workflows own their reference
+version, build mapping, allele/QC policy, liftover chain (if any), and timing
+provenance. Export a prepared table with explicit build, chromosome, position,
+REF, ALT, effect/non-effect allele, beta (or an accepted effect-size route),
+and standard error before calling `compress_sumstats()`; do not treat the
+external reference as an implicit CompreSSoR dependency.
+
+The former in-package reference code remains available only under
+[`archive/harmonisation/`](archive/harmonisation/) for migration or a future
+separate package. This boundary supersedes the position-selective backend
+proposal in issue #24 and preserves the core compressor's small installation
+and self-contained storage contract.
+
 ### External preparation and archived workflows
 
 The former reference-backed harmonisation and liftover implementation is kept
