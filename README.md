@@ -296,6 +296,17 @@ The manifest records `qc$mode = "none"`,
 already-oriented input; it does not harmonise, liftover, repair rows, or
 validate their numerical values.
 
+Native manifests also record phase timings and effective workers. Both modes
+record read, projection, statistic resolution, normalisation, identity sort,
+selection, quantisation, exception partitioning, payload writing, encoding,
+and commit. Compact mode records its validating structural/numeric pass as
+`qc`; the trusted none mode records `statistic_validation = 0` and its
+identity-safety filter separately. The none path does not allocate an absent
+`p_value` column or row-level QC objects; a p-value column is projected only
+when `core_plus` or another p-value-based selection needs it. Dense missing-EAF
+rows remain sparse, block-partitioned exception records and are never repaired
+by imputing a biological EAF.
+
 `input_build = "GRCh37", store_build = "GRCh38"` is rejected. Perform any
 liftover, reference lookup, allele alignment, rsID resolution, and source-file
 specific field mapping in an upstream preparation workflow, then pass its

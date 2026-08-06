@@ -104,7 +104,15 @@ Timing provenance is observational and excluded from the canonical manifest
 identity. Import records read/projection and statistic-resolution phases; the
 native writer additionally records quantisation, sparse-exception, payload
 write, aggregate encoding, and commit phases. These timings do not imply a
-second full-table copy or a row-level QC pass.
+second full-table copy or a row-level QC pass. In compact mode, the validating
+structural/numeric pass is recorded as `qc`; in the trusted `qc = "none"` mode,
+`statistic_validation` is explicitly zero/bypassed and the native-identity
+safety filter is timed separately. Effective requested and writer worker
+counts are recorded in the manifest. The none path does not create an absent
+full-length p-value column or row-level QC objects; p-value projection is
+enabled only for p-value-based selection such as `core_plus`. Missing EAF
+values remain bounded, block-partitioned exception records and are not
+biologically imputed.
 
 ## Variant identity
 
