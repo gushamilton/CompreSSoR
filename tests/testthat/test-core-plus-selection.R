@@ -75,22 +75,68 @@ test_that("missing or non-finite Z values cannot create p-value seeds", {
   expect_equal(nrow(selected$regions), 0L)
 })
 
-test_that("selection derives p from beta/SE and does not substitute an input p column", {
+test_that("a valid supplied p-value overrides the beta/SE-derived p-value", {
   threshold <- 1e-5
-  z_signal <- stats::qnorm(threshold / 4, lower.tail = FALSE)
-  raw <- core_plus_test_data(c(100000L, 200000L), c(z_signal, 0),
-                             p_value = c(1, NA_real_))
-  raw$z <- NULL
-  resolved <- CompreSSoR:::normalise_sumstats_columns(raw, parse_policy = "error")
-  expect_equal(resolved$z[[1L]], z_signal)
+  raw <- core_plus_test_data(c(100000L, 200000L), c(5, 0),
+                             p_value = c(0.5, 1e-8))
 
   selected <- CompreSSoR:::pvalue_region_selection(
-    resolved, pvalue_threshold = threshold, region_padding = 10000L
+    raw, pvalue_threshold = threshold, region_padding = 10000L
   )
-  expect_true(selected$keep[[1L]])
-  expect_false(selected$keep[[2L]])
+  expect_equal(selected$keep, c(FALSE, TRUE))
+  expect_equal(selected$metadata$p_value_source, "supplied")
+  expect_equal(selected$metadata$p_value_supplied_rows, 2L)
+  expect_equal(selected$metadata$p_value_derived_rows, 0L)
+  expect_equal(selected$metadata$p_value_fallback_rows, 0L)
+  expect_equal(selected$metadata$threshold_statistic, "supplied_p_value")
+})
+
+test_that("absent p-values fall back to exact pre-encoding Z", {
+  threshold <- 1e-5
+  z_signal <- stats::qnorm(threshold / 4, lower.tail = FALSE)
+  raw <- core_plus_test_data(c(100000L, 200000L), c(z_signal, 0))
+  selected <- CompreSSoR:::pvalue_region_selection(
+    raw, pvalue_threshold = threshold, region_padding = 10000L
+  )
+
+  expect_equal(selected$keep, c(TRUE, FALSE))
   expect_equal(selected$metadata$p_value_source, "derived_from_z")
-  expect_equal(selected$metadata$threshold_source, "pre_encoding_prepared")
+  expect_equal(selected$metadata$p_value_supplied_rows, 0L)
+  expect_equal(selected$metadata$p_value_derived_rows, 2L)
+  expect_equal(selected$metadata$p_value_fallback_rows, 0L)
+  expect_equal(selected$metadata$p_value_unresolved_rows, 0L)
+})
+
+test_that("missing and invalid supplied p-values fall back and are counted", {
+  z_signal <- 5
+  raw <- core_plus_test_data(c(100000L, 200000L, 300000L),
+                             rep(z_signal, 3), p_value = c(1, NA, -1))
+  selected <- CompreSSoR:::pvalue_region_selection(
+    raw, pvalue_threshold = 1e-5, region_padding = 10000L
+  )
+
+  expect_equal(selected$keep, c(FALSE, TRUE, TRUE))
+  expect_equal(selected$metadata$p_value_source, "supplied_with_z_fallback")
+  expect_equal(selected$metadata$p_value_supplied_rows, 1L)
+  expect_equal(selected$metadata$p_value_derived_rows, 2L)
+  expect_equal(selected$metadata$p_value_fallback_rows, 2L)
+  expect_equal(selected$metadata$p_value_missing_rows, 1L)
+  expect_equal(selected$metadata$p_value_invalid_rows, 1L)
+  expect_equal(selected$metadata$p_value_invalid_policy,
+               "fallback_to_pre_encoding_z_and_record; compact_qc_rejects_invalid_rows")
+})
+
+test_that("core-plus projection includes p aliases only when selection needs them", {
+  input <- core_plus_test_data(100000L, 5)
+  input$P <- 1e-8
+  without_p <- CompreSSoR:::read_sumstats_input(
+    input, project_columns = TRUE, core_only = TRUE
+  )
+  with_p <- CompreSSoR:::read_sumstats_input(
+    input, project_columns = TRUE, core_only = TRUE, include_p_value = TRUE
+  )
+  expect_false(any(toupper(names(without_p)) == "P"))
+  expect_true("p_value" %in% names(CompreSSoR:::normalise_sumstats_columns(with_p)))
 })
 
 test_that("a Z-only table is rejected by the strict core contract", {
@@ -127,6 +173,8 @@ test_that("core-plus records the threshold/window contract in the manifest", {
   expect_equal(selection$threshold_operator, "<=")
   expect_equal(selection$union, "core_or_pvalue_regions")
   expect_equal(selection$p_value_source, "derived_from_z")
+  expect_false(selection$p_value_column_present)
+  expect_equal(selection$p_value_derived_rows, 3L)
 
   sidecar <- jsonlite::read_json(
     file.path(path, selection$file), simplifyVector = TRUE
@@ -136,4 +184,38 @@ test_that("core-plus records the threshold/window contract in the manifest", {
   expect_equal(sidecar$window_boundary, "inclusive")
   expect_equal(sidecar$threshold_operator, "<=")
   expect_equal(sidecar$union, "core_or_pvalue_regions")
+  expect_equal(sidecar$p_value_source, "derived_from_z")
+  expect_false(sidecar$p_value_column_present)
+  expect_equal(sidecar$p_value_derived_rows, 3L)
+})
+
+test_that("supplied p-value provenance is recorded in the manifest and sidecar", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- core_plus_test_data(c(100000L, 200000L), c(0, 0),
+                               p_value = c(1e-8, 0.5))
+  panel <- data.frame(variant_id = "1:300000:A:G", stringsAsFactors = FALSE)
+  path <- tempfile("core-plus-supplied-p-")
+  store <- compress_sumstats(
+    input, path, selection = "core_plus", variant_set = panel,
+    pvalue_threshold = 1e-5, region_padding = 10000L,
+    overwrite = TRUE
+  )
+
+  selection <- store$manifest$selection
+  expect_equal(selection$p_value_source, "supplied")
+  expect_true(selection$p_value_column_present)
+  expect_equal(selection$p_value_source_alias, "p_value_alias")
+  expect_equal(selection$p_value_supplied_rows, 2L)
+  expect_equal(selection$p_value_derived_rows, 0L)
+  expect_equal(selection$p_value_fallback_rows, 0L)
+  expect_equal(selection$seed_snps, 1L)
+
+  sidecar <- jsonlite::read_json(
+    file.path(path, selection$file), simplifyVector = TRUE
+  )
+  expect_equal(sidecar$p_value_source, "supplied")
+  expect_true(sidecar$p_value_column_present)
+  expect_equal(sidecar$p_value_supplied_rows, 2L)
+  expect_equal(sidecar$p_value_derived_rows, 0L)
 })

@@ -71,6 +71,11 @@ result <- list(
     region_padding = region_padding,
     window_bp_each_side = selection$window_bp_each_side,
     window_boundary = selection$window_boundary,
+    p_value_source = selection$p_value_source,
+    p_value_supplied_rows = selection$p_value_supplied_rows,
+    p_value_derived_rows = selection$p_value_derived_rows,
+    p_value_fallback_rows = selection$p_value_fallback_rows,
+    p_value_invalid_rows = selection$p_value_invalid_rows,
     threads = threads
   ),
   result = list(

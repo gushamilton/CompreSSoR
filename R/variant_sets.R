@@ -728,17 +728,62 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
   chromosomes <- as.character(data$chromosome)
   positions <- as.numeric(data$base_pair_location)
   # This is deliberately evaluated on the prepared in-memory statistic. It
-  # runs before any bounded semantic encoding and is never reconstructed from
-  # a lossy stored Z value.
+  # runs before any bounded semantic encoding. A valid supplied p-value is
+  # authoritative because it may represent a score-test, mixed-model,
+  # meta-analysis, or corrected p-value that is not the Wald p-value implied
+  # by beta/SE. Missing or invalid supplied values are never treated as valid;
+  # they are explicitly counted and fall back to the exact prepared Z.
   z <- as.numeric(data$z)
-  p_value <- 2 * stats::pnorm(-abs(z))
+  derived_p_value <- 2 * stats::pnorm(-abs(z))
+  source_present_attr <- attr(data, "p_value_source_present")
+  p_value_source_present <- if (is.null(source_present_attr)) {
+    "p_value" %in% names(data)
+  } else {
+    isTRUE(source_present_attr)
+  }
+  p_value <- rep(NA_real_, n)
+  supplied_p_value <- rep(NA_real_, n)
+  if (p_value_source_present && "p_value" %in% names(data)) {
+    supplied_p_value <- suppressWarnings(as.numeric(data$p_value))
+  }
+  parse_failures <- attr(data, "parse_failures") %||% list()
+  parse_invalid <- seq_len(n) %in% as.integer(parse_failures$p_value %||% integer())
+  supplied_missing <- p_value_source_present & !parse_invalid & is.na(supplied_p_value)
+  supplied_invalid <- p_value_source_present & (
+    parse_invalid | (!is.na(supplied_p_value) &
+      (!is.finite(supplied_p_value) | supplied_p_value < 0 | supplied_p_value > 1))
+  )
+  supplied_valid <- p_value_source_present & !supplied_missing &
+    !supplied_invalid & is.finite(supplied_p_value) &
+    supplied_p_value >= 0 & supplied_p_value <= 1
+  p_value[supplied_valid] <- supplied_p_value[supplied_valid]
+  derived_valid <- !supplied_valid & is.finite(z) & is.finite(derived_p_value)
+  p_value[derived_valid] <- derived_p_value[derived_valid]
+  p_value_fallback <- p_value_source_present & !supplied_valid
+  p_value_unresolved <- !is.finite(p_value)
+  source_mode <- if (!p_value_source_present || !any(supplied_valid)) {
+    "derived_from_z"
+  } else if (any(p_value_fallback)) {
+    "supplied_with_z_fallback"
+  } else {
+    "supplied"
+  }
+  threshold_statistic <- switch(
+    source_mode,
+    supplied = "supplied_p_value",
+    supplied_with_z_fallback = "supplied_p_value_or_p_value_from_prepared_z",
+    "p_value_from_prepared_z"
+  )
+  threshold_derivation <- switch(
+    source_mode,
+    supplied = "supplied_finite_p_value",
+    supplied_with_z_fallback =
+      "supplied_finite_p_value; fallback 2 * pnorm(-abs(z))",
+    "2 * pnorm(-abs(z))"
+  )
   valid_coordinate <- !is.na(chromosomes) & nzchar(chromosomes) &
     is.finite(positions) & positions >= 1
-  # An infinite Z would otherwise underflow to p = 0 and become a false
-  # significant seed.  Selection is defined only for finite prepared input
-  # statistics; compact QC normally removes invalid rows before this helper,
-  # while this guard keeps the selection contract safe when called directly.
-  seed <- valid_coordinate & is.finite(z) & is.finite(p_value) &
+  seed <- valid_coordinate & is.finite(p_value) & p_value >= 0 &
     p_value <= pvalue_threshold
   seeds <- data.frame(
     chromosome = chromosomes[seed],
@@ -764,14 +809,32 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
   metadata <- list(
     tag = "core",
     method = "pvalue_regions",
-    p_value_source = "derived_from_z",
-    threshold_source = "pre_encoding_prepared",
-    threshold_statistic = "p_value_from_prepared_z",
+    p_value_source = source_mode,
+    p_value_column_present = isTRUE(p_value_source_present),
+    p_value_source_alias = attr(data, "p_value_source_alias") %||% "unknown",
+    p_value_supplied_rows = as.integer(sum(supplied_valid)),
+    p_value_derived_rows = as.integer(sum(derived_valid)),
+    p_value_fallback_rows = as.integer(sum(p_value_fallback)),
+    p_value_missing_rows = as.integer(sum(supplied_missing)),
+    p_value_invalid_rows = as.integer(sum(supplied_invalid)),
+    p_value_unresolved_rows = as.integer(sum(p_value_unresolved)),
+    p_value_invalid_policy =
+      "fallback_to_pre_encoding_z_and_record; compact_qc_rejects_invalid_rows",
+    threshold_source = if (identical(source_mode, "derived_from_z")) {
+      "pre_encoding_prepared"
+    } else {
+      "supplied_input_or_pre_encoding_fallback"
+    },
+    threshold_statistic = threshold_statistic,
     threshold_operator = "<=",
     threshold_semantics = list(
-      source = "pre_encoding_prepared",
-      statistic = "p_value_from_prepared_z",
-      derivation = "2 * pnorm(-abs(z))",
+      source = if (identical(source_mode, "derived_from_z")) {
+        "pre_encoding_prepared"
+      } else {
+        "supplied_input_or_pre_encoding_fallback"
+      },
+      statistic = threshold_statistic,
+      derivation = threshold_derivation,
       operator = "<=",
       value = as.numeric(pvalue_threshold),
       encoding = "not_encoded"

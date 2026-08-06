@@ -70,8 +70,9 @@ regions? The input contract is the prepared GRCh38 file
 identity, beta, standard error, and EAF columns. The selection contract is
 explicit and locked for this first test: `p <= 1e-5`, inclusive 10,000-bp
 padding on each side, core membership unioned row-wise with the regions, and
-native Pcodec `Z9/EAF8/SE6`. The p-value is derived from the exact prepared
-pre-encoding Z; the input file is not copied into the repository.
+native Pcodec `Z9/EAF8/SE6`. A finite supplied p-value is authoritative; this
+NTRK3 input has no p-value column, so its selection falls back to exact
+prepared pre-encoding Z. The input file is not copied into the repository.
 
 Run the maintained `scripts/benchmark_core_plus_ntrk3.R` harness on a Slurm
 compute node with a four-thread native install. Keep the raw input, output

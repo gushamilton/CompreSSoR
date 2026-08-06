@@ -102,9 +102,11 @@ combined panel.
 inclusive 10,000-bp windows on either side of rows with `p <= 1e-5`. The
 threshold and window are explicit `pvalue_threshold` and `region_padding`
 arguments and are recorded in the manifest; 50-kb or other windows remain
-available only when requested explicitly. Selection uses the exact prepared
-pre-encoding Z (`beta / standard_error` when Z is absent), never a lossy
-decoded value or an input p-value column.
+available only when requested explicitly. A finite supplied p-value is
+authoritative; missing or invalid values are counted and fall back to the
+exact prepared pre-encoding Z (`beta / standard_error` when Z is absent).
+Selection never uses a lossy decoded value, and p-values are not stored in the
+native payload.
 
 The frozen source hashes and exact output layout are documented in
 [`docs/variant-panels.md`](docs/variant-panels.md).
