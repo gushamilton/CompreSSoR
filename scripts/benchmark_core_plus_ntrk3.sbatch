@@ -16,6 +16,7 @@ mkdir -p "$bench" "$bench/logs" "$bench/stores" "$bench/results" "$rlib"
 
 module purge
 module load languages/R/4.5.1
+module load rust/1.78.0-n5bm
 export R_LIBS_USER="$rlib"
 R CMD INSTALL --library="$rlib" "$repo" > "$bench/logs/install_${SLURM_JOB_ID}.log" 2>&1
 
