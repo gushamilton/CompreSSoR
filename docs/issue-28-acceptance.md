@@ -2,10 +2,10 @@
 
 Audit base: `origin/main` `5f553724a9cebac4609447df68c418c70f202e1f`.
 
-The prepared-input compressor refactor is complete at the implementation level.
-The remaining open item is the exact-current-base BluePebble large-file
-benchmark tracked by issue #27; it is an infrastructure blocker, not a
-missing compressor feature.
+The prepared-input compressor refactor is complete at the implementation
+level, and issue #28 can close independently. The exact-current-base
+BluePebble large-file benchmark remains a separate issue under #27; it is an
+infrastructure/toolchain blocker, not a missing compressor feature.
 
 ## Acceptance evidence
 
@@ -50,7 +50,9 @@ evidence rather than exact-current-base acceptance evidence.
 
 ## Disposition
 
-Do **not** close issue #28 yet. Keep it open pending the exact-current-base
-issue #27 benchmark, or close it together with #27 once that benchmark runs
-successfully and records its source commit, columns, timings, RSS, rows, output
-size, and validation result.
+Issue #28 is complete and can close independently. Issue #27 remains open as a
+separate exact-current-base BluePebble benchmark/toolchain item. Closing #28
+does not imply that the exact-current-base NTRK3 timing or RSS evidence exists;
+the prior-commit timings remain supporting evidence until #27 obtains a
+successful benchmark recording its source commit, columns, timings, RSS, rows,
+output size, and validation result.
