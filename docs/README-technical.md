@@ -43,10 +43,12 @@ For the standard profile, the manifest records the EAF absolute bound, the
 central Z bin bound, the SE relative quantisation bound, and the derived-beta
 error formula; the exact Parquet backend is the lossless route.
 
-## Ingestion and GRCh38
+## Prepared-input ingestion and build provenance
 
-The reference is important during ingestion, not because every reader needs to
-carry a FASTA or a large variant spine. A normal QC conversion:
+The installed compressor does not perform reference lookup, allele
+harmonisation, or liftover during ingestion. An external preparation workflow
+may perform those steps and must hand the compressor an explicitly oriented
+table. The core then validates the prepared schema and writes the store:
 
 ```r
 store <- compress_sumstats(
@@ -59,23 +61,18 @@ store <- compress_sumstats(
 )
 ```
 
-The reference establishes the GRCh38 position, REF, ALT, orientation, and
-ambiguity decisions. The completed `.cpr` then stores its own exact key and
-manifest identity. Reading does not silently consult a different reference.
-
-`mode = "convert"` is intentionally narrower: it is for data already verified
-to be GRCh38 with `other_allele = REF`, `effect_allele = ALT`, and matching
-beta/Z/EAF orientation. It requires explicit REF/ALT columns or
-`assume_grch38_ref_alt = TRUE`.
+The `input_build` and `store_build` arguments must name the same explicit
+GRCh37 or GRCh38 assembly; the compressor does not convert between builds.
+The completed `.cpr` stores its own exact build-specific identity key and
+manifest provenance. Reading does not consult a reference or chain file.
 
 GWAS Catalog harmonised files commonly contain `hm_*` columns alongside their
-ordinary columns. CompreSSoR reports those fields in a structured orientation
-diagnostic, but does not infer REF/ALT identity from the prefix alone. Callers
-must verify `hm_code` (codes 1--13 are oriented; 14--18 are not) and explicitly
-copy `hm_other_allele` to `other_allele`, `hm_effect_allele` to
-`effect_allele`, and the matching harmonised coordinates/statistics before
-using `assume_grch38_ref_alt = TRUE`. This keeps a malformed or non-oriented
-GWAS Catalog row from bypassing the identity safety guard.
+ordinary columns. If an external workflow supplies those fields, callers must
+verify `hm_code` (codes 1--13 are oriented; 14--18 are not) and explicitly
+prepare `hm_other_allele` as `other_allele`, `hm_effect_allele` as
+`effect_allele`, and the matching coordinates/statistics before compression.
+The compressor does not infer REF/ALT identity or orientation from the prefix
+alone.
 
 Native stores expose two reproducibility hashes in
 `manifest$integrity`. `payload_sha256` is deterministic for identical indexed
@@ -130,7 +127,9 @@ Each Pcodec stream is column-specific. Pcodec's own documentation warns that
 semantically different sequences should not be concatenated into one stream;
 CompreSSoR follows that rule. Pages are independently decodable and carry
 checksums; the manifest records file checksums, codec constants, identity
-constants, source columns, reference metadata, and harmonisation counts.
+constants, source columns, explicit build/panel provenance, and preparation
+metadata. The installed core records reference and chain status as not used;
+it does not generate harmonisation counts.
 
 The current measured geometry is 131,072-row identity frames, 131,072-row
 Pcodec pages, and 65,536-row value frames. The identity-frame change was tested
@@ -178,12 +177,12 @@ GWAS store. Named panels resolve from `COMPRESSOR_COMMON_VARIANTS`,
 `COMPRESSOR_HM3_VARIANTS` (or from `COMPRESSOR_VARIANT_SET_DIR` using the
 corresponding conventional filename).
 
-The default `variant_set = NULL` retains all variants. With
-`mode = "convert"`, the panel is matched to the input's existing REF/ALT
-identity and no reference table, harmonisation, or shared spine is introduced.
-With the QC path, harmonisation happens first and the same identity filter is
-then applied. The selected panel is recorded in alignment statistics; its
-bytes are external to the per-GWAS store.
+The default `variant_set = NULL` retains all variants. With the
+prepared-input path, the panel is matched to the input's existing
+build-specific REF/ALT identity; no reference table, harmonisation, liftover,
+or shared spine is introduced. Any such preparation must already have been
+completed upstream. The selected panel's name, build, and hash are recorded
+in selection provenance; its bytes are external to the per-GWAS store.
 
 ### What works today
 
@@ -311,13 +310,13 @@ whole-file scan cost for larger grids.
 
 ## Why the reference is not counted in the store size
 
-The default identity key is self-contained. The large canonical GRCh38
-reference used to make ingestion decisions is a separate reusable asset and is
-not copied into every study. This is analogous to CRAM: the decoder can use a
-known reference when required, but the compressed study payload should not
-repeat a giant shared asset. In the current standard Pcodec identity design,
-the exact REF and ALT identity needed to distinguish SNVs is carried by the
-store itself, so reading does not require the external reference.
+The default identity key is self-contained. The installed compressor does not
+use a canonical reference to make ingestion decisions, and any external
+reference or chain used by upstream preparation remains outside the store.
+That provenance belongs to the preparation workflow rather than an implicit
+CompreSSoR dependency. In the current standard Pcodec identity design, the
+exact REF and ALT identity needed to distinguish SNVs is carried by the store
+itself, so reading does not require an external reference.
 
 ## Development checks
 

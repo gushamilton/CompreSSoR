@@ -36,8 +36,10 @@ against its actual quantisation contract. Use the exact Parquet path when
 bit-for-bit preservation of every numeric input is required.
 
 The identity key is self-contained: readers do not need an rsID table, shared
-variant spine, or GRCh38 reference file. The reference is still used by the
-ingestion and harmonisation pipeline when a source GWAS needs to be aligned.
+variant spine, or reference file. The installed package accepts prepared input
+with an explicit matching build and orientation; any reference lookup,
+harmonisation, or liftover needed to prepare a source GWAS belongs to an
+external workflow and is not performed by the compressor.
 
 The old Python-backed 0.2/0.3 implementation is retained under
 `archive/python-backend/` for historical reproducibility but is not installed,

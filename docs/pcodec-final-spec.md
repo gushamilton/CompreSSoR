@@ -37,6 +37,15 @@ Two ingestion modes are part of the current API:
 Neither mode performs harmonisation or liftover. Those transformations and
 their reference/chain provenance belong to an upstream preparation workflow.
 
+The installed package does not include a position-selective dual-build
+reference backend. It does not download or silently substitute dbSNP155 (or
+another external table), resolve rsIDs, align alleles, or perform liftover.
+An upstream tidyGWAS/dbSNP-style or GWASLab preparation workflow may perform
+those operations, but must hand CompreSSoR an explicitly prepared table and
+retain its own reference version, build mapping, QC, chain, and timing
+provenance. Once written, the native store is self-contained and does not
+depend on that upstream reference.
+
 For `selection = "core_plus"`, selection is evaluated before lossy encoding
 and retains the core-panel union with inclusive windows around rows at
 `p <= pvalue_threshold` (default `1e-5`, with `region_padding = 10000`). A
@@ -52,10 +61,13 @@ intentional: compact mode is the safe validation contract, while `qc = "none"`
 is an explicitly trusted prepared-input contract. P-values are not stored in
 the native payload.
 
-The storage reference is GRCh38. A GRCh37 input therefore needs a
-GRCh37-to-GRCh38 chain during ingestion. Once written, the store does not
-need a FASTA, a shared spine, or any other external variant reference to be
-read or matched.
+The storage build is explicit. A prepared GRCh37 input may be stored as
+GRCh37, and a prepared GRCh38 input may be stored as GRCh38; `input_build` and
+`store_build` must match. GRCh37/GRCh38 conversion, liftover, reference lookup,
+and allele alignment are external preparation steps, not ingestion features of
+the installed compressor. Once written, the store does not need a FASTA, a
+shared spine, chain file, or any other external variant reference to be read
+or matched.
 
 The default Pcodec store contains only the core GWAS fields and its identity
 key. It does not store `rsid`, `p`, or `beta` per row. Extra columns belong in

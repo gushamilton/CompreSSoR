@@ -26,7 +26,10 @@ package namespace.
 
 The live package accepts only already prepared rows with explicit GRCh37 or
 GRCh38 coordinates and REF/ALT orientation. External harmonisers such as the
-GWASLab/MR-Atlas workflow should produce that handoff before compression.
+GWASLab/MR-Atlas workflow or the BluePebble tidyGWAS/dbSNP-style dual-build
+workflow should produce that handoff before compression. The installed
+package does not ship the position-selective dual-build backend proposed in
+issue #24 and does not treat dbSNP155 as a canonical or implicit reference.
 
 ## Archived observability
 
