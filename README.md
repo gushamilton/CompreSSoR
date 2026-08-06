@@ -300,9 +300,14 @@ explicit result to CompreSSoR.
 
 The former reference-backed harmonisation and liftover implementation is kept
 under [`archive/harmonisation/`](archive/harmonisation/). It is not sourced by
-the installed package and is retained only as a migration reference. An
-external adapter—such as a GWASLab/MR-Atlas preparation step—should record its
-own reference, chain, QC, and timing provenance before calling the strict core.
+the installed package and is retained only as a migration reference or a
+recovery/separate-package path. The installed `CompreSSoR` package does not
+export `harmonise_sumstats()` and does not emit harmonisation timings. The
+instrumented archived module is exercised through
+[`scripts/test-harmonisation-observability.R`](scripts/test-harmonisation-observability.R);
+an external adapter—such as a GWASLab/MR-Atlas preparation step—should record
+its own reference, chain, QC, and timing provenance before calling the strict
+core.
 Panel selection (`core`, `hm3`, and `core_plus`) remains available after the
 strict contract has been satisfied; it is filtering, not harmonisation.
 

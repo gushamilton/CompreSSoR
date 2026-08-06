@@ -18,6 +18,11 @@ compression-core package. To recover the old workflow in a development
 branch, restore the archived files to the live `R/`, `man/`, and test trees,
 restore their NAMESPACE exports and optional Bioconductor dependencies, and
 use the historical `compress_sumstats()` orchestration from the same commit.
+The installed `CompreSSoR` package does not export `harmonise_sumstats()` and
+does not emit harmonisation timings; the instrumented files here are retained
+for recovery or use in a separately restored package. Exercise their telemetry
+with `scripts/test-harmonisation-observability.R`, not through the installed
+package namespace.
 
 The live package accepts only already prepared rows with explicit GRCh37 or
 GRCh38 coordinates and REF/ALT orientation. External harmonisers such as the
