@@ -375,6 +375,7 @@ the same canonical keys to read only the required exposure/outcome values.
 
 - [Benchmark write-up and reproducible records](benchmarks/README.md)
 - [Technical guide and format details](docs/README-technical.md)
+- [Issue #18 roadmap disposition](docs/issue-18-roadmap-disposition.md)
 - [R package reference](https://gushamilton.github.io/CompreSSoR/)
 
 ## Verification
