@@ -97,11 +97,13 @@ test_that("empty canonical input is rejected consistently for both backends and 
   for (backend in c("pcodec", "parquet")) {
     if (identical(backend, "parquet")) skip_if_not_installed("arrow")
     profile <- if (identical(backend, "parquet")) "exact" else "standard"
-    output <- file.path(parent, paste0(backend, "-compact.cpr"))
-    expect_empty_input_failure(
-      empty_prepared_input(), output, row_policy = "report",
-      backend = backend, qc = "compact", profile = profile
-    )
+    for (row_policy in c("report", "error")) {
+      output <- file.path(parent, paste0(backend, "-compact-", row_policy, ".cpr"))
+      expect_empty_input_failure(
+        empty_prepared_input(), output, row_policy = row_policy,
+        backend = backend, qc = "compact", profile = profile
+      )
+    }
   }
 
   output <- file.path(parent, "pcodec-none.cpr")
