@@ -39,6 +39,11 @@ the archive policy are in [`benchmarks/`](benchmarks/README.md); older plots
 and benchmark families are under
 [`inst/benchmarks/archive/legacy-20260804/`](inst/benchmarks/archive/legacy-20260804/).
 
+The separate large-file memory evidence for a 23.7-million-row UKB-PPP NTRK3
+protein, including its exact access contract, external storage policy,
+phase-level timings, and bounded-RSS results, is recorded in the
+[`issue #27 benchmark section`](benchmarks/README.md#issue-27-bounded-memory-evidence).
+
 ![10m FinnGen keyed-format Pareto frontier](inst/benchmarks/finngen-10m-bp-20260804/format-screen/pareto-10m-bp.png)
 
 ## What is stored?
