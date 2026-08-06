@@ -83,10 +83,15 @@ if [[ -z "$rust_major" || -z "$rust_minor" ||
 fi
 cargo_major=$(printf '%s\n' "$cargo_version" | awk '{print $2}' | cut -d. -f1)
 cargo_minor=$(printf '%s\n' "$cargo_version" | awk '{print $2}' | cut -d. -f2)
-if [[ ! "$cargo_version" =~ ^cargo[[:space:]][0-9]+\.[0-9]+(\.[0-9]+)?([[:space:]]|$) ]] ||
-    [[ -z "$cargo_major" || -z "$cargo_minor" ||
-       "$cargo_major" -lt 1 ||
-       ( "$cargo_major" -eq 1 && "$cargo_minor" -lt 78 ) ]]; then
+cargo_version_re='^cargo[[:space:]]([0-9]+)\.([0-9]+)(\.[0-9]+)?([[:space:]]|[-+]|$)'
+if [[ ! "$cargo_version" =~ $cargo_version_re ]]; then
+  echo "benchmark setup failed: native Pcodec requires Cargo >= 1.78.0; Cargo is resolved independently from COMPRESSOR_ISSUE27_RUST_ROOT" >&2
+  exit 2
+fi
+cargo_major="${BASH_REMATCH[1]}"
+cargo_minor="${BASH_REMATCH[2]}"
+if [[ "$cargo_major" -lt 1 ||
+      ( "$cargo_major" -eq 1 && "$cargo_minor" -lt 78 ) ]]; then
   echo "benchmark setup failed: native Pcodec requires Cargo >= 1.78.0; Cargo is resolved independently from COMPRESSOR_ISSUE27_RUST_ROOT" >&2
   exit 2
 fi
@@ -100,5 +105,18 @@ export COMPRESSOR_ISSUE27_COMMIT="$commit"
 export COMPRESSOR_ISSUE27_ACTUAL_COMMIT="$actual_commit"
 export COMPRESSOR_ISSUE27_NATIVE_LIBRARY_COMMIT="${COMPRESSOR_ISSUE27_NATIVE_LIBRARY_COMMIT:-$commit}"
 
-/usr/bin/time -v Rscript --vanilla "$repo/scripts/benchmark_issue27_ntrk3.R" \
+time_prefix=()
+time_wrapper="none"
+if [[ -x /usr/bin/time ]]; then
+  if /usr/bin/time -v true >/dev/null 2>&1; then
+    time_prefix=(/usr/bin/time -v)
+    time_wrapper="verbose"
+  elif /usr/bin/time -p true >/dev/null 2>&1; then
+    time_prefix=(/usr/bin/time -p)
+    time_wrapper="portable"
+  fi
+fi
+echo "time_wrapper=$time_wrapper" >&2
+
+"${time_prefix[@]}" Rscript --vanilla "$repo/scripts/benchmark_issue27_ntrk3.R" \
   "$selection" "$qc" "$input" "$output" "$summary"

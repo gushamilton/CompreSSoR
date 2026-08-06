@@ -96,7 +96,7 @@ chmod +x "$split_root/bin/rustc"
 printf '%s\n' \
   '#!/bin/bash' \
   'printf "%s\\n" "$0" > "${ISSUE27_FAKE_CARGO_USED:?}"' \
-  'printf "%s\\n" "cargo 1.78.0 (issue27-test)"' \
+  'printf "%s\\n" "cargo ${ISSUE27_FAKE_CARGO_VERSION:-1.78.0-nightly} (issue27-test)"' \
   > "$split_cargo_path/cargo"
 chmod +x "$split_cargo_path/cargo"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "$fake_tools/module"
@@ -127,6 +127,7 @@ SLURM_JOB_ID=issue27-split-test \
 ISSUE27_FAKE_CARGO_USED="$split_cargo_used" \
 ISSUE27_FAKE_RUSTC_USED="$split_rustc_used" \
 ISSUE27_FAKE_RSCRIPT_USED="$split_rscript_used" \
+ISSUE27_FAKE_CARGO_VERSION=1.78.0-nightly \
 /bin/bash "$harness" > "$work/split-stdout" 2> "$work/split-stderr"
 status=$?
 set -e
@@ -140,6 +141,38 @@ if [[ -e "$split_root/bin/cargo" || ! -s "$split_cargo_used" ||
   echo "split toolchain regression did not use separate Cargo and Rust paths" >&2
   exit 1
 fi
+if grep -q "illegal option" "$work/split-stderr"; then
+  echo "portable timing wrapper used an unsupported Linux-only option" >&2
+  cat "$work/split-stderr" >&2
+  exit 1
+fi
+
+for invalid_cargo_version in 1.77.9 not-a-version; do
+  invalid_bench="$work/benchmark-invalid-cargo-${invalid_cargo_version//[^[:alnum:]]/_}"
+  set +e
+  PATH="$split_cargo_path:$fake_tools:$PATH" \
+  COMPRESSOR_ISSUE27_REPO="$repo" \
+  COMPRESSOR_ISSUE27_BENCH="$invalid_bench" \
+  COMPRESSOR_ISSUE27_SELECTION=core \
+  COMPRESSOR_ISSUE27_QC=none \
+  COMPRESSOR_ISSUE27_INPUT="$work/input.tsv" \
+  COMPRESSOR_ISSUE27_COMMIT="$split_actual_commit" \
+  COMPRESSOR_ISSUE27_ACTUAL_COMMIT="$split_actual_commit" \
+  COMPRESSOR_ISSUE27_RUST_ROOT="$split_root" \
+  SLURM_JOB_ID="issue27-invalid-${invalid_cargo_version//[^[:alnum:]]/_}" \
+  ISSUE27_FAKE_CARGO_USED="$split_cargo_used" \
+  ISSUE27_FAKE_RUSTC_USED="$split_rustc_used" \
+  ISSUE27_FAKE_RSCRIPT_USED="$split_rscript_used" \
+  ISSUE27_FAKE_CARGO_VERSION="$invalid_cargo_version" \
+  /bin/bash "$harness" > "$work/invalid-cargo-stdout" 2> "$work/invalid-cargo-stderr"
+  status=$?
+  set -e
+  if [[ "$status" -ne 2 ]]; then
+    echo "expected Cargo version $invalid_cargo_version to fail with status 2; got $status" >&2
+    cat "$work/invalid-cargo-stderr" >&2
+    exit 1
+  fi
+done
 
 summary="$work/benchmark-git/results/core-none.json"
 set +e
