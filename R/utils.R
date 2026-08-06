@@ -914,9 +914,22 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   # payload. Preserve a supplied canonical p_value for callers that explicitly
   # provided it, but do not allocate a full-length placeholder on the fast
   # prepared-input path.
-  if ("p_value" %in% names(out)) out$p_value <- numeric_fast(out$p_value)
+  p_value_parse_failures <- integer()
+  if ("p_value" %in% names(out)) {
+    p_value_raw <- out$p_value
+    p_value_numeric <- numeric_fast(p_value_raw)
+    p_value_text <- trimws(as.character(p_value_raw))
+    p_value_missing <- is.na(p_value_raw) | is.na(p_value_text) |
+      !nzchar(p_value_text) | tolower(p_value_text) %in% c(".", "na", "nan", "null")
+    p_value_parse_failures <- which(!p_value_missing & is.na(p_value_numeric))
+    out$p_value <- p_value_numeric
+  }
   attr(out, "missing_columns") <- character()
-  attr(out, "parse_failures") <- list()
+  attr(out, "parse_failures") <- if (length(p_value_parse_failures)) {
+    list(p_value = as.integer(p_value_parse_failures))
+  } else {
+    list()
+  }
   attr(out, "p_value_source_present") <- p_value_source_present
   attr(out, "p_value_source_alias") <- if (p_value_source_present) {
     "canonical_p_value"
@@ -1252,6 +1265,17 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   report$valid <- !length(invalid)
   report$internal <- NULL
   out <- data[keep, , drop = FALSE]
+  # Row-level parse provenance uses input row numbers. Re-index it after QC so
+  # a rejected malformed value cannot be misattributed to a retained row
+  # during later statistic selection.
+  parse_failures <- attr(data, "parse_failures") %||% list()
+  if (length(parse_failures)) {
+    kept_rows <- which(keep)
+    attr(out, "parse_failures") <- lapply(parse_failures, function(rows) {
+      mapped <- match(as.integer(rows), kept_rows, nomatch = 0L)
+      as.integer(mapped[mapped > 0L])
+    })
+  }
   attr(out, "structural_qc_report") <- report
   list(data = out, report = report)
 }

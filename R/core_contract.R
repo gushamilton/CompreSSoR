@@ -272,3 +272,40 @@ prepare_core_sumstats_data <- function(raw, selection = "full", variant_set = NU
     genome_build = build
   )
 }
+
+# Keep p-value validation provenance separate from the selector's fallback
+# counts. In compact mode malformed, non-finite, and out-of-range supplied
+# p-values are rejected before selection, so they cannot be silently rescued by
+# the exact-Z fallback. qc='none' intentionally records zero pre-selection
+# rejections and leaves missing/invalid p-values to the documented selector
+# fallback for trusted prepared input.
+attach_p_value_qc_provenance <- function(selection_metadata, qc,
+                                         structural_report = NULL) {
+  if (is.null(selection_metadata)) return(selection_metadata)
+  if (!((selection_metadata$tag %||% "core") %in% c("core", "core_plus") ||
+        identical(selection_metadata$method %||% "", "pvalue_regions"))) {
+    return(selection_metadata)
+  }
+  reason_names <- c("malformed_p_value", "nonfinite_p_value", "invalid_p_value")
+  raw_counts <- if (identical(qc, "compact") && !is.null(structural_report)) {
+    structural_report$rejection_counts %||% integer()
+  } else {
+    integer()
+  }
+  counts <- stats::setNames(
+    as.list(vapply(reason_names, function(name) {
+      as.integer(if (name %in% names(raw_counts)) raw_counts[[name]] else 0L)
+    }, integer(1L))),
+    reason_names
+  )
+  selection_metadata$p_value_qc_policy <- if (identical(qc, "compact")) {
+    "compact_qc_reject_before_selection"
+  } else {
+    "qc_none_bypassed_exact_z_fallback"
+  }
+  selection_metadata$p_value_qc_rejection_counts <- counts
+  selection_metadata$p_value_qc_rejected_rows <- as.integer(
+    sum(unlist(counts, use.names = FALSE))
+  )
+  selection_metadata
+}

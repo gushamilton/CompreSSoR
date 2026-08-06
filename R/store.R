@@ -97,6 +97,9 @@ write_selection_regions <- function(output, selection) {
     p_value_invalid_rows = selection$p_value_invalid_rows %||% NULL,
     p_value_unresolved_rows = selection$p_value_unresolved_rows %||% NULL,
     p_value_invalid_policy = selection$p_value_invalid_policy %||% NULL,
+    p_value_qc_policy = selection$p_value_qc_policy %||% NULL,
+    p_value_qc_rejection_counts = selection$p_value_qc_rejection_counts %||% NULL,
+    p_value_qc_rejected_rows = selection$p_value_qc_rejected_rows %||% NULL,
     regions = lapply(seq_len(nrow(regions)), function(index) {
       list(chromosome = as.character(regions$chromosome[[index]]),
            start = as.integer(regions$start[[index]]),
@@ -324,6 +327,14 @@ compress_sumstats <- function(input, output,
     build = store_build,
     input_rows = if (identical(qc, "none")) input_rows_before_identity_safety else nrow(raw),
     identity_safety = identity_safety$report %||% NULL
+  )
+  prepared$selection_metadata <- attach_p_value_qc_provenance(
+    prepared$selection_metadata, qc = qc,
+    structural_report = structural$report %||% NULL
+  )
+  prepared$selection <- attach_p_value_qc_provenance(
+    prepared$selection, qc = qc,
+    structural_report = structural$report %||% NULL
   )
   phase_timings$phases$selection <- phase_seconds(selection_started)
   preparation <- prepared$preparation

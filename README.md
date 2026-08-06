@@ -108,6 +108,15 @@ exact prepared pre-encoding Z (`beta / standard_error` when Z is absent).
 Selection never uses a lossy decoded value, and p-values are not stored in the
 native payload.
 
+The statistic policy depends deliberately on the QC mode. In the default
+`qc = "compact"` path, malformed, non-finite, or out-of-range supplied
+p-values are rejected before core-plus selection; the rejection counts are
+recorded in both structural-QC provenance and the selection manifest, so they
+are not silently rescued by Z. In the trusted `qc = "none"` path, numeric QC
+is bypassed and missing or invalid supplied p-values may use the exact
+pre-encoding-Z fallback; supplied, derived, fallback, missing, unresolved, and
+pre-selection QC counts are recorded in the manifest and region sidecar.
+
 The frozen source hashes and exact output layout are documented in
 [`docs/variant-panels.md`](docs/variant-panels.md).
 

@@ -22,6 +22,9 @@ input_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_INPUT")
 output_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_STORE")
 result_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_RESULT")
 commit <- Sys.getenv("COMPRESSOR_CORE_PLUS_COMMIT", unset = "unknown")
+native_library_commit <- Sys.getenv(
+  "COMPRESSOR_CORE_PLUS_NATIVE_LIBRARY_COMMIT", unset = "unknown"
+)
 threads <- as.integer(Sys.getenv("COMPRESSOR_CORE_PLUS_THREADS", unset = "4"))
 pvalue_threshold <- as.numeric(Sys.getenv(
   "COMPRESSOR_CORE_PLUS_PVALUE_THRESHOLD", unset = "1e-5"
@@ -33,6 +36,17 @@ region_padding <- as.integer(Sys.getenv(
 required <- c(input_path, output_path, result_path)
 if (any(!nzchar(required))) stop("input, store, and result paths are required")
 if (!file.exists(input_path)) stop("input not found: ", input_path)
+if (!grepl("^[0-9a-fA-F]{40}$", commit)) {
+  stop("benchmark setup failed: COMPRESSOR_CORE_PLUS_COMMIT must be a 40-character commit")
+}
+if (nzchar(source_root)) {
+  if (!dir.exists(file.path(source_root, "R"))) {
+    stop("benchmark setup failed: source checkout has no R directory: ", source_root)
+  }
+  if (!length(list.files(file.path(source_root, "R"), pattern = "[.]R$"))) {
+    stop("benchmark setup failed: source checkout contains no R sources: ", source_root)
+  }
+}
 if (region_padding != 10000L || pvalue_threshold != 1e-5) {
   stop("this acceptance harness is locked to p <= 1e-5 and a 10-kb window")
 }
@@ -55,8 +69,10 @@ files <- list.files(output_path, recursive = TRUE, full.names = TRUE,
 bytes <- sum(file.info(files)$size, na.rm = TRUE)
 selection <- store$manifest$selection
 result <- list(
+  status = "completed",
   benchmark = "core_plus_ntrk3_prepared",
   commit = commit,
+  native_library_commit = native_library_commit,
   source = list(
     path = normalizePath(input_path, mustWork = TRUE),
     basename = basename(input_path),

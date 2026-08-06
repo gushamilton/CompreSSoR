@@ -219,3 +219,58 @@ test_that("supplied p-value provenance is recorded in the manifest and sidecar",
   expect_equal(sidecar$p_value_supplied_rows, 2L)
   expect_equal(sidecar$p_value_derived_rows, 0L)
 })
+
+test_that("compact QC rejects malformed supplied p-values before core-plus selection", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- core_plus_test_data(c(100000L, 200000L), c(5, 5),
+                               p_value = c(NA_real_, 1))
+  input$p_value <- c("not-a-p-value", "1")
+  panel <- data.frame(variant_id = "1:200000:A:G", stringsAsFactors = FALSE)
+  path <- tempfile("core-plus-compact-p-qc-")
+  store <- compress_sumstats(
+    input, path, selection = "core_plus", variant_set = panel,
+    pvalue_threshold = 1e-5, region_padding = 10000L,
+    overwrite = TRUE, row_policy = "report"
+  )
+
+  selection <- store$manifest$selection
+  expect_equal(selection$p_value_qc_policy,
+               "compact_qc_reject_before_selection")
+  expect_equal(selection$p_value_qc_rejection_counts$malformed_p_value, 1L)
+  expect_equal(selection$p_value_qc_rejected_rows, 1L)
+  expect_equal(selection$p_value_invalid_rows, 0L)
+  expect_equal(selection$seed_snps, 0L)
+  expect_equal(store$manifest$preparation$preparation$structural_qc$rejection_counts$malformed_p_value,
+               1L)
+
+  sidecar <- jsonlite::read_json(
+    file.path(path, selection$file), simplifyVector = TRUE
+  )
+  expect_equal(sidecar$p_value_qc_policy,
+               "compact_qc_reject_before_selection")
+  expect_equal(sidecar$p_value_qc_rejection_counts$malformed_p_value, 1L)
+})
+
+test_that("qc none records the intentional exact-Z fallback policy", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- core_plus_test_data(c(100000L, 200000L), c(5, 0),
+                               p_value = c(-1, 1))
+  panel <- data.frame(variant_id = "1:200000:A:G", stringsAsFactors = FALSE)
+  path <- tempfile("core-plus-none-p-qc-")
+  store <- compress_sumstats(
+    input, path, selection = "core_plus", variant_set = panel,
+    pvalue_threshold = 1e-5, region_padding = 10000L,
+    overwrite = TRUE, qc = "none"
+  )
+
+  selection <- store$manifest$selection
+  expect_equal(selection$p_value_qc_policy,
+               "qc_none_bypassed_exact_z_fallback")
+  expect_equal(selection$p_value_qc_rejected_rows, 0L)
+  expect_equal(selection$p_value_qc_rejection_counts$invalid_p_value, 0L)
+  expect_equal(selection$p_value_source, "supplied_with_z_fallback")
+  expect_equal(selection$p_value_invalid_rows, 1L)
+  expect_equal(selection$p_value_fallback_rows, 1L)
+})
