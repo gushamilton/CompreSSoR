@@ -27,6 +27,64 @@ test_that("compact and none modes write the same trusted fixture", {
   expect_true(isTRUE(validate_compressor(none, full = TRUE)$valid))
 })
 
+test_that("mode manifests expose timing and worker contracts", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(256L)
+  paths <- lapply(c("compact", "none"), function(mode) {
+    path <- tempfile(paste0("mode-timing-", mode, "-"))
+    store <- compress_sumstats(input, path, qc = mode, threads = 4L,
+                               overwrite = TRUE)
+    phases <- store$manifest$timings$phases
+    common <- c("read", "projection", "statistic_resolution", "normalise",
+                "identity_sort", "selection", "quantisation", "exceptions",
+                "write", "encode", "commit")
+    expect_true(all(common %in% names(phases)))
+    expect_true(all(vapply(phases, function(value) {
+      is.finite(value) && value >= 0
+    }, logical(1))))
+    expect_identical(store$manifest$threads$requested, 4L)
+    expect_identical(store$manifest$threads$effective,
+                     store$manifest$writer$effective_workers)
+    expect_identical(store$manifest$writer$requested_workers, 4L)
+    if (identical(mode, "compact")) {
+      expect_true("qc" %in% names(phases))
+      expect_identical(store$manifest$qc$statistic_validation, "compact")
+    } else {
+      expect_equal(phases$statistic_validation, 0)
+      expect_true("identity_safety" %in% names(phases))
+      expect_identical(store$manifest$qc$statistic_validation, "bypassed")
+    }
+    store
+  })
+  expect_identical(paths[[1L]]$manifest$writer$effective_workers,
+                   paths[[2L]]$manifest$writer$effective_workers)
+})
+
+test_that("none bypasses numeric QC without creating unused p-values", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(4L)
+  input$p_value <- NULL
+  input$beta[1L] <- NA_real_
+  input$standard_error[2L] <- 0
+  input$effect_allele_frequency[3L] <- 2
+  fast <- CompreSSoR:::normalise_prepared_core_columns(input)
+  expect_false("p_value" %in% names(fast))
+
+  none <- compress_sumstats(input, tempfile("none-invalid-statistics-"),
+                            qc = "none", overwrite = TRUE)
+  expect_identical(none$manifest$n_rows, 4L)
+  expect_identical(none$manifest$qc$statistic_validation, "bypassed")
+  expect_equal(none$manifest$timings$phases$statistic_validation, 0)
+
+  compact <- compress_sumstats(input, tempfile("compact-invalid-statistics-"),
+                               qc = "compact", row_policy = "report",
+                               overwrite = TRUE)
+  expect_identical(compact$manifest$n_rows, 1L)
+  expect_identical(compact$manifest$qc$statistic_validation, "compact")
+})
+
 test_that("none mode filters through the numeric identity panel", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

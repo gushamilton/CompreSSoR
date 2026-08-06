@@ -284,6 +284,28 @@ test_that("native missing-EAF provenance explains flagged exception records", {
   expect_true(is.na(observed$effect_allele_frequency[2L]))
 })
 
+test_that("dense missing-EAF exceptions remain block-partitioned and bounded", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(2048L)
+  input$effect_allele_frequency <- NA_real_
+  path <- tempfile("dense-missing-eaf-")
+  store <- compress_sumstats(input, path, qc = "none", threads = 4L,
+                             overwrite = TRUE)
+  index <- CompreSSoR:::pcodec_native_read_index(store)
+  blocks <- index$exceptions$blocks
+  expect_equal(sum(vapply(blocks, function(block) block$count, integer(1L)),
+                   na.rm = TRUE), nrow(input))
+  expect_equal(store$manifest$semantic_codec$exception_rows, nrow(input))
+  expect_equal(store$manifest$eaf_observability$eaf_missing_exception_rows,
+               nrow(input))
+  expect_equal(store$manifest$eaf_observability$eaf_missing_exception_density, 1)
+  exceptions <- CompreSSoR:::pcodec_native_read_all_exceptions(store, index)
+  expect_equal(nrow(exceptions), nrow(input))
+  expect_true(all(bitwAnd(exceptions$flags, 4L) != 0L))
+  expect_true(validate_compressor(store, full = TRUE)$valid)
+})
+
 test_that("an absent EAF column uses only the documented predictor fallback", {
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")
