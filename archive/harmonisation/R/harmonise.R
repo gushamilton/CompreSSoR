@@ -42,6 +42,11 @@
 #' @param frequency_qc Optional override for `qc$frequency`.
 #' @param frequency_tolerance Optional override for `qc$frequency_tolerance`.
 #' @param max_examples Optional override for `qc$example_limit`.
+#' @param observability Optional `NULL` (summary timings attached to the
+#'   result), `FALSE`/`"off"`, a level, a callback function, or a list with
+#'   `level = "summary"` or `"events"`, `callback`, `jsonl`, and `memory`.
+#'   Event logging is opt-in and emits bounded metadata only; it never emits
+#'   GWAS values.
 #' @return A normalized data.frame with attributes `reference_hash`,
 #'   `reference_rows`, `genome_build`, `source_provenance`, and bounded audit
 #'   diagnostics.
@@ -68,17 +73,46 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
                                target_build = "GRCh38", qc = NULL,
                                liftover = NULL, strand = NULL, palindromic = NULL,
                                frequency_qc = NULL, frequency_tolerance = NULL,
-                               max_examples = NULL) {
+                               max_examples = NULL, observability = NULL) {
+  observability_state <- compressor_observability_create(
+    observability, workers = chrom_threads
+  )
+  had_observability <- exists("observability", envir = .compressor_harmonise_context,
+                              inherits = FALSE)
+  old_observability <- if (had_observability) {
+    .compressor_harmonise_context$observability
+  } else NULL
+  .compressor_harmonise_context$observability <- observability_state
+  on.exit({
+    if (!isTRUE(observability_state$finalized)) {
+      compressor_observability_finalize(observability_state, status = "error")
+    }
+    compressor_observability_close(observability_state)
+    if (had_observability) {
+      .compressor_harmonise_context$observability <- old_observability
+    } else {
+      rm("observability", envir = .compressor_harmonise_context)
+    }
+  }, add = TRUE)
   input_build <- compressor_normalize_build(input_build)
   target_build <- compressor_normalize_build(target_build)
   if (!is.null(reference) && !identical(target_build, "GRCh38")) {
     stop("reference-backed harmonisation currently targets GRCh38", call. = FALSE)
   }
+  input_phase <- compressor_observability_start_phase(
+    observability_state, "input_discovery_decompression_import"
+  )
   raw <- import_sumstats(input)
+  compressor_observability_set_rows(observability_state, input = nrow(raw))
+  compressor_observability_finish_phase(observability_state, input_phase,
+                                         rows_out = nrow(raw), rows_dropped = 0L)
   source_provenance <- attr(raw, "source_provenance")
   source_columns <- attr(raw, "source_columns")
   hm_diagnostic <- attr(raw, "gwas_catalog_hm_diagnostic")
   imported_explicit_ref_alt <- isTRUE(attr(raw, "explicit_ref_alt"))
+  structural_phase <- compressor_observability_start_phase(
+    observability_state, "structural_qc", rows_in = nrow(raw)
+  )
   structural <- apply_structural_qc(
     raw, input_build = input_build, strict = strict,
     # Harmonisation has historically failed closed for malformed statistics or
@@ -89,6 +123,9 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
     check_duplicates = is.null(reference) && isTRUE(strict)
   )
   raw <- structural$data
+  compressor_observability_finish_phase(
+    observability_state, structural_phase, rows_out = nrow(raw)
+  )
   attr(raw, "source_provenance") <- source_provenance
   attr(raw, "source_columns") <- source_columns
   attr(raw, "explicit_ref_alt") <- imported_explicit_ref_alt
@@ -130,6 +167,9 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
                                     pvalue_threshold = pvalue_threshold,
                                     region_padding = region_padding,
                                     target_build = target_build)
+  final_phase <- compressor_observability_start_phase(
+    observability_state, "final_qc_report_construction", rows_in = nrow(prepared$data)
+  )
   validate_sumstats_values(prepared$data, require_identity = isTRUE(drop_unresolved))
   out <- prepared$data
   out$.compressor_reference_index <- NULL
@@ -155,13 +195,32 @@ harmonise_sumstats <- function(input, reference = "GRCh38",
     counts = alignment_stats$counts %||% list(),
     examples = alignment_stats$examples %||% list()
   )
-  attr(out, "audit") <- list(
+  audit <- list(
     source = source_provenance,
     reference = prepared$alignment$reference_metadata,
     counts = alignment_stats$diagnostic_counts %||% alignment_stats,
     examples = alignment_stats$diagnostic_examples %||% list(),
     qc = qc_config
   )
+  compressor_observability_finish_phase(
+    observability_state, final_phase, rows_out = nrow(out)
+  )
+  output_phase <- compressor_observability_start_phase(
+    observability_state, "output_preparation", rows_in = nrow(out)
+  )
+  compressor_observability_finish_phase(
+    observability_state, output_phase, rows_out = nrow(out)
+  )
+  timings <- compressor_observability_finalize(
+    observability_state, status = "completed", output_rows = nrow(out)
+  )
+  if (!is.null(timings)) {
+    audit$timings <- timings
+    alignment_stats$timings <- timings
+    attr(out, "timings") <- timings
+  }
+  attr(out, "audit") <- audit
+  attr(out, "alignment_stats") <- alignment_stats
   if (!is.null(alignment_stats$liftover)) attr(out, "liftover_stats") <- alignment_stats$liftover
   attr(out, "compressor_identity_verified") <- explicit_ref_alt ||
     (!is.null(reference) && !identical(prepared$effective_mode, "convert"))

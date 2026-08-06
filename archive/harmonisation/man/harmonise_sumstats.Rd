@@ -18,7 +18,8 @@ harmonise_sumstats(input, reference = "GRCh38", strict = FALSE,
                    region_padding = 50000L, target_build = "GRCh38",
                    qc = NULL, liftover = NULL, strand = NULL,
                    palindromic = NULL, frequency_qc = NULL,
-                   frequency_tolerance = NULL, max_examples = NULL)
+                   frequency_tolerance = NULL, max_examples = NULL,
+                   observability = NULL)
 }
 \arguments{
   \item{input}{A data frame or delimited summary-statistics file.}
@@ -60,9 +61,17 @@ harmonise_sumstats(input, reference = "GRCh38", strict = FALSE,
   \item{frequency_tolerance}{Optional override for
     \code{qc$frequency_tolerance}.}
   \item{max_examples}{Optional override for \code{qc$example_limit}.}
+  \item{observability}{Optional observability configuration. \code{NULL}
+    attaches summary timings without emitting events; \code{FALSE} or
+    \code{"off"} disables the layer. A level, callback function, or named
+    list with \code{level = "summary"} or \code{"events"}, \code{callback},
+    \code{jsonl}, and \code{memory} is also accepted. Events contain only
+    phase names, timings, row counts, worker counts, and optional bounded RSS
+    samples; raw GWAS values are never logged.}
 }
-\value{A normalized data frame with reference, alignment, build, and
-  identity attributes.}
+\value{A normalized data frame with reference, alignment, build, identity,
+  and (unless observability is disabled) compact \code{timings} and
+  \code{audit$timings} attributes.}
 \examples{
 study <- data.frame(
   chromosome = "1", position = 100L, effect_allele = "A",
