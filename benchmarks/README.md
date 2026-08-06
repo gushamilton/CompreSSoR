@@ -82,3 +82,46 @@ provenance, selected rows, region/seed counts, output bytes, manifest phase
 timings, and elapsed time; obtain peak RSS from the Slurm `/usr/bin/time -v`
 record. This acceptance result is evidence for the core-plus workstream, not a
 replacement for the locked five-run FinnGen headline benchmark above.
+
+## Issue #27 bounded-memory evidence
+
+This is a separate, non-authoritative acceptance question for the large-file
+memory issue: does the prepared UKB-PPP NTRK3 protein complete in the native
+Pcodec path without requiring a 32-GiB process? It must not replace the locked
+FinnGen benchmark or be quoted as a general scaling law.
+
+The access contract is the read-only BluePebble archive
+`/bp1/mrcieu1/data/UKB-PPP/UKB-PPP_pGWAS_summary_statistics/Combined/NTRK3_Q16288_OID21057_v1_Neurology.tar`,
+with the externally prepared GRCh38 file
+`NTRK3_explicit_core_columns.tsv`. The archive is about 777 MiB and contains
+23 compressed chromosome members; the prepared input has 23,745,741 data rows,
+1,213,767,088 bytes, and nine canonical columns. Raw input, stores, Slurm
+logs, and `/usr/bin/time -v` records stay outside this repository.
+
+The maintained harness is
+`scripts/benchmark_issue27_ntrk3.R` plus
+`scripts/benchmark_issue27_ntrk3.sbatch`. A benchmark run is one bounded
+16-GiB, four-CPU Slurm job per selection/QC mode; the JSON summary records the
+source hash and columns, build, commit, requested/effective workers, retained
+rows, exception rows, EAF observability, manifest phase timings, output bytes,
+and validation status. The Slurm record supplies peak RSS. A native install
+requires Cargo/Rust >= 1.87.0; the job fails before reading data if that
+toolchain is unavailable rather than silently using a non-native backend.
+
+Prior external runs provide the following evidence (the commit and job IDs are
+retained here so they are not confused with a fresh exact-base rerun):
+
+| Selection | QC | Source commit | Slurm job | Wall time | MaxRSS | Stored rows | Output |
+|---|---|---|---:|---:|---:|---:|---:|
+| full | none | `abc7b88` | 18277164 | 11m49s | 11,790,820 KB (~11.2 GiB) | 21,737,357 | 80,339,943 B |
+| full | compact | `abc7b88` | 18277165 | 10m53s | 11,430,056 KB (~10.9 GiB) | 21,737,357 | 80,352,487 B |
+| core | none | `927535a` | 18277437 | 4m46s | 7,677,716 KB (~7.3 GiB) | 5,578,843 | 22,321,136 B |
+| core | compact | `927535a` | 18277438 | 6m25s | 10,261,076 KB (~9.8 GiB) | 5,578,843 | 22,333,731 B |
+
+All four prior runs completed under a 16-GiB allocation, retained complete
+EAF coverage, and passed shallow validation. The full `qc="none"` result was
+not rerun after the final numeric-QC bypass commit `927535a`; it is therefore
+supporting evidence, not final exact-base acceptance evidence. On 2026-08-06,
+an exact-`4a0ef5c` rerun was blocked before input read because the current BP
+module catalogue exposes Rust 1.78 only, while the native package requires
+Rust 1.87.0. No timing or RSS result is claimed for that blocked run.

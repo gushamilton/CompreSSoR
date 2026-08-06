@@ -39,6 +39,11 @@ the archive policy are in [`benchmarks/`](benchmarks/README.md); older plots
 and benchmark families are under
 [`inst/benchmarks/archive/legacy-20260804/`](inst/benchmarks/archive/legacy-20260804/).
 
+The separate large-file memory evidence for a 23.7-million-row UKB-PPP NTRK3
+protein, including its exact access contract, external storage policy,
+phase-level timings, and bounded-RSS results, is recorded in the
+[`issue #27 benchmark section`](benchmarks/README.md#issue-27-bounded-memory-evidence).
+
 ![10m FinnGen keyed-format Pareto frontier](inst/benchmarks/finngen-10m-bp-20260804/format-screen/pareto-10m-bp.png)
 
 ## What is stored?
@@ -134,6 +139,55 @@ brew install rust
 install.packages("remotes")
 remotes::install_github("gushamilton/CompreSSoR")
 ```
+
+### BluePebble native Pcodec setup
+
+The native backend requires Rust/Cargo **>= 1.87.0**, as pinned by
+[`src/pcodec_native/Cargo.toml`](src/pcodec_native/Cargo.toml). On BluePebble,
+run setup in an interactive or login shell so the module environment is
+available. Inspect the current catalogue on the day of the run; module names
+and project-local toolchain paths are not stable:
+
+```bash
+bash -lic 'module purge; module load languages/R/4.5.1; module spider rust 2>&1'
+```
+
+The established BP jobs load `rust/1.78.0-n5bm` for the Cargo environment and
+then prepend the project-local pinned Rust 1.87 toolchain to both executable
+and shared-library lookup. Substitute the current, verified project path; do
+not copy a stale path from an old job:
+
+```bash
+module purge
+module load languages/R/4.5.1
+module load rust/1.78.0-n5bm       # verify this is still the available module
+rust_root=/path/to/project-local/rust-1.87.0/rustc  # verify on the day
+export PATH="$rust_root/bin:$PATH"
+export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+command -v cargo
+command -v rustc
+rustc --version
+cargo --version
+```
+
+Stop if `rustc` or `cargo` reports a version below 1.87.0; there is no
+supported generic fallback backend for the native benchmark. Set isolated
+`R_LIBS` and `R_LIBS_USER` paths, then install only after the toolchain check:
+
+```bash
+export R_LIBS=/path/to/external/CompreSSoR-benchmark/Rlib
+export R_LIBS_USER="$R_LIBS"
+R CMD INSTALL --library="$R_LIBS" /path/to/CompreSSoR-checkout
+```
+
+The canonical large-file example is
+[`scripts/benchmark_issue27_ntrk3.sbatch`](scripts/benchmark_issue27_ntrk3.sbatch),
+which accepts `COMPRESSOR_ISSUE27_RUST_MODULE` and
+`COMPRESSOR_ISSUE27_RUST_ROOT`, verifies the compiler, and records the exact
+toolchain in the external Slurm log. If Cargo or native installation fails,
+do not claim a benchmark. Keep raw inputs, stores, logs, and results outside
+the synced repository.
 
 The historical Python backend is archived and is not part of the installed
 package.
