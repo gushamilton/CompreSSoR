@@ -375,6 +375,57 @@ pcodec_native_append_stream <- function(values, path, dtype,
        effective_workers = effective_workers)
 }
 
+pcodec_native_pvalue_flag_values <- function(data, threshold) {
+  threshold <- as.numeric(threshold)
+  if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) ||
+      threshold < 0 || threshold > 1) {
+    stop("p-value flag threshold must be one finite number between 0 and 1",
+         call. = FALSE)
+  }
+  n <- nrow(data)
+  z <- if ("z" %in% names(data)) suppressWarnings(as.numeric(data$z)) else {
+    rep(NA_real_, n)
+  }
+  derived <- 2 * stats::pnorm(-abs(z))
+  source_present <- attr(data, "p_value_source_present", exact = TRUE)
+  source_present <- if (is.null(source_present)) "p_value" %in% names(data) else
+    isTRUE(source_present)
+  supplied <- if (source_present && "p_value" %in% names(data)) {
+    suppressWarnings(as.numeric(data$p_value))
+  } else {
+    rep(NA_real_, n)
+  }
+  supplied_valid <- source_present & is.finite(supplied) & supplied >= 0 & supplied <= 1
+  supplied_missing <- source_present & is.na(supplied)
+  supplied_invalid <- source_present & !supplied_missing & !supplied_valid
+  derived_valid <- !supplied_valid & is.finite(derived)
+  p_value <- derived
+  p_value[supplied_valid] <- supplied[supplied_valid]
+  fallback <- source_present & !supplied_valid
+  unresolved <- !is.finite(p_value)
+  flags <- as.integer(is.finite(p_value) & p_value >= 0 & p_value <= 1 &
+                      p_value <= threshold)
+  source <- if (!source_present || !any(supplied_valid)) {
+    "derived_from_z"
+  } else if (any(fallback)) {
+    "supplied_with_z_fallback"
+  } else {
+    "supplied"
+  }
+  list(
+    values = flags,
+    source = source,
+    supplied_rows = as.integer(sum(supplied_valid)),
+    derived_rows = as.integer(sum(derived_valid)),
+    fallback_rows = as.integer(sum(fallback)),
+    missing_rows = as.integer(sum(supplied_missing)),
+    invalid_rows = as.integer(sum(supplied_invalid)),
+    unresolved_rows = as.integer(sum(unresolved)),
+    hit_rows = as.integer(sum(flags)),
+    threshold = threshold
+  )
+}
+
 pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLOCK_ROWS) {
   block_rows <- as.integer(block_rows)
   if (length(block_rows) != 1L || is.na(block_rows) || block_rows < 1L) {
@@ -583,6 +634,48 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       values$se, file.path(output, "se.pco"), "u8", block_rows,
       workers = requested_workers)
   )
+  pvalue_flag_spec <- metadata$pvalue_flag %||% list(enabled = FALSE)
+  if (!is.list(pvalue_flag_spec) || length(pvalue_flag_spec$enabled) != 1L ||
+      !is.logical(pvalue_flag_spec$enabled) || is.na(pvalue_flag_spec$enabled)) {
+    stop("native Pcodec pvalue_flag metadata is malformed", call. = FALSE)
+  }
+  pvalue_flag_domain <- NULL
+  if (isTRUE(pvalue_flag_spec$enabled)) {
+    flag_values <- pcodec_native_pvalue_flag_values(
+      ordered, pvalue_flag_spec$threshold %||% 5e-8
+    )
+    flag_stream <- pcodec_native_append_stream(
+      flag_values$values, file.path(output, "pvalue_flag.pco"), "u8", block_rows,
+      workers = requested_workers
+    )
+    pvalue_flag_domain <- list(
+      format = "aligned_binary_flag_v1",
+      name = "pvalue_flag",
+      dtype = "uint8",
+      encoding = "one_byte_zero_or_one",
+      row_alignment = "native.value_blocks",
+      rows = n,
+      file = flag_stream$file,
+      threshold = flag_values$threshold,
+      operator = pvalue_flag_spec$operator %||% "<=",
+      source = flag_values$source,
+      source_column = "p_value",
+      source_column_present = pvalue_flag_spec$source_column_present %||% NULL,
+      supplied_rows = flag_values$supplied_rows,
+      derived_rows = flag_values$derived_rows,
+      fallback_rows = flag_values$fallback_rows,
+      missing_rows = flag_values$missing_rows,
+      invalid_rows = flag_values$invalid_rows,
+      unresolved_rows = flag_values$unresolved_rows,
+      hit_rows = flag_values$hit_rows,
+      standard_default = isTRUE(pvalue_flag_spec$standard_default),
+      writer = list(
+        requested_workers = flag_stream$requested_workers,
+        effective_workers = flag_stream$effective_workers
+      ),
+      blocks = flag_stream$blocks
+    )
+  }
   exception_stream <- pcodec_native_write_exceptions(
     values$exceptions, output, block_template, workers = requested_workers
   )
@@ -678,6 +771,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     z = "z.pco", eaf = "eaf.pco", se = "se.pco",
     exceptions = "exceptions.bin", index = "native.index.json"
   )
+  domains <- list()
+  if (!is.null(pvalue_flag_domain)) {
+    files$pvalue_flag <- pvalue_flag_domain$file
+    domains$pvalue_flag <- pvalue_flag_domain
+  }
   if (!is.null(selection_file)) files$selection_regions <- selection_file
   chromosomes <- compressor_chromosome_lengths(build)
   offsets <- pcodec_native_offsets(build)
@@ -737,6 +835,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     ),
     files = files, logical_columns = c("z", "standard_error", "effect_allele_frequency"),
     derived_columns = list(beta = "z * standard_error", p_value = "2 * pnorm(-abs(z))"),
+    domains = domains,
     variant_storage = "self_contained_identity_key",
     variant_identity = list(encoding = "global_position_plus_full_ref_alt_code",
                             position_storage = "within-block delta-coded uint32",
@@ -895,6 +994,119 @@ pcodec_native_read_stream_all <- function(store, index, stream) {
     return(if (stream == "position") numeric() else integer())
   }
   unlist(parts, use.names = FALSE)
+}
+
+pcodec_native_pvalue_flag_domain <- function(store, name = "pvalue_flag") {
+  if (length(name) != 1L || is.na(name) || !nzchar(name) ||
+      !identical(name, "pvalue_flag")) {
+    stop("name must be 'pvalue_flag'", call. = FALSE)
+  }
+  domains <- store$manifest$domains %||% list()
+  domain <- domains[[name]]
+  if (is.null(domain) || !is.list(domain)) {
+    stop("this store has no p-value flag domain; write one with pvalue_flag=TRUE",
+         call. = FALSE)
+  }
+  n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  if (length(n) != 1L || is.na(n) || n < 0L) {
+    stop("native Pcodec manifest row count is invalid", call. = FALSE)
+  }
+  if (!identical(as.character(domain$format), "aligned_binary_flag_v1") ||
+      !identical(as.character(domain$dtype), "uint8") ||
+      !identical(as.character(domain$encoding), "one_byte_zero_or_one") ||
+      !identical(as.character(domain$operator), "<=")) {
+    stop("native Pcodec p-value flag domain metadata is invalid", call. = FALSE)
+  }
+  threshold <- as.numeric(domain$threshold)
+  if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) ||
+      threshold < 0 || threshold > 1) {
+    stop("native Pcodec p-value flag threshold is invalid", call. = FALSE)
+  }
+  if (as.integer(domain$rows %||% -1L) != n ||
+      !is.character(domain$file) || length(domain$file) != 1L ||
+      !nzchar(domain$file)) {
+    stop("native Pcodec p-value flag row/file metadata is invalid", call. = FALSE)
+  }
+  index <- pcodec_native_read_index(store)
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  blocks <- domain$blocks
+  if (!is.list(blocks) || length(blocks) != length(value_blocks)) {
+    stop("native Pcodec p-value flag blocks are not value-block aligned", call. = FALSE)
+  }
+  pcodec_native_validate_index_partition(blocks, n, "native p-value flag blocks")
+  if (length(blocks) && any(vapply(seq_along(blocks), function(i) {
+    as.numeric(blocks[[i]]$row_start) != as.numeric(value_blocks[[i]]$row_start) ||
+      as.numeric(blocks[[i]]$row_stop) != as.numeric(value_blocks[[i]]$row_stop) ||
+      as.numeric(blocks[[i]]$values) !=
+        as.numeric(value_blocks[[i]]$row_stop) - as.numeric(value_blocks[[i]]$row_start)
+  }, logical(1)))) {
+    stop("native Pcodec p-value flag blocks are not row-aligned", call. = FALSE)
+  }
+  if (!identical(as.character(store$manifest$files$pvalue_flag), domain$file)) {
+    stop("native Pcodec p-value flag file metadata is inconsistent", call. = FALSE)
+  }
+  if (!file.exists(file.path(store$path, domain$file))) {
+    stop("native Pcodec p-value flag payload is missing", call. = FALSE)
+  }
+  domain
+}
+
+pcodec_native_read_pvalue_flag <- function(store, name = "pvalue_flag",
+                                            threads = NULL) {
+  if (!pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  domain <- pcodec_native_pvalue_flag_domain(store, name = name)
+  blocks <- domain$blocks
+  threads <- pcodec_native_default_threads(threads = threads)
+  read_block <- function(block) {
+    location <- blocks[[block]]
+    blob <- pcodec_native_read_blob(
+      file.path(store$path, domain$file), location$offset, location$length
+    )
+    values <- pcodec_native_decompress(blob, as.integer(location$values), "u8")
+    as.integer(values)
+  }
+  flags <- if (length(blocks)) {
+    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads),
+           use.names = FALSE)
+  } else {
+    integer()
+  }
+  n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  if (length(flags) != n || any(!flags %in% c(0L, 1L))) {
+    stop("native Pcodec p-value flag payload is not a binary row-aligned stream",
+         call. = FALSE)
+  }
+  flags
+}
+
+#' Read the aligned p-value flag domain from a native Pcodec store
+#'
+#' The returned row IDs are zero-based and use the same immutable native row
+#' order accepted by `read_sumstats(..., variants = ...)`. The standard domain
+#' is written at `p <= 5e-8` by default when `compress_sumstats()` creates a
+#' native Pcodec store.
+#'
+#' @param store A native Pcodec store object or path.
+#' @param name Domain name. The current supported name is `"pvalue_flag"`.
+#' @param as Return zero-based `"row_ids"` (the default) or a full logical
+#'   vector aligned to all store rows.
+#' @param threads Number of independent flag frames to decode.
+#' @return An integer vector of zero-based row IDs, or a logical vector with
+#'   one value per store row.
+#' @export
+read_pvalue_flag <- function(store, name = "pvalue_flag",
+                              as = c("row_ids", "logical"), threads = NULL) {
+  as <- match.arg(as)
+  store <- if (inherits(store, "compressor_store")) store else
+    pcodec_open_store_cached(store)
+  if (!identical(store$manifest$backend, "pcodec")) {
+    stop("read_pvalue_flag requires a native Pcodec store", call. = FALSE)
+  }
+  flags <- pcodec_native_read_pvalue_flag(store, name = name, threads = threads)
+  if (identical(as, "logical")) return(as.logical(flags))
+  as.integer(which(flags != 0L) - 1L)
 }
 
 pcodec_native_block_matrix <- function(blocks, stream_blocks = blocks,
@@ -1438,6 +1650,9 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
     files <- unname(unlist(m$files))
     missing <- files[!file.exists(file.path(s$path, files))]
     if (length(missing)) errors <- c(errors, paste("missing", missing))
+    if (!is.null(m$domains$pvalue_flag)) {
+      pcodec_native_pvalue_flag_domain(s)
+    }
     blocks <- index$blocks
     if (length(blocks)) {
       starts <- vapply(blocks, function(block) as.integer(block$row_start), integer(1))
@@ -1453,6 +1668,14 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
                   "other_allele", "z", "standard_error",
                   "effect_allele_frequency"
                 ))
+                if (!is.null(m$domains$pvalue_flag)) {
+                  flags <- pcodec_native_read_pvalue_flag(s)
+                  expected_hits <- as.integer(m$domains$pvalue_flag$hit_rows %||% -1L)
+                  if (expected_hits >= 0L && sum(flags) != expected_hits) {
+                    stop("native Pcodec p-value flag hit count is inconsistent",
+                         call. = FALSE)
+                  }
+                }
             }
     list(valid = !length(errors), errors = errors,
          rows = as.integer(m$n_rows), profile = m$profile, full = isTRUE(full))

@@ -239,6 +239,14 @@ read_sumstats(
   store,
   columns = c("chromosome", "base_pair_location", "beta", "standard_error")
 )
+# Standard native stores also carry an aligned p <= 5e-8 flag by convention.
+instrument_rows <- read_pvalue_flag(store)
+mr <- read_sumstats(
+  store, variants = instrument_rows,
+  columns = c("chromosome", "base_pair_location", "effect_allele",
+              "other_allele", "beta", "standard_error",
+              "effect_allele_frequency")
+)
 ```
 
 The boundary importer recognises common aliases through a deterministic
@@ -322,9 +330,12 @@ record read, projection, statistic resolution, normalisation, identity sort,
 selection, quantisation, exception partitioning, payload writing, encoding,
 and commit. Compact mode records its validating structural/numeric pass as
 `qc`; the trusted none mode records `statistic_validation = 0` and its
-identity-safety filter separately. The none path does not allocate an absent
-`p_value` column or row-level QC objects; a p-value column is projected only
-when `core_plus` or another p-value-based selection needs it. Dense missing-EAF
+identity-safety filter separately. Native Pcodec stores project a p-value
+column when the standard flag is enabled so the aligned `pvalue_flag.pco`
+domain can use a finite supplied p-value authoritatively and otherwise fall
+back to Z. The flag is written at `p <= 5e-8` by convention and can be
+disabled with `pvalue_flag = FALSE`; `pvalue_flag_threshold` is separate from
+the `pvalue_threshold` selection argument. Dense missing-EAF
 rows remain sparse, block-partitioned exception records and are never repaired
 by imputing a biological EAF.
 

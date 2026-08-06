@@ -139,6 +139,13 @@ write_selection_regions <- function(output, selection) {
 #' @param pvalue_threshold Strict p-value threshold for `selection = "pvalue_regions"`
 #'   or `selection = "core_plus"`; finite supplied p-values are authoritative,
 #'   otherwise p-values are derived from canonical Z.
+#' @param pvalue_flag For native Pcodec stores, whether to write the aligned
+#'   uint8 p-value flag domain. `NULL` uses the standard native default of
+#'   `TRUE`; set `FALSE` to omit it. The flag uses finite supplied p-values
+#'   when present and otherwise the p-value derived from canonical Z.
+#' @param pvalue_flag_threshold Threshold recorded by the p-value flag domain.
+#'   The standard convention is `5e-8` with an inclusive `<=` operator. This
+#'   is separate from `pvalue_threshold`, which controls variant selection.
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #'   The default is 10,000 bp; the threshold and window are recorded in the
@@ -176,6 +183,8 @@ compress_sumstats <- function(input, output,
                               variant_set = NULL, input_build = "GRCh38",
                               backend = c("pcodec", "parquet"),
                               pvalue_threshold = 1e-5,
+                              pvalue_flag = NULL,
+                              pvalue_flag_threshold = 5e-8,
                               region_padding = 10000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
@@ -219,6 +228,22 @@ compress_sumstats <- function(input, output,
   }
   profile <- match.arg(profile)
   backend <- match.arg(backend)
+  if (length(pvalue_flag_threshold) != 1L ||
+      !is.numeric(pvalue_flag_threshold) || is.na(pvalue_flag_threshold) ||
+      !is.finite(pvalue_flag_threshold) || pvalue_flag_threshold < 0 ||
+      pvalue_flag_threshold > 1) {
+    stop("pvalue_flag_threshold must be one finite number between 0 and 1",
+         call. = FALSE)
+  }
+  if (!is.null(pvalue_flag) &&
+      (length(pvalue_flag) != 1L || !is.logical(pvalue_flag) || is.na(pvalue_flag))) {
+    stop("pvalue_flag must be TRUE, FALSE, or NULL", call. = FALSE)
+  }
+  pvalue_flag <- if (is.null(pvalue_flag)) identical(backend, "pcodec") else isTRUE(pvalue_flag)
+  if (isTRUE(pvalue_flag) && !identical(backend, "pcodec")) {
+    stop("pvalue_flag is currently supported for backend='pcodec' only",
+         call. = FALSE)
+  }
   if (identical(backend, "pcodec") && isTRUE(keep_extras)) {
     stop("backend='pcodec' currently stores only the core summary-statistics "
          , "columns; use backend='parquet' to retain extras", call. = FALSE)
@@ -242,7 +267,8 @@ compress_sumstats <- function(input, output,
     run_qc = FALSE,
     prepared_core = identical(qc, "none"),
     construct_variant_id = identical(backend, "parquet"),
-    include_p_value = selection %in% c("core_plus", "pvalue_regions")
+    include_p_value = selection %in% c("core_plus", "pvalue_regions") ||
+      isTRUE(pvalue_flag)
   )
   # Import performs the shared zero-row check before any destination or
   # staging directory is created.  This keeps empty input a deliberate public
@@ -421,6 +447,14 @@ compress_sumstats <- function(input, output,
       source_columns = attr(raw, "source_columns") %||% names(raw),
       source_columns_read = attr(raw, "source_columns_read") %||% names(raw),
       source = attr(raw, "source_provenance") %||% NULL,
+      pvalue_flag = list(
+        enabled = isTRUE(pvalue_flag),
+        threshold = as.numeric(pvalue_flag_threshold),
+        operator = "<=",
+        source = "finite_supplied_p_value_or_p_value_from_prepared_z",
+        source_column_present = isTRUE(source_provenance$p_value$column_present),
+        standard_default = TRUE
+      ),
       selection = selection,
       selection_metadata = prepared$selection_metadata,
       timings = phase_timings,

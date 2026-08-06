@@ -66,7 +66,9 @@ test_that("projected native compression preserves provenance and row policy", {
   store <- compress_sumstats(input, path, row_policy = "report", overwrite = TRUE)
   expect_identical(store$manifest$n_rows, 31L)
   expect_identical(store$manifest$source$columns_before, 13L + 18L)
-  expect_identical(store$manifest$source$columns_read, 9L)
+  # The standard native p-value flag is enabled by default and therefore
+  # projects the source p-value column to build its aligned sidecar.
+  expect_identical(store$manifest$source$columns_read, 10L)
   expect_true(store$manifest$source$projected)
   expect_true(all(c("unused_1", "unused_18") %in% store$manifest$source_columns))
   expect_false(any(grepl("^unused_", unlist(store$manifest$source_columns_read))))
