@@ -59,3 +59,25 @@ creating a new dated directory. Any new result must use the same 10m FinnGen
 source, self-contained identity key, current package commit, and five-run
 protocol. The raw source GWAS, `.cpr` stores, and Slurm logs remain external
 to the repository.
+
+## Core-plus acceptance benchmark
+
+The core-plus workstream uses a separate, non-authoritative benchmark question:
+how many rows and bytes does the current native store retain when a prepared
+UKB-PPP NTRK3 protein file is reduced to the bundled core panel plus associated
+regions? The input contract is the prepared GRCh38 file
+`UKB-PPP/.../NTRK3_explicit_core_columns.tsv` on BluePebble, with canonical
+identity, beta, standard error, and EAF columns. The selection contract is
+explicit and locked for this first test: `p <= 1e-5`, inclusive 10,000-bp
+padding on each side, core membership unioned row-wise with the regions, and
+native Pcodec `Z9/EAF8/SE6`. The p-value is derived from the exact prepared
+pre-encoding Z; the input file is not copied into the repository.
+
+Run the maintained `scripts/benchmark_core_plus_ntrk3.R` harness on a Slurm
+compute node with a four-thread native install. Keep the raw input, output
+store, and Slurm logs under the external BluePebble benchmark workspace. The
+harness writes one compact JSON summary containing source/build/commit
+provenance, selected rows, region/seed counts, output bytes, manifest phase
+timings, and elapsed time; obtain peak RSS from the Slurm `/usr/bin/time -v`
+record. This acceptance result is evidence for the core-plus workstream, not a
+replacement for the locked five-run FinnGen headline benchmark above.
