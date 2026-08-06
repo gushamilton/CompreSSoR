@@ -233,13 +233,6 @@ compress_sumstats <- function(input, output,
   if (length(keep_extras) != 1L || !is.logical(keep_extras) || is.na(keep_extras)) {
     stop("keep_extras must be TRUE or FALSE", call. = FALSE)
   }
-  transaction <- stage_store_output(output, overwrite = overwrite)
-  completed <- FALSE
-  on.exit(if (!completed && dir.exists(transaction$staging)) {
-    unlink(transaction$staging, recursive = TRUE, force = TRUE)
-  }, add = TRUE)
-  output <- transaction$staging
-
   raw <- import_sumstats_impl(
     input, input_build = input_build,
     project_columns = identical(backend, "pcodec") || !isTRUE(keep_extras),
@@ -250,6 +243,17 @@ compress_sumstats <- function(input, output,
     construct_variant_id = identical(backend, "parquet"),
     include_p_value = selection %in% c("core_plus", "pvalue_regions")
   )
+  # Import performs the shared zero-row check before any destination or
+  # staging directory is created.  This keeps empty input a deliberate public
+  # diagnostic rather than a write-path failure, and avoids creating an
+  # otherwise unused parent directory for an invalid request.
+  transaction <- stage_store_output(output, overwrite = overwrite)
+  completed <- FALSE
+  on.exit(if (!completed && dir.exists(transaction$staging)) {
+    unlink(transaction$staging, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+  output <- transaction$staging
+
   source_columns <- attr(raw, "source_columns")
   source_columns_read <- attr(raw, "source_columns_read")
   source_provenance <- attr(raw, "source_provenance")
