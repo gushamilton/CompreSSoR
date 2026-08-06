@@ -41,7 +41,8 @@ import_sumstats_impl <- function(input, strict = FALSE,
                                  run_qc = TRUE,
                                  prepared_core = FALSE,
                                  construct_variant_id = TRUE,
-                                 qc_detail = c("full", "compact")) {
+                                 qc_detail = c("full", "compact"),
+                                 include_p_value = FALSE) {
   if (length(strict) != 1L || !is.logical(strict) || is.na(strict)) {
     stop("strict must be TRUE or FALSE", call. = FALSE)
   }
@@ -54,7 +55,8 @@ import_sumstats_impl <- function(input, strict = FALSE,
     parse_policy = if (identical(row_policy, "error")) "error" else "report",
     project_columns = project_columns,
     core_only = core_only,
-    allow_p_to_se = allow_p_to_se
+    allow_p_to_se = allow_p_to_se,
+    include_p_value = include_p_value
   )
   read_seconds <- phase_seconds(read_started)
   if (!nrow(raw)) {
@@ -100,6 +102,11 @@ import_sumstats_impl <- function(input, strict = FALSE,
   normalise_seconds <- phase_seconds(normalise_started)
   provenance$resolution <- attr(out, "resolution_provenance") %||%
     sumstats_resolution_contract(allow_p_to_se = allow_p_to_se)
+  provenance$p_value <- list(
+    column_present = isTRUE(attr(out, "p_value_source_present")),
+    source_alias = attr(out, "p_value_source_alias") %||% "absent",
+    selection_policy = "finite_supplied_authoritative_else_pre_encoding_z_fallback"
+  )
   provenance$eaf <- eaf_coverage_metadata(out$effect_allele_frequency)
   qc_report <- NULL
   qc_seconds <- NULL

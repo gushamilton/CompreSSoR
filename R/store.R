@@ -83,6 +83,23 @@ write_selection_regions <- function(output, selection) {
     method = selection$method %||% "pvalue_regions",
     pvalue_threshold = selection$pvalue_threshold,
     padding_bp = selection$padding_bp,
+    window_bp_each_side = selection$window_bp_each_side %||% selection$padding_bp,
+    window_boundary = selection$window_boundary %||% "inclusive",
+    threshold_operator = selection$threshold_operator %||% "<=",
+    union = selection$union %||% NULL,
+    p_value_source = selection$p_value_source %||% NULL,
+    p_value_column_present = selection$p_value_column_present %||% NULL,
+    p_value_source_alias = selection$p_value_source_alias %||% NULL,
+    p_value_supplied_rows = selection$p_value_supplied_rows %||% NULL,
+    p_value_derived_rows = selection$p_value_derived_rows %||% NULL,
+    p_value_fallback_rows = selection$p_value_fallback_rows %||% NULL,
+    p_value_missing_rows = selection$p_value_missing_rows %||% NULL,
+    p_value_invalid_rows = selection$p_value_invalid_rows %||% NULL,
+    p_value_unresolved_rows = selection$p_value_unresolved_rows %||% NULL,
+    p_value_invalid_policy = selection$p_value_invalid_policy %||% NULL,
+    p_value_qc_policy = selection$p_value_qc_policy %||% NULL,
+    p_value_qc_rejection_counts = selection$p_value_qc_rejection_counts %||% NULL,
+    p_value_qc_rejected_rows = selection$p_value_qc_rejected_rows %||% NULL,
     regions = lapply(seq_len(nrow(regions)), function(index) {
       list(chromosome = as.character(regions$chromosome[[index]]),
            start = as.integer(regions$start[[index]]),
@@ -120,9 +137,12 @@ write_selection_regions <- function(output, selection) {
 #'   identity safety.
 #' @param input_build Input build, explicitly GRCh37/hg19 or GRCh38/hg38.
 #' @param pvalue_threshold Strict p-value threshold for `selection = "pvalue_regions"`
-#'   or `selection = "core_plus"`; p-values are derived from canonical Z.
+#'   or `selection = "core_plus"`; finite supplied p-values are authoritative,
+#'   otherwise p-values are derived from canonical Z.
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
+#'   The default is 10,000 bp; the threshold and window are recorded in the
+#'   manifest and larger windows remain available by setting this explicitly.
 #' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
@@ -156,7 +176,7 @@ compress_sumstats <- function(input, output,
                               variant_set = NULL, input_build = "GRCh38",
                               backend = c("pcodec", "parquet"),
                               pvalue_threshold = 1e-5,
-                              region_padding = 50000L,
+                              region_padding = 10000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
                               threads = NULL,
@@ -227,7 +247,8 @@ compress_sumstats <- function(input, output,
     allow_p_to_se = FALSE,
     run_qc = FALSE,
     prepared_core = identical(qc, "none"),
-    construct_variant_id = identical(backend, "parquet")
+    construct_variant_id = identical(backend, "parquet"),
+    include_p_value = selection %in% c("core_plus", "pvalue_regions")
   )
   source_columns <- attr(raw, "source_columns")
   source_columns_read <- attr(raw, "source_columns_read")
@@ -306,6 +327,14 @@ compress_sumstats <- function(input, output,
     build = store_build,
     input_rows = if (identical(qc, "none")) input_rows_before_identity_safety else nrow(raw),
     identity_safety = identity_safety$report %||% NULL
+  )
+  prepared$selection_metadata <- attach_p_value_qc_provenance(
+    prepared$selection_metadata, qc = qc,
+    structural_report = structural$report %||% NULL
+  )
+  prepared$selection <- attach_p_value_qc_provenance(
+    prepared$selection, qc = qc,
+    structural_report = structural$report %||% NULL
   )
   phase_timings$phases$selection <- phase_seconds(selection_started)
   preparation <- prepared$preparation

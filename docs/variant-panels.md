@@ -130,9 +130,24 @@ and compact `metadata`. The API layer can use this result without depending on
 the writer implementation.
 
 Core-plus is the union of the selected core panel and windows around significant
-variants. Significance is evaluated from the exact, post-harmonisation,
-pre-encoding Z statistic using the strict two-sided rule
-`2 * pnorm(-abs(z)) < pvalue_threshold`. It is never evaluated from a decoded
-lossy store value. The selection metadata records the source, derivation,
-operator, threshold, and `encoding = "not_encoded"`; the same information is
-carried into the store manifest.
+variants. The first public default is a 10,000 bp window on each side and a
+two-sided threshold of `p <= 1e-5`; both are explicit arguments, so a different
+window or threshold must be requested rather than inferred. Window endpoints
+are inclusive. Significance is evaluated from the exact, post-harmonisation,
+pre-encoding statistic. A finite supplied p-value is authoritative and is
+otherwise resolved as `2 * pnorm(-abs(z)) <= pvalue_threshold`. It is never
+evaluated from a decoded lossy store value. When beta and standard error are
+supplied, Z is derived as `beta / standard_error`; a supplied Z is checked
+against that value. Missing or invalid supplied p-values are counted and fall
+back to the exact prepared Z; compact QC rejects invalid rows before selection
+in the normal path. The strict compression core requires beta and standard
+error, so a Z-only table must be resolved upstream. Missing or non-finite Z
+values cannot seed a region when fallback is required. Core membership is a
+row-wise logical union with the region mask; compact QC handles canonical
+duplicates before selection, and the trusted `qc = "none"` path retains native
+duplicate safety at write time.
+
+The selection metadata records the p-value source, derivation, inclusive
+operator, threshold, per-side window, union rule, and
+`encoding = "not_encoded"`; the same information is carried into the store
+manifest and the region sidecar.

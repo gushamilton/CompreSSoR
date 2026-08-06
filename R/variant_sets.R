@@ -718,7 +718,7 @@ merge_pvalue_regions <- function(seeds) {
 }
 
 pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
-                                     region_padding = 50000L) {
+                                     region_padding = 10000L) {
   validate_pvalue_region_arguments(pvalue_threshold, region_padding)
   if (!"z" %in% names(data)) {
     stop("p-value region selection needs the prepared pre-encoding z statistic",
@@ -728,12 +728,63 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
   chromosomes <- as.character(data$chromosome)
   positions <- as.numeric(data$base_pair_location)
   # This is deliberately evaluated on the prepared in-memory statistic. It
-  # runs before any bounded semantic encoding and is never reconstructed from
-  # a lossy stored Z value.
-  p_value <- 2 * stats::pnorm(-abs(as.numeric(data$z)))
+  # runs before any bounded semantic encoding. A valid supplied p-value is
+  # authoritative because it may represent a score-test, mixed-model,
+  # meta-analysis, or corrected p-value that is not the Wald p-value implied
+  # by beta/SE. Missing or invalid supplied values are never treated as valid;
+  # they are explicitly counted and fall back to the exact prepared Z.
+  z <- as.numeric(data$z)
+  derived_p_value <- 2 * stats::pnorm(-abs(z))
+  source_present_attr <- attr(data, "p_value_source_present")
+  p_value_source_present <- if (is.null(source_present_attr)) {
+    "p_value" %in% names(data)
+  } else {
+    isTRUE(source_present_attr)
+  }
+  p_value <- rep(NA_real_, n)
+  supplied_p_value <- rep(NA_real_, n)
+  if (p_value_source_present && "p_value" %in% names(data)) {
+    supplied_p_value <- suppressWarnings(as.numeric(data$p_value))
+  }
+  parse_failures <- attr(data, "parse_failures") %||% list()
+  parse_invalid <- seq_len(n) %in% as.integer(parse_failures$p_value %||% integer())
+  supplied_missing <- p_value_source_present & !parse_invalid & is.na(supplied_p_value)
+  supplied_invalid <- p_value_source_present & (
+    parse_invalid | (!is.na(supplied_p_value) &
+      (!is.finite(supplied_p_value) | supplied_p_value < 0 | supplied_p_value > 1))
+  )
+  supplied_valid <- p_value_source_present & !supplied_missing &
+    !supplied_invalid & is.finite(supplied_p_value) &
+    supplied_p_value >= 0 & supplied_p_value <= 1
+  p_value[supplied_valid] <- supplied_p_value[supplied_valid]
+  derived_valid <- !supplied_valid & is.finite(z) & is.finite(derived_p_value)
+  p_value[derived_valid] <- derived_p_value[derived_valid]
+  p_value_fallback <- p_value_source_present & !supplied_valid
+  p_value_unresolved <- !is.finite(p_value)
+  source_mode <- if (!p_value_source_present || !any(supplied_valid)) {
+    "derived_from_z"
+  } else if (any(p_value_fallback)) {
+    "supplied_with_z_fallback"
+  } else {
+    "supplied"
+  }
+  threshold_statistic <- switch(
+    source_mode,
+    supplied = "supplied_p_value",
+    supplied_with_z_fallback = "supplied_p_value_or_p_value_from_prepared_z",
+    "p_value_from_prepared_z"
+  )
+  threshold_derivation <- switch(
+    source_mode,
+    supplied = "supplied_finite_p_value",
+    supplied_with_z_fallback =
+      "supplied_finite_p_value; fallback 2 * pnorm(-abs(z))",
+    "2 * pnorm(-abs(z))"
+  )
   valid_coordinate <- !is.na(chromosomes) & nzchar(chromosomes) &
     is.finite(positions) & positions >= 1
-  seed <- valid_coordinate & is.finite(p_value) & p_value < pvalue_threshold
+  seed <- valid_coordinate & is.finite(p_value) & p_value >= 0 &
+    p_value <= pvalue_threshold
   seeds <- data.frame(
     chromosome = chromosomes[seed],
     start = as.integer(pmax(1, positions[seed] -
@@ -758,20 +809,41 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
   metadata <- list(
     tag = "core",
     method = "pvalue_regions",
-    p_value_source = "derived_from_z",
-    threshold_source = "pre_encoding_prepared",
-    threshold_statistic = "p_value_from_prepared_z",
-    threshold_operator = "<",
+    p_value_source = source_mode,
+    p_value_column_present = isTRUE(p_value_source_present),
+    p_value_source_alias = attr(data, "p_value_source_alias") %||% "unknown",
+    p_value_supplied_rows = as.integer(sum(supplied_valid)),
+    p_value_derived_rows = as.integer(sum(derived_valid)),
+    p_value_fallback_rows = as.integer(sum(p_value_fallback)),
+    p_value_missing_rows = as.integer(sum(supplied_missing)),
+    p_value_invalid_rows = as.integer(sum(supplied_invalid)),
+    p_value_unresolved_rows = as.integer(sum(p_value_unresolved)),
+    p_value_invalid_policy =
+      "fallback_to_pre_encoding_z_and_record; compact_qc_rejects_invalid_rows",
+    threshold_source = if (identical(source_mode, "derived_from_z")) {
+      "pre_encoding_prepared"
+    } else {
+      "supplied_input_or_pre_encoding_fallback"
+    },
+    threshold_statistic = threshold_statistic,
+    threshold_operator = "<=",
     threshold_semantics = list(
-      source = "pre_encoding_prepared",
-      statistic = "p_value_from_prepared_z",
-      derivation = "2 * pnorm(-abs(z))",
-      operator = "<",
+      source = if (identical(source_mode, "derived_from_z")) {
+        "pre_encoding_prepared"
+      } else {
+        "supplied_input_or_pre_encoding_fallback"
+      },
+      statistic = threshold_statistic,
+      derivation = threshold_derivation,
+      operator = "<=",
       value = as.numeric(pvalue_threshold),
       encoding = "not_encoded"
     ),
     pvalue_threshold = as.numeric(pvalue_threshold),
     padding_bp = as.integer(region_padding),
+    window_bp_each_side = as.integer(region_padding),
+    window_boundary = "inclusive",
+    union = "pvalue_regions_only",
     seed_snps = as.integer(sum(seed)),
     regions = as.integer(nrow(regions)),
     input_rows = as.integer(n),
@@ -871,7 +943,7 @@ select_hm3_variants <- function(data, variant_set = "hm3", build = "GRCh38") {
 
 select_core_plus_variants <- function(data, variant_set = "core",
                                       pvalue_threshold = 1e-5,
-                                      region_padding = 50000L,
+                                      region_padding = 10000L,
                                       build = "GRCh38") {
   panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
   panel_keep <- variant_set_membership(data, panel, build = build)
@@ -891,6 +963,7 @@ select_core_plus_variants <- function(data, variant_set = "core",
   metadata$selection <- "core_plus"
   metadata$tag <- "core_plus"
   metadata$method <- "panel_union_pvalue_regions"
+  metadata$union <- "core_or_pvalue_regions"
   metadata$core_variant_rows <- as.integer(sum(panel_keep))
   metadata$panel_name <- panel_name
   metadata$panel_hash <- panel_metadata$sha256 %||% NA_character_
@@ -908,7 +981,7 @@ select_core_plus_variants <- function(data, variant_set = "core",
 }
 
 select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
-                                  region_padding = 50000L) {
+                                  region_padding = 10000L) {
   regions <- pvalue_region_selection(data, pvalue_threshold = pvalue_threshold,
                                      region_padding = region_padding)
   if (!regions$metadata$kept_rows) {
@@ -916,6 +989,7 @@ select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
          call. = FALSE)
   }
   regions$metadata$selection <- "pvalue_regions"
+  regions$metadata$union <- "pvalue_regions_only"
   regions$metadata$regions_table <- regions$regions
   list(
     data = data[regions$keep, , drop = FALSE],
@@ -928,7 +1002,7 @@ select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
 
 select_variant_rows <- function(data, selection = c("full", "core", "hm3", "core_plus", "pvalue_regions"),
                                 variant_set = NULL, pvalue_threshold = 1e-5,
-                                region_padding = 50000L, build = "GRCh38") {
+                                region_padding = 10000L, build = "GRCh38") {
   build <- compressor_normalize_build(build)
   selection <- match.arg(selection)
   switch(selection,

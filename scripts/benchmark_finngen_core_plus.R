@@ -57,7 +57,7 @@ result_root <- Sys.getenv(
 repeats <- as.integer(Sys.getenv("COMPRESSOR_FINNGEN_RUNS", unset = "3"))
 chrom_threads <- as.integer(Sys.getenv("COMPRESSOR_FINNGEN_CHROM_THREADS", unset = "4"))
 pvalue_threshold <- as.numeric(Sys.getenv("COMPRESSOR_FINNGEN_PVALUE_THRESHOLD", unset = "1e-5"))
-region_padding <- as.integer(Sys.getenv("COMPRESSOR_FINNGEN_REGION_PADDING", unset = "50000"))
+region_padding <- as.integer(Sys.getenv("COMPRESSOR_FINNGEN_REGION_PADDING", unset = "10000"))
 if (repeats < 1L) stop("repeats must be positive")
 
 dir.create(bench_root, recursive = TRUE, showWarnings = FALSE)

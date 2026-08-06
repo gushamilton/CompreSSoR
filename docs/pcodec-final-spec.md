@@ -37,6 +37,21 @@ Two ingestion modes are part of the current API:
 Neither mode performs harmonisation or liftover. Those transformations and
 their reference/chain provenance belong to an upstream preparation workflow.
 
+For `selection = "core_plus"`, selection is evaluated before lossy encoding
+and retains the core-panel union with inclusive windows around rows at
+`p <= pvalue_threshold` (default `1e-5`, with `region_padding = 10000`). A
+finite supplied p-value is authoritative, including values from score tests,
+mixed models, meta-analysis, or corrected analyses that need not equal a
+Wald p-value from beta/SE. When p is absent, the selector derives a two-sided
+p-value from the exact prepared Z. A supplied p that is missing or invalid is
+never accepted as valid: in compact QC it is rejected before selection and
+the malformed/non-finite/out-of-range counts are retained in structural and
+selection provenance; in `qc = "none"`, the trusted fast path may fall back
+to exact prepared Z and records the fallback and unresolved counts. This is
+intentional: compact mode is the safe validation contract, while `qc = "none"`
+is an explicitly trusted prepared-input contract. P-values are not stored in
+the native payload.
+
 The storage reference is GRCh38. A GRCh37 input therefore needs a
 GRCh37-to-GRCh38 chain during ingestion. Once written, the store does not
 need a FASTA, a shared spine, or any other external variant reference to be

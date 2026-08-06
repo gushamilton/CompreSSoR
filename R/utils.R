@@ -60,7 +60,7 @@ sumstats_resolution_matrix <- function() {
       "explicit standard_error alias",
       "explicit z alias checked against beta/standard_error, otherwise derived",
       "positive OR alias resolved to log(OR) when beta is absent",
-      "input aid only; never stored"
+      "finite supplied p-value authoritative for core-plus; otherwise derived; never stored"
     ),
     strict_fallback = c(
       "positive OR -> log(OR) only at the boundary when beta is absent",
@@ -81,7 +81,7 @@ sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
     standard_error = "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
     z = "explicit_z_checked_against_beta_over_standard_error_or_derived",
     odds_ratio = "positive_OR_to_log_OR_only_when_beta_is_absent",
-    p_value = "input_aid_only;_never_stored",
+    p_value = "finite_supplied_authoritative_for_core_plus_else_derived_from_z;_never_stored",
     p_to_se = list(
       enabled = isTRUE(allow_p_to_se),
       method = if (isTRUE(allow_p_to_se))
@@ -93,7 +93,8 @@ sumstats_resolution_contract <- function(allow_p_to_se = FALSE,
 }
 
 sumstats_projection_aliases <- function(core_only = FALSE,
-                                        allow_p_to_se = FALSE) {
+                                        allow_p_to_se = FALSE,
+                                        include_p_value = FALSE) {
   alias_map <- sumstats_column_alias_map()
   if (isTRUE(core_only)) {
     alias_map <- alias_map[c(
@@ -102,8 +103,9 @@ sumstats_projection_aliases <- function(core_only = FALSE,
       "standard_error", "effect_allele_frequency", "z", "odds_ratio"
     )]
   }
-  if (isTRUE(allow_p_to_se) && isTRUE(core_only)) {
+  if (isTRUE(core_only) && (isTRUE(allow_p_to_se) || isTRUE(include_p_value))) {
     alias_map$p_value <- sumstats_column_alias_map()$p_value
+    alias_map$minus_log10_p <- sumstats_column_alias_map()$minus_log10_p
   }
   unique(c(
     if (isTRUE(core_only)) character() else
@@ -113,11 +115,13 @@ sumstats_projection_aliases <- function(core_only = FALSE,
 }
 
 sumstats_projection_indices <- function(source_columns, core_only = FALSE,
-                                        allow_p_to_se = FALSE) {
+                                        allow_p_to_se = FALSE,
+                                        include_p_value = FALSE) {
   source_columns <- as.character(source_columns %||% character())
   indices <- which(alias_key(source_columns) %in%
                      alias_key(sumstats_projection_aliases(
-                       core_only = core_only, allow_p_to_se = allow_p_to_se
+                       core_only = core_only, allow_p_to_se = allow_p_to_se,
+                       include_p_value = include_p_value
                      )))
   # Retain one source field when no recognized names exist. This preserves the
   # row count so the normal schema validator can issue its precise missing-
@@ -561,7 +565,8 @@ looks_like_vcf <- function(input) {
 
 read_sumstats_input <- function(input, parse_policy = c("error", "report"),
                                 project_columns = FALSE, core_only = FALSE,
-                                allow_p_to_se = FALSE) {
+                                allow_p_to_se = FALSE,
+                                include_p_value = FALSE) {
   parse_policy <- match.arg(parse_policy)
   if (length(project_columns) != 1L || !is.logical(project_columns) || is.na(project_columns) ||
       length(core_only) != 1L || !is.logical(core_only) || is.na(core_only)) {
@@ -576,7 +581,8 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
     source_columns <- names(data)
     selected <- if (isTRUE(project_columns)) {
       sumstats_projection_indices(source_columns, core_only = core_only,
-                                  allow_p_to_se = allow_p_to_se)
+                                  allow_p_to_se = allow_p_to_se,
+                                  include_p_value = include_p_value)
     } else {
       seq_along(source_columns)
     }
@@ -610,7 +616,8 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
   source_columns <- names(header)
   selected <- if (isTRUE(project_columns)) {
     sumstats_projection_indices(source_columns, core_only = core_only,
-                                allow_p_to_se = allow_p_to_se)
+                                allow_p_to_se = allow_p_to_se,
+                                include_p_value = include_p_value)
   } else {
     seq_along(source_columns)
   }
@@ -670,6 +677,15 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
                              c("rsid", "rsids", "rsID", "RSID", "rs_id", "RS_ID", "dbsnp"))
   alias_map <- sumstats_column_alias_map()
   for (target in names(alias_map)) data <- rename_first_alias(data, target, alias_map[[target]])
+  p_value_source_present <- "p_value" %in% names(data) ||
+    "minus_log10_p" %in% names(data)
+  p_value_source_alias <- if ("p_value" %in% names(data)) {
+    "p_value_alias"
+  } else if ("minus_log10_p" %in% names(data)) {
+    "minus_log10_p_alias"
+  } else {
+    "absent"
+  }
   beta_source_present <- "beta" %in% names(data)
   standard_error_source_present <- "standard_error" %in% names(data)
   z_source_present <- "z" %in% names(data)
@@ -826,6 +842,8 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   }
   attr(data, "parse_failures") <- parse_failures
   attr(data, "missing_columns") <- missing
+  attr(data, "p_value_source_present") <- p_value_source_present
+  attr(data, "p_value_source_alias") <- p_value_source_alias
   attr(data, "resolution_provenance") <- sumstats_resolution_contract(
     allow_p_to_se = allow_p_to_se, p_to_se_rows = p_to_se_rows
   )
@@ -848,6 +866,11 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   } else {
     "derived_from_beta_over_standard_error"
   }
+  attr(data, "resolution_provenance")$p_value_source <- if (p_value_source_present) {
+    "supplied_p_value_alias_or_minus_log10_p"
+  } else {
+    "absent;_derived_from_z_for_core_plus_selection"
+  }
   data
 }
 
@@ -865,6 +888,7 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
          paste(missing, collapse = ", "), call. = FALSE)
   }
   out <- data
+  p_value_source_present <- "p_value" %in% names(out)
   out$chromosome <- normalise_chromosome(out$chromosome)
   out$base_pair_location <- suppressWarnings(as.numeric(as.character(out$base_pair_location)))
   for (field in c("reference_allele", "alternate_allele", "effect_allele", "other_allele")) {
@@ -890,9 +914,28 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   # payload. Preserve a supplied canonical p_value for callers that explicitly
   # provided it, but do not allocate a full-length placeholder on the fast
   # prepared-input path.
-  if ("p_value" %in% names(out)) out$p_value <- numeric_fast(out$p_value)
+  p_value_parse_failures <- integer()
+  if ("p_value" %in% names(out)) {
+    p_value_raw <- out$p_value
+    p_value_numeric <- numeric_fast(p_value_raw)
+    p_value_text <- trimws(as.character(p_value_raw))
+    p_value_missing <- is.na(p_value_raw) | is.na(p_value_text) |
+      !nzchar(p_value_text) | tolower(p_value_text) %in% c(".", "na", "nan", "null")
+    p_value_parse_failures <- which(!p_value_missing & is.na(p_value_numeric))
+    out$p_value <- p_value_numeric
+  }
   attr(out, "missing_columns") <- character()
-  attr(out, "parse_failures") <- list()
+  attr(out, "parse_failures") <- if (length(p_value_parse_failures)) {
+    list(p_value = as.integer(p_value_parse_failures))
+  } else {
+    list()
+  }
+  attr(out, "p_value_source_present") <- p_value_source_present
+  attr(out, "p_value_source_alias") <- if (p_value_source_present) {
+    "canonical_p_value"
+  } else {
+    "absent"
+  }
   attr(out, "z_supplied") <- z_supplied
   attr(out, "resolution_provenance") <- sumstats_resolution_contract(allow_p_to_se = FALSE)
   attr(out, "resolution_provenance")$beta_route <- "explicit_beta_canonical"
@@ -901,6 +944,11 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
     "derived_from_beta_over_standard_error"
   } else {
     "supplied_canonical"
+  }
+  attr(out, "resolution_provenance")$p_value_source <- if (p_value_source_present) {
+    "supplied_canonical_p_value"
+  } else {
+    "absent;_derived_from_z_for_core_plus_selection"
   }
   attr(out, "input_build") <- compressor_normalize_build(input_build)
   out
@@ -1217,6 +1265,17 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   report$valid <- !length(invalid)
   report$internal <- NULL
   out <- data[keep, , drop = FALSE]
+  # Row-level parse provenance uses input row numbers. Re-index it after QC so
+  # a rejected malformed value cannot be misattributed to a retained row
+  # during later statistic selection.
+  parse_failures <- attr(data, "parse_failures") %||% list()
+  if (length(parse_failures)) {
+    kept_rows <- which(keep)
+    attr(out, "parse_failures") <- lapply(parse_failures, function(rows) {
+      mapped <- match(as.integer(rows), kept_rows, nomatch = 0L)
+      as.integer(mapped[mapped > 0L])
+    })
+  }
   attr(out, "structural_qc_report") <- report
   list(data = out, report = report)
 }
