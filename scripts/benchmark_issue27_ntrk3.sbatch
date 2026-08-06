@@ -17,12 +17,22 @@ commit="${COMPRESSOR_ISSUE27_COMMIT:?set COMPRESSOR_ISSUE27_COMMIT}"
 rlib="$bench/Rlib-${commit:0:7}"
 output="$bench/stores/${selection}-${qc}.cpr"
 summary="$bench/results/${selection}-${qc}.json"
+rust_root="${COMPRESSOR_ISSUE27_RUST_ROOT:-}"
 
 mkdir -p "$bench/logs" "$bench/stores" "$bench/results" "$rlib"
 module purge
 module load languages/R/4.5.1
 if [[ -n "${COMPRESSOR_ISSUE27_RUST_MODULE:-}" ]]; then
   module load "$COMPRESSOR_ISSUE27_RUST_MODULE"
+fi
+if [[ -n "$rust_root" ]]; then
+  if [[ ! -x "$rust_root/bin/rustc" || ! -x "$rust_root/bin/cargo" ||
+        ! -d "$rust_root/lib" ]]; then
+    echo "benchmark setup failed: COMPRESSOR_ISSUE27_RUST_ROOT must contain bin/rustc, bin/cargo, and lib" >&2
+    exit 2
+  fi
+  export PATH="$rust_root/bin:$PATH"
+  export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
