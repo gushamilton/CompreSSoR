@@ -7,6 +7,17 @@
 suppressPackageStartupMessages(library(CompreSSoR))
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+source_root <- Sys.getenv("COMPRESSOR_CORE_PLUS_SOURCE_ROOT", unset = "")
+if (nzchar(source_root)) {
+  source_env <- new.env(parent = asNamespace("CompreSSoR"))
+  source_files <- list.files(file.path(source_root, "R"), pattern = "[.]R$",
+                             full.names = TRUE)
+  for (source_file in sort(source_files)) sys.source(source_file, source_env)
+  compress_sumstats <- source_env$compress_sumstats
+} else {
+  compress_sumstats <- CompreSSoR::compress_sumstats
+}
+
 input_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_INPUT")
 output_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_STORE")
 result_path <- Sys.getenv("COMPRESSOR_CORE_PLUS_RESULT")
