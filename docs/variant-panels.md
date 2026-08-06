@@ -133,11 +133,13 @@ Core-plus is the union of the selected core panel and windows around significant
 variants. The first public default is a 10,000 bp window on each side and a
 two-sided threshold of `p <= 1e-5`; both are explicit arguments, so a different
 window or threshold must be requested rather than inferred. Window endpoints
-are inclusive. Significance is evaluated from the exact, post-harmonisation,
-pre-encoding statistic. A finite supplied p-value is authoritative and is
-otherwise resolved as `2 * pnorm(-abs(z)) <= pvalue_threshold`. It is never
-evaluated from a decoded lossy store value. When beta and standard error are
-supplied, Z is derived as `beta / standard_error`; a supplied Z is checked
+are inclusive. Significance is evaluated from the exact, pre-encoding
+statistic in the prepared input. Any harmonisation, liftover, or
+reference-based filtering must have been completed upstream; the compressor
+does not perform those operations. A finite supplied p-value is authoritative
+and is otherwise resolved as `2 * pnorm(-abs(z)) <= pvalue_threshold`. It is
+never evaluated from a decoded lossy store value. When beta and standard error
+are supplied, Z is derived as `beta / standard_error`; a supplied Z is checked
 against that value. Missing or invalid supplied p-values are counted and fall
 back to the exact prepared Z; compact QC rejects invalid rows before selection
 in the normal path. The strict compression core requires beta and standard
@@ -150,4 +152,6 @@ duplicate safety at write time.
 The selection metadata records the p-value source, derivation, inclusive
 operator, threshold, per-side window, union rule, and
 `encoding = "not_encoded"`; the same information is carried into the store
-manifest and the region sidecar.
+manifest and the region sidecar. The manifest also records the explicit input
+and stored builds plus panel identity/hash; reference and chain provenance,
+when applicable, belongs to the upstream preparation record.
