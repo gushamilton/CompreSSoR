@@ -83,6 +83,11 @@ write_selection_regions <- function(output, selection) {
     method = selection$method %||% "pvalue_regions",
     pvalue_threshold = selection$pvalue_threshold,
     padding_bp = selection$padding_bp,
+    window_bp_each_side = selection$window_bp_each_side %||% selection$padding_bp,
+    window_boundary = selection$window_boundary %||% "inclusive",
+    threshold_operator = selection$threshold_operator %||% "<=",
+    union = selection$union %||% NULL,
+    p_value_source = selection$p_value_source %||% NULL,
     regions = lapply(seq_len(nrow(regions)), function(index) {
       list(chromosome = as.character(regions$chromosome[[index]]),
            start = as.integer(regions$start[[index]]),
@@ -123,6 +128,8 @@ write_selection_regions <- function(output, selection) {
 #'   or `selection = "core_plus"`; p-values are derived from canonical Z.
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
+#'   The default is 10,000 bp; the threshold and window are recorded in the
+#'   manifest and larger windows remain available by setting this explicitly.
 #' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
@@ -156,7 +163,7 @@ compress_sumstats <- function(input, output,
                               variant_set = NULL, input_build = "GRCh38",
                               backend = c("pcodec", "parquet"),
                               pvalue_threshold = 1e-5,
-                              region_padding = 50000L,
+                              region_padding = 10000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
                               threads = NULL,

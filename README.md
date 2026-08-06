@@ -98,6 +98,14 @@ contains 1,199,729 HM3-positive rows within the core universe; 13,236 rows in
 the HM3 source fall outside that universe and therefore have no row in the
 combined panel.
 
+`selection = "core_plus"` retains the core panel plus the row-wise union of
+inclusive 10,000-bp windows on either side of rows with `p <= 1e-5`. The
+threshold and window are explicit `pvalue_threshold` and `region_padding`
+arguments and are recorded in the manifest; 50-kb or other windows remain
+available only when requested explicitly. Selection uses the exact prepared
+pre-encoding Z (`beta / standard_error` when Z is absent), never a lossy
+decoded value or an input p-value column.
+
 The frozen source hashes and exact output layout are documented in
 [`docs/variant-panels.md`](docs/variant-panels.md).
 

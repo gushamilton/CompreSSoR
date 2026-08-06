@@ -627,6 +627,11 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       method = selection$method %||% "pvalue_regions",
       pvalue_threshold = selection$pvalue_threshold,
       padding_bp = selection$padding_bp,
+      window_bp_each_side = selection$window_bp_each_side %||% selection$padding_bp,
+      window_boundary = selection$window_boundary %||% "inclusive",
+      threshold_operator = selection$threshold_operator %||% "<=",
+      union = selection$union %||% NULL,
+      p_value_source = selection$p_value_source %||% NULL,
       regions = lapply(seq_len(nrow(regions)), function(index) {
         list(chromosome = as.character(regions$chromosome[[index]]),
              start = as.integer(regions$start[[index]]),

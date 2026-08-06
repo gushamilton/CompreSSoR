@@ -89,7 +89,7 @@ write_time <- function(path, mode) {
       input, path, reference = reference_arg, mode = mode,
       variant_set = panel_arg,
       backend = backend, assume_grch38_ref_alt = TRUE,
-      pvalue_threshold = 1e-5, region_padding = 50000L,
+      pvalue_threshold = 1e-5, region_padding = 10000L,
       overwrite = TRUE
     )
   })[["elapsed"]]
@@ -141,7 +141,7 @@ lines <- c(
   "# Synthetic core-plus storage benchmark",
   "",
   sprintf("This is a synthetic chr1-only benchmark using the %s backend; it is intentionally not a FinnGen run.", backend),
-  sprintf("Input rows: %s; injected p < 1e-5 signals: %s; padding: 50,000 bp.",
+  sprintf("Input rows: %s; injected p <= 1e-5 signals: %s; padding: 10,000 bp.",
           format(rows, big.mark = ","), signals),
   "P-values are selected from the canonical Z score and are derived rather than stored.",
   "",

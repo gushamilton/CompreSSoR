@@ -718,7 +718,7 @@ merge_pvalue_regions <- function(seeds) {
 }
 
 pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
-                                     region_padding = 50000L) {
+                                     region_padding = 10000L) {
   validate_pvalue_region_arguments(pvalue_threshold, region_padding)
   if (!"z" %in% names(data)) {
     stop("p-value region selection needs the prepared pre-encoding z statistic",
@@ -730,10 +730,16 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
   # This is deliberately evaluated on the prepared in-memory statistic. It
   # runs before any bounded semantic encoding and is never reconstructed from
   # a lossy stored Z value.
-  p_value <- 2 * stats::pnorm(-abs(as.numeric(data$z)))
+  z <- as.numeric(data$z)
+  p_value <- 2 * stats::pnorm(-abs(z))
   valid_coordinate <- !is.na(chromosomes) & nzchar(chromosomes) &
     is.finite(positions) & positions >= 1
-  seed <- valid_coordinate & is.finite(p_value) & p_value < pvalue_threshold
+  # An infinite Z would otherwise underflow to p = 0 and become a false
+  # significant seed.  Selection is defined only for finite prepared input
+  # statistics; compact QC normally removes invalid rows before this helper,
+  # while this guard keeps the selection contract safe when called directly.
+  seed <- valid_coordinate & is.finite(z) & is.finite(p_value) &
+    p_value <= pvalue_threshold
   seeds <- data.frame(
     chromosome = chromosomes[seed],
     start = as.integer(pmax(1, positions[seed] -
@@ -761,17 +767,20 @@ pvalue_region_selection <- function(data, pvalue_threshold = 1e-5,
     p_value_source = "derived_from_z",
     threshold_source = "pre_encoding_prepared",
     threshold_statistic = "p_value_from_prepared_z",
-    threshold_operator = "<",
+    threshold_operator = "<=",
     threshold_semantics = list(
       source = "pre_encoding_prepared",
       statistic = "p_value_from_prepared_z",
       derivation = "2 * pnorm(-abs(z))",
-      operator = "<",
+      operator = "<=",
       value = as.numeric(pvalue_threshold),
       encoding = "not_encoded"
     ),
     pvalue_threshold = as.numeric(pvalue_threshold),
     padding_bp = as.integer(region_padding),
+    window_bp_each_side = as.integer(region_padding),
+    window_boundary = "inclusive",
+    union = "pvalue_regions_only",
     seed_snps = as.integer(sum(seed)),
     regions = as.integer(nrow(regions)),
     input_rows = as.integer(n),
@@ -871,7 +880,7 @@ select_hm3_variants <- function(data, variant_set = "hm3", build = "GRCh38") {
 
 select_core_plus_variants <- function(data, variant_set = "core",
                                       pvalue_threshold = 1e-5,
-                                      region_padding = 50000L,
+                                      region_padding = 10000L,
                                       build = "GRCh38") {
   panel <- read_variant_set(variant_set, chromosomes = unique(data$chromosome), build = build)
   panel_keep <- variant_set_membership(data, panel, build = build)
@@ -891,6 +900,7 @@ select_core_plus_variants <- function(data, variant_set = "core",
   metadata$selection <- "core_plus"
   metadata$tag <- "core_plus"
   metadata$method <- "panel_union_pvalue_regions"
+  metadata$union <- "core_or_pvalue_regions"
   metadata$core_variant_rows <- as.integer(sum(panel_keep))
   metadata$panel_name <- panel_name
   metadata$panel_hash <- panel_metadata$sha256 %||% NA_character_
@@ -908,7 +918,7 @@ select_core_plus_variants <- function(data, variant_set = "core",
 }
 
 select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
-                                  region_padding = 50000L) {
+                                  region_padding = 10000L) {
   regions <- pvalue_region_selection(data, pvalue_threshold = pvalue_threshold,
                                      region_padding = region_padding)
   if (!regions$metadata$kept_rows) {
@@ -916,6 +926,7 @@ select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
          call. = FALSE)
   }
   regions$metadata$selection <- "pvalue_regions"
+  regions$metadata$union <- "pvalue_regions_only"
   regions$metadata$regions_table <- regions$regions
   list(
     data = data[regions$keep, , drop = FALSE],
@@ -928,7 +939,7 @@ select_pvalue_regions <- function(data, pvalue_threshold = 1e-5,
 
 select_variant_rows <- function(data, selection = c("full", "core", "hm3", "core_plus", "pvalue_regions"),
                                 variant_set = NULL, pvalue_threshold = 1e-5,
-                                region_padding = 50000L, build = "GRCh38") {
+                                region_padding = 10000L, build = "GRCh38") {
   build <- compressor_normalize_build(build)
   selection <- match.arg(selection)
   switch(selection,

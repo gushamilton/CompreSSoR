@@ -216,7 +216,7 @@ canonicalize_core_identity <- function(data, build, include_variant_id = TRUE) {
 
 prepare_core_sumstats_data <- function(raw, selection = "full", variant_set = NULL,
                                        pvalue_threshold = 1e-5,
-                                       region_padding = 50000L, build = "GRCh38",
+                                       region_padding = 10000L, build = "GRCh38",
                                        input_rows = NULL, identity_safety = NULL) {
   build <- compressor_normalize_build(build)
   input_rows <- input_rows %||% nrow(raw)
