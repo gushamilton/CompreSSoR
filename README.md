@@ -142,7 +142,7 @@ remotes::install_github("gushamilton/CompreSSoR")
 
 ### BluePebble native Pcodec setup
 
-The native backend requires Rust/Cargo **>= 1.87.0**, as pinned by
+The native backend requires `rustc` **>= 1.87.0**, as pinned by
 [`src/pcodec_native/Cargo.toml`](src/pcodec_native/Cargo.toml). On BluePebble,
 run setup in an interactive or login shell so the module environment is
 available. Inspect the current catalogue on the day of the run; module names
@@ -152,9 +152,11 @@ and project-local toolchain paths are not stable:
 bash -lic 'module purge; module load languages/R/4.5.1; module spider rust 2>&1'
 ```
 
-The established BP jobs load `rust/1.78.0-n5bm` for the Cargo environment and
-then prepend the project-local pinned Rust 1.87 toolchain to both executable
-and shared-library lookup. Substitute the current, verified project path; do
+The established BP jobs load `rust/1.78.0-n5bm` for Cargo and then prepend the
+project-local pinned Rust 1.87 toolchain for `rustc` and shared-library lookup.
+These are deliberately split: `COMPRESSOR_ISSUE27_RUST_ROOT` must contain
+`bin/rustc` and `lib`, but it does not need `bin/cargo`; Cargo is resolved
+independently from `PATH`. Substitute the current, verified project path; do
 not copy a stale path from an old job:
 
 ```bash
@@ -165,14 +167,15 @@ rust_root=/path/to/project-local/rust-1.87.0/rustc  # verify on the day
 export PATH="$rust_root/bin:$PATH"
 export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-command -v cargo
 command -v rustc
+command -v cargo
 rustc --version
 cargo --version
 ```
 
-Stop if `rustc` or `cargo` reports a version below 1.87.0; there is no
-supported generic fallback backend for the native benchmark. Set isolated
+Stop if `rustc` reports a version below 1.87.0, or if Cargo is unavailable or
+reports a version below 1.78.0. There is no supported generic fallback backend
+for the native benchmark. Set isolated
 `R_LIBS` and `R_LIBS_USER` paths, then install only after the toolchain check:
 
 ```bash
@@ -188,6 +191,24 @@ which accepts `COMPRESSOR_ISSUE27_RUST_MODULE` and
 toolchain in the external Slurm log. If Cargo or native installation fails,
 do not claim a benchmark. Keep raw inputs, stores, logs, and results outside
 the synced repository.
+
+On BP, resolve the checkout commit on the login node before submission. Some
+compute nodes do not provide `git`; the harness therefore fails closed unless
+the login-side value is passed as `COMPRESSOR_ISSUE27_ACTUAL_COMMIT` and it
+matches `COMPRESSOR_ISSUE27_COMMIT` exactly. The maintained helper performs
+that resolution and exports the value through `sbatch`:
+
+```bash
+export COMPRESSOR_ISSUE27_REPO=/user/work/fh6520/CompreSSoR-issue27/repo
+export COMPRESSOR_ISSUE27_COMMIT=$(git -C "$COMPRESSOR_ISSUE27_REPO" rev-parse HEAD)
+scripts/submit_issue27_ntrk3.sh \
+  --output=/user/work/fh6520/CompreSSoR-issue27/logs/slurm-%j.out \
+  --error=/user/work/fh6520/CompreSSoR-issue27/logs/slurm-%j.err \
+  scripts/benchmark_issue27_ntrk3.sbatch
+```
+
+Do not invent or hand-edit the actual commit value. If `git` is unavailable
+on the submission node, stop rather than submitting an unverified benchmark.
 
 The historical Python backend is archived and is not part of the installed
 package.

@@ -18,11 +18,15 @@ output <- args[[4L]]
 summary_path <- args[[5L]]
 threads <- max(1L, as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", "4")))
 commit <- Sys.getenv("COMPRESSOR_ISSUE27_COMMIT", unset = "unknown")
+actual_commit <- Sys.getenv("COMPRESSOR_ISSUE27_ACTUAL_COMMIT", unset = commit)
 native_commit <- Sys.getenv("COMPRESSOR_ISSUE27_NATIVE_LIBRARY_COMMIT", unset = "unknown")
 
 if (!file.exists(input)) stop("input does not exist: ", input, call. = FALSE)
 if (!grepl("^[0-9a-fA-F]{40}$", commit)) {
   stop("COMPRESSOR_ISSUE27_COMMIT must be a 40-character commit", call. = FALSE)
+}
+if (!grepl("^[0-9a-fA-F]{40}$", actual_commit) || !identical(actual_commit, commit)) {
+  stop("COMPRESSOR_ISSUE27_ACTUAL_COMMIT must match COMPRESSOR_ISSUE27_COMMIT", call. = FALSE)
 }
 
 suppressPackageStartupMessages(library(CompreSSoR))
@@ -57,6 +61,7 @@ result <- list(
   status = "PASS",
   benchmark = "issue27_ntrk3_prepared",
   commit = commit,
+  actual_commit = actual_commit,
   native_library_commit = native_commit,
   package_version = as.character(packageVersion("CompreSSoR")),
   host = Sys.info()[["nodename"]],
