@@ -1,5 +1,15 @@
 # CompreSSoR 0.5.0
 
+- Adds `read_candidates()` and `read_candidates_batch()` for threshold and
+  region candidate extraction from native Pcodec stores. The strategy is
+  chosen per store and recorded in `attr(x, "candidate_strategy")`: the
+  aligned p-value flag when its threshold matches exactly; the Z-exception
+  sidecar alone when the threshold is below the p-value of the outermost
+  central Z bin (every row outside the central range is an exact float32
+  exception); otherwise the Z stream only. Candidate rows are fetched with a
+  block-selective reader that opens each payload once. `order = "exact"` uses
+  the `pvalue_order` domain; `order = "reconstructed"` is labelled approximate.
+
 - Adds an opt-in, explicitly versioned `pvalue_order` side domain for exact
   supplied-p/exact-prepared-Z candidate ordering without changing the locked
   native core streams. `read_pvalue_order()` fails safely when exact ordering
