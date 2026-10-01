@@ -864,8 +864,13 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #' calls when an analysis extracts a small instrument set from several files.
 #'
 #' @param stores A non-empty list or character vector of Pcodec stores.
-#' @param variants A canonical `chromosome:position:REF:ALT` vector shared by
-#'   every store, or one such vector per store in a list.
+#' @param variants A canonical `chromosome:position:REF:ALT` vector or a
+#'   zero-based row-ID vector shared by every store, or one such vector per
+#'   store in a list. May be `NULL` when `region` is given.
+#' @param region Optional region string (as in [read_sumstats()]), shared by
+#'   every store or one per store in a list. Stores that share the same variant
+#'   panel (identical position and substitution streams) resolve keys, row IDs
+#'   and regions to rows once, then decode values only.
 #' @param columns Output columns requested from every store.
 #' @param threads Number of independent Pcodec store readers to run in
 #'   parallel on Unix-like systems. The default is one. Windows uses serial
@@ -883,24 +888,31 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #' @export
 read_sumstats_batch <- function(
     stores,
-    variants,
+    variants = NULL,
     columns = c("chromosome", "base_pair_location", "effect_allele",
                 "other_allele", "beta", "standard_error"),
-    threads = 1L) {
+    threads = 1L,
+    region = NULL) {
   if (is.character(stores)) stores <- as.list(stores)
   if (!is.list(stores) || !length(stores)) {
     stop("stores must be a non-empty list or character vector", call. = FALSE)
   }
   store_names <- names(stores)
-  if (is.character(variants)) {
+  if (is.character(variants) || is.numeric(variants) || is.null(variants)) {
     variants <- rep(list(variants), length(stores))
   }
   if (!is.list(variants) || length(variants) != length(stores)) {
-    stop("variants must be a canonical-key vector or one list element per store",
+    stop("variants must be a canonical-key or row-ID vector or one list element per store",
+         call. = FALSE)
+  }
+  if (is.character(region) || is.null(region)) region <- rep(list(region), length(stores))
+  if (!is.list(region) || length(region) != length(stores)) {
+    stop("region must be one region string or one list element per store",
          call. = FALSE)
   }
   result <- pcodec_read_stores(
-    stores, variants, unique(as.character(columns)), threads = threads
+    stores, variants, unique(as.character(columns)), threads = threads,
+    region = region
   )
   if (!is.null(store_names)) names(result) <- store_names
   result

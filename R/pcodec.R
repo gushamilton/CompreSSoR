@@ -158,13 +158,55 @@ pcodec_read_store <- function(store, region = NULL, variants = NULL,
   )
 }
 
-pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
-  if (!length(stores) || length(stores) != length(variants)) {
+# Internal trace counters: number of identity resolutions performed by batched
+# reads. Tests use this to assert identity work happens once per panel group.
+.pcodec_batch_trace <- new.env(parent = emptyenv())
+.pcodec_batch_trace$identity_resolutions <- 0L
+.pcodec_batch_trace$groups <- 0L
+
+PCODEC_IDENTITY_COLUMNS <- c("global_position", "substitution", "chromosome",
+                             "base_pair_location", "reference_allele",
+                             "alternate_allele", "effect_allele", "other_allele")
+
+# Identity signature of a store: SHA-256 of the position and substitution
+# streams (from the manifest integrity record) plus row count and build. Two
+# stores with equal signatures have identical row-id -> variant mappings.
+# Stores without an integrity record get a unique signature (no sharing).
+pcodec_identity_signature <- function(store) {
+  m <- store$manifest
+  files <- m$integrity$files
+  pos <- m$files$position
+  sub <- m$files$substitution
+  hp <- if (!is.null(pos)) files[[pos]]$sha256 else NULL
+  hs <- if (!is.null(sub)) files[[sub]]$sha256 else NULL
+  if (is.null(hp) || is.null(hs)) return(paste0("unique:", normalizePath(store$path)))
+  # Positions are delta-coded within key blocks, so the stream bytes alone do
+  # not fix the identity: the block anchors (first_position, row ranges) live
+  # in the native index and must match too.
+  index <- pcodec_native_read_index(store)
+  anchors <- lapply(pcodec_native_index_blocks(index, "key"), function(b) {
+    list(b$row_start, b$row_stop, b$first_position, b$last_position)
+  })
+  paste(hp, hs, as.character(m$n_rows %||% m$rows),
+        as.character(m$genome_build %||% "GRCh38"),
+        as.character(index$position_encoding %||% ""),
+        digest::digest(anchors, algo = "sha1"), sep = "|")
+}
+
+pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
+                               region = NULL) {
+  if (!length(stores)) stop("stores must be non-empty", call. = FALSE)
+  k <- length(stores)
+  if (!is.list(variants) || is.data.frame(variants)) variants <- rep(list(variants), k)
+  if (is.null(variants) || length(variants) != k) {
     stop("stores and variants must have the same non-zero length", call. = FALSE)
   }
+  if (!is.list(region)) region <- rep(list(region), k)
+  if (length(region) != k) stop("region must be one value or one per store", call. = FALSE)
   if (!length(columns) || anyNA(columns) || any(!nzchar(columns))) {
     stop("columns must contain at least one non-empty column name", call. = FALSE)
   }
+  columns <- unique(as.character(columns))
   threads <- pcodec_validate_threads(threads)
   stores <- lapply(stores, pcodec_open_store_cached)
   if (any(!vapply(stores, function(store) {
@@ -174,14 +216,78 @@ pcodec_read_stores <- function(stores, variants, columns, threads = 1L) {
          call. = FALSE)
   }
   variants <- lapply(variants, function(keys) {
-    if (!is.character(keys) || anyNA(keys) || any(!nzchar(trimws(keys)))) {
-      stop("each variants element must contain canonical variant keys", call. = FALSE)
+    if (is.null(keys)) return(NULL)
+    if (is.character(keys)) {
+      if (anyNA(keys) || any(!nzchar(trimws(keys)))) {
+        stop("each variants element must contain canonical variant keys", call. = FALSE)
+      }
+      return(unique(trimws(keys)))
     }
-    unique(trimws(keys))
+    if (is.numeric(keys)) {
+      if (anyNA(keys)) stop("row IDs must not be missing", call. = FALSE)
+      return(unique(as.integer(keys)))
+    }
+    stop("each variants element must contain canonical variant keys or row IDs",
+         call. = FALSE)
   })
-  decoded <- pcodec_parallel_lapply(seq_along(stores), function(i) {
-    pcodec_read_store(stores[[i]], variants = variants[[i]], columns = columns,
-                      threads = 1L)
+
+  id_cols <- intersect(columns, PCODEC_IDENTITY_COLUMNS)
+  value_cols <- setdiff(columns, id_cols)
+  signature <- vapply(stores, pcodec_identity_signature, character(1))
+  # Resolve each distinct (identity group, request) once. Pure value reads
+  # of an explicit row-id request need no identity work at all.
+  request_key <- vapply(seq_len(k), function(i) {
+    digest::digest(list(variants[[i]], region[[i]]), algo = "sha1")
+  }, character(1))
+  resolve_key <- paste(signature, request_key, sep = "#")
+  resolved <- list()
+  for (i in seq_len(k)) {
+    key <- resolve_key[[i]]
+    if (!is.null(resolved[[key]])) next
+    rows_only <- is.numeric(variants[[i]]) && is.null(region[[i]]) && !length(id_cols)
+    if (rows_only) {
+      resolved[[key]] <- list(rows = sort(variants[[i]]), identity = NULL, bytes = 0,
+                              direct = TRUE)
+      next
+    }
+    if (is.null(variants[[i]]) && is.null(region[[i]])) {
+      resolved[[key]] <- list(full = TRUE)
+      next
+    }
+    .pcodec_batch_trace$identity_resolutions <- .pcodec_batch_trace$identity_resolutions + 1L
+    ident <- pcodec_native_read_store(
+      stores[[i]], region = region[[i]], variants = variants[[i]],
+      columns = if (length(id_cols)) id_cols else "base_pair_location", threads = threads
+    )
+    resolved[[key]] <- list(rows = as.integer(ident$row), identity = ident,
+                            bytes = attr(ident, "source_bytes_read", exact = TRUE) %||% 0)
+  }
+  .pcodec_batch_trace$groups <- .pcodec_batch_trace$groups + length(unique(signature))
+
+  decoded <- pcodec_parallel_lapply(seq_len(k), function(i) {
+    res <- resolved[[resolve_key[[i]]]]
+    if (isTRUE(res$full)) {
+      return(pcodec_read_store(stores[[i]], columns = columns, threads = 1L))
+    }
+    if (!length(res$rows)) {
+      return(pcodec_native_projection(pcodec_native_empty_result(columns), columns))
+    }
+    out <- NULL
+    bytes <- res$bytes
+    if (length(value_cols)) {
+      vals <- pcodec_native_read_store(stores[[i]], variants = res$rows,
+                                       columns = value_cols, threads = 1L)
+      bytes <- bytes + (attr(vals, "source_bytes_read", exact = TRUE) %||% 0)
+      out <- if (is.null(res$identity)) vals else {
+        cbind(res$identity[setdiff(names(res$identity), "row")], vals[value_cols])
+      }
+      if (!"row" %in% names(out)) out <- cbind(row = vals$row, out)
+    } else {
+      out <- res$identity
+    }
+    row.names(out) <- NULL
+    attr(out, "source_bytes_read") <- bytes
+    pcodec_native_projection(out, columns)
   }, threads = threads)
   names(decoded) <- names(stores)
   decoded
