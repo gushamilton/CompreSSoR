@@ -1825,11 +1825,17 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       }, logical(1))]
     }
     if (!is.null(key_targets)) {
-      target_positions <- as.numeric(key_targets$position)
-      key_candidates <- key_candidates[vapply(key_blocks, function(block) {
-        any(target_positions >= as.numeric(block$first_position) &
-              target_positions <= as.numeric(block$last_position))
-      }, logical(1))]
+      # Exact collision-free numeric key: substitution codes are 0..15 and
+      # global positions are < 2^32, so position * 16 + substitution < 2^36.
+      target_codes <- sort(unique(as.numeric(key_targets$position) * 16 +
+                                    as.numeric(key_targets$substitution)))
+      target_positions <- sort(unique(floor(target_codes / 16)))
+      first_pos <- vapply(key_blocks, function(block) as.numeric(block$first_position), numeric(1))
+      last_pos <- vapply(key_blocks, function(block) as.numeric(block$last_position), numeric(1))
+      # a block holds a target iff some target position lies in [first, last]
+      has_target <- findInterval(last_pos, target_positions) >
+        findInterval(first_pos, target_positions, left.open = TRUE)
+      key_candidates <- key_candidates[has_target[key_candidates]]
     }
     if (!is.null(row_targets)) {
       key_candidates <- intersect(key_candidates,
@@ -1845,10 +1851,14 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         as.numeric(index$streams$substitution$blocks[[key_block]]$length)
       keep <- rep(TRUE, length(rows))
       if (!is.null(lower)) keep <- keep & position >= lower & position <= upper
-      if (!is.null(row_targets)) keep <- keep & rows %in% row_targets
+      if (!is.null(row_targets)) {
+        hit <- row_targets[row_targets >= rows[1L] & row_targets <= rows[length(rows)]]
+        in_targets <- logical(length(rows))
+        in_targets[hit - rows[1L] + 1L] <- TRUE
+        keep <- keep & in_targets
+      }
       if (!is.null(key_targets)) {
-        keep <- keep & paste(position, substitution, sep = ":") %in%
-          paste(key_targets$position, key_targets$substitution, sep = ":")
+        keep <- keep & (as.numeric(position) * 16 + as.numeric(substitution)) %in% target_codes
       }
       part <- if (any(keep)) {
         data.frame(
@@ -1885,10 +1895,22 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     row_stop <- as.integer(meta$row_stop)
     rows <- row_start:(row_stop - 1L)
     block_source_bytes <- 0
+    selected_slice <- NULL
     if (identity_needed) {
-      keep <- rows %in% selected_rows
+      # selected_rows is sorted and unique: slice this block's rows by position
+      lo <- findInterval(row_start - 1L, selected_rows) + 1L
+      hi <- findInterval(row_stop - 1L, selected_rows)
+      keep <- logical(length(rows))
+      if (hi >= lo) {
+        selected_slice <- lo:hi
+        keep[selected_rows[selected_slice] - row_start + 1L] <- TRUE
+      }
+    } else if (is.null(row_targets)) {
+      keep <- rep(TRUE, length(rows))
     } else {
-      keep <- if (is.null(row_targets)) rep(TRUE, length(rows)) else rows %in% row_targets
+      hit <- row_targets[row_targets >= row_start & row_targets < row_stop]
+      keep <- logical(length(rows))
+      keep[hit - row_start + 1L] <- TRUE
     }
     if (!any(keep)) return(list(part = NULL, source_bytes = block_source_bytes))
     value_codes <- list()
@@ -1913,7 +1935,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)
     if (identity_needed) {
-      selected_index <- match(rows[keep], selected_rows)
+      selected_index <- selected_slice
       identity_part <- pcodec_native_key_columns(
         selected_position[selected_index], selected_substitution[selected_index],
         build = build)
