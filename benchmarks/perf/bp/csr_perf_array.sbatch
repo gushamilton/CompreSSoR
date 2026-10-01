@@ -54,11 +54,16 @@ rv=$(rustc --version | awk '{print $2}')
 work="${TMPDIR:-/tmp}/csr-perf-$SLURM_JOB_ID-$task"
 mkdir -p "$work" "$out_dir" "$root/logs"
 trap 'rm -rf "$work"' EXIT
-# Private shared-object clone: safe for concurrent array tasks (no worktree locks).
-git clone --quiet --shared --no-checkout "$repo" "$work/src"
-git -C "$work/src" checkout --quiet --detach "$sha"
-actual="$(git -C "$work/src" rev-parse HEAD)"
-[[ "$actual" == "$sha" ]] || { echo "checkout mismatch $actual != $sha" >&2; exit 2; }
+# Compute nodes may lack git: prefer a source tree exported on the login node
+# (git archive <sha> into $root/src-<sha>); otherwise take a private clone.
+if [[ -d "$root/src-$sha" ]]; then
+  cp -R "$root/src-$sha" "$work/src"
+else
+  git clone --quiet --shared --no-checkout "$repo" "$work/src"
+  git -C "$work/src" checkout --quiet --detach "$sha"
+  actual="$(git -C "$work/src" rev-parse HEAD)"
+  [[ "$actual" == "$sha" ]] || { echo "checkout mismatch $actual != $sha" >&2; exit 2; }
+fi
 lib="$work/lib"; mkdir -p "$lib"
 R CMD INSTALL --no-multiarch --no-test-load --library="$lib" "$work/src" >&2
 
