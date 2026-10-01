@@ -420,8 +420,8 @@ compress_sumstats <- function(input, output,
   }
   data <- prepared$data
   selection <- prepared$selection
-  eaf_values <- suppressWarnings(as.numeric(as.character(data$effect_allele_frequency)))
-  se_values <- suppressWarnings(as.numeric(as.character(data$standard_error)))
+  eaf_values <- statistic_as_numeric(data$effect_allele_frequency)
+  se_values <- statistic_as_numeric(data$standard_error)
   eaf_predictor_rows <- sum(
     is.finite(se_values) & se_values > 0 &
       !(is.finite(eaf_values) & eaf_values >= 0 & eaf_values <= 1)

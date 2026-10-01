@@ -63,15 +63,15 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
 
   n <- nrow(data)
   chromosome <- as.character(data$chromosome)
-  position <- suppressWarnings(as.numeric(as.character(data$base_pair_location)))
-  reference <- toupper(trimws(as.character(data$reference_allele)))
-  alternate <- toupper(trimws(as.character(data$alternate_allele)))
+  position <- coordinate_as_numeric(data$base_pair_location)
+  reference <- normalise_allele_vector(data$reference_allele)
+  alternate <- normalise_allele_vector(data$alternate_allele)
   lengths <- compressor_chromosome_lengths(build)
-  known_chromosome <- !is.na(chromosome) & chromosome %in% names(lengths)
+  chromosome_index <- match(chromosome, names(lengths))
+  known_chromosome <- !is.na(chromosome_index)
   finite_position <- is.finite(position)
   integer_position <- finite_position & position == floor(position)
-  chromosome_limit <- rep(NA_real_, n)
-  chromosome_limit[known_chromosome] <- unname(lengths[chromosome[known_chromosome]])
+  chromosome_limit <- unname(lengths)[chromosome_index]
 
   invalid_primary_chromosome <- !known_chromosome
   nonfinite_coordinate <- known_chromosome & !finite_position
@@ -79,8 +79,8 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
   coordinate_out_of_range <- known_chromosome & finite_position & integer_position &
     (position < 1 | position > chromosome_limit)
   valid_alleles <- !is.na(reference) & !is.na(alternate) &
-    reference %in% c("A", "C", "G", "T") &
-    alternate %in% c("A", "C", "G", "T")
+    !is.na(match(reference, c("A", "C", "G", "T"))) &
+    !is.na(match(alternate, c("A", "C", "G", "T")))
   invalid_allele <- !valid_alleles
   same_alleles <- valid_alleles & reference == alternate
   unsupported <- invalid_primary_chromosome | nonfinite_coordinate |
@@ -104,8 +104,12 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
     counts = stats::setNames(as.list(as.integer(counts)), names(counts)),
     rejection_counts = stats::setNames(as.list(as.integer(counts)), names(counts))
   )
-  list(data = data[!unsupported, , drop = FALSE],
-       keep = !unsupported, report = report)
+  kept <- if (!any(unsupported) && identical(class(data), "data.frame")) {
+    data  # nothing to drop: avoid copying every column
+  } else {
+    data[!unsupported, , drop = FALSE]
+  }
+  list(data = kept, keep = !unsupported, report = report)
 }
 
 # Optional statistic checker for callers that want a cheap canonical-value
@@ -163,10 +167,10 @@ validate_qc_none_statistics <- function(data) {
 
 validate_core_orientation <- function(data, row_policy = c("error", "report")) {
   row_policy <- match.arg(row_policy)
-  ref <- toupper(trimws(as.character(data$reference_allele)))
-  alt <- toupper(trimws(as.character(data$alternate_allele)))
-  effect <- toupper(trimws(as.character(data$effect_allele)))
-  other <- toupper(trimws(as.character(data$other_allele)))
+  ref <- normalise_allele_vector(data$reference_allele)
+  alt <- normalise_allele_vector(data$alternate_allele)
+  effect <- normalise_allele_vector(data$effect_allele)
+  other <- normalise_allele_vector(data$other_allele)
   bases <- c("A", "C", "G", "T")
   invalid_identity <- is.na(ref) | is.na(alt) | !ref %in% bases | !alt %in% bases | ref == alt
   if (any(invalid_identity) && identical(row_policy, "error")) {
