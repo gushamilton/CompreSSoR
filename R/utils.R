@@ -338,13 +338,55 @@ alias_values_equal <- function(x, y) {
 
 alias_key <- function(x) gsub("[^a-z0-9#]", "", tolower(as.character(x)), perl = TRUE)
 
+# Apply an elementwise character transform `f` once per distinct value and map
+# the result back.  Equivalent to f(as.character(x)) for any elementwise f, but
+# avoids running regex/trim/case work over millions of repeated labels.
+map_unique_character <- function(x, f) {
+  if (is.factor(x)) x <- as.character(x)
+  if (length(x) < 64L) return(f(as.character(x)))
+  u <- unique(x)
+  f(as.character(u))[match(x, u)]
+}
+
+normalise_allele_vector <- function(x) {
+  map_unique_character(x, function(v) toupper(trimws(v)))
+}
+
+# Equivalent to suppressWarnings(as.numeric(as.character(x))) but skips the
+# character round trip when it is provably lossless: integers, and doubles
+# holding whole numbers below 1e15 (as.character keeps 15 significant digits).
+coordinate_as_numeric <- function(x) {
+  if (is.factor(x)) return(suppressWarnings(as.numeric(as.character(x))))
+  if (is.integer(x)) return(as.numeric(x))
+  if (is.double(x) && is.null(attributes(x)) &&
+      all(x == floor(x) & abs(x) < 1e15, na.rm = TRUE)) {
+    return(x)
+  }
+  suppressWarnings(as.numeric(as.character(x)))
+}
+
+# Equivalent to suppressWarnings(as.numeric(as.character(x))) for statistics
+# that are only range-tested.  as.character() keeps 15 significant digits, so
+# the sole observable difference for doubles is a value just above 1 collapsing
+# to exactly 1; take the exact character path if any such value is present.
+statistic_as_numeric <- function(x) {
+  if (is.double(x) && is.null(attributes(x)) &&
+      !any(x > 1 & x < 1 + 1e-13, na.rm = TRUE)) {
+    return(x)
+  }
+  if (is.integer(x)) return(as.numeric(x))
+  suppressWarnings(as.numeric(as.character(x)))
+}
+
 normalise_chromosome <- function(x) {
-  out <- toupper(trimws(sub("^chr", "", as.character(x), ignore.case = TRUE)))
-  out[out == "23"] <- "X"
-  out[out == "24"] <- "Y"
-  out[out %in% c("M", "25", "26")] <- "MT"
-  out[out %in% c("", ".", "NA")] <- NA_character_
-  out
+  map_unique_character(x, function(v) {
+    out <- toupper(trimws(sub("^chr", "", v, ignore.case = TRUE)))
+    out[out == "23"] <- "X"
+    out[out == "24"] <- "Y"
+    out[out %in% c("M", "25", "26")] <- "MT"
+    out[out %in% c("", ".", "NA")] <- NA_character_
+    out
+  })
 }
 
 first_alias_index <- function(data, aliases) {
@@ -717,10 +759,10 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   assign_parsed("base_pair_location",
                 parse_integer_column(data$base_pair_location, "base_pair_location",
                                      invalid = parse_policy))
-  data$reference_allele <- toupper(trimws(as.character(data$reference_allele)))
-  data$alternate_allele <- toupper(trimws(as.character(data$alternate_allele)))
-  data$effect_allele <- toupper(trimws(as.character(data$effect_allele)))
-  data$other_allele <- toupper(trimws(as.character(data$other_allele)))
+  data$reference_allele <- normalise_allele_vector(data$reference_allele)
+  data$alternate_allele <- normalise_allele_vector(data$alternate_allele)
+  data$effect_allele <- normalise_allele_vector(data$effect_allele)
+  data$other_allele <- normalise_allele_vector(data$other_allele)
   data$reference_allele[data$reference_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$alternate_allele[data$alternate_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
   data$effect_allele[data$effect_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
@@ -905,9 +947,9 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   out <- data
   p_value_source_present <- "p_value" %in% names(out)
   out$chromosome <- normalise_chromosome(out$chromosome)
-  out$base_pair_location <- suppressWarnings(as.numeric(as.character(out$base_pair_location)))
+  out$base_pair_location <- coordinate_as_numeric(out$base_pair_location)
   for (field in c("reference_allele", "alternate_allele", "effect_allele", "other_allele")) {
-    out[[field]] <- toupper(trimws(as.character(out[[field]])))
+    out[[field]] <- normalise_allele_vector(out[[field]])
   }
   numeric_fast <- function(value) {
     if (is.numeric(value) && !is.factor(value)) return(as.numeric(value))
@@ -933,10 +975,16 @@ normalise_prepared_core_columns <- function(data, input_build = "GRCh38") {
   if ("p_value" %in% names(out)) {
     p_value_raw <- out$p_value
     p_value_numeric <- numeric_fast(p_value_raw)
-    p_value_text <- trimws(as.character(p_value_raw))
-    p_value_missing <- is.na(p_value_raw) | is.na(p_value_text) |
-      !nzchar(p_value_text) | tolower(p_value_text) %in% c(".", "na", "nan", "null")
-    p_value_parse_failures <- which(!p_value_missing & is.na(p_value_numeric))
+    if (is.numeric(p_value_raw) && !is.factor(p_value_raw)) {
+      # Numeric input: missing means NA/NaN, and no non-missing value can fail
+      # to parse, so the text round trip is unnecessary.
+      p_value_parse_failures <- integer()
+    } else {
+      p_value_text <- trimws(as.character(p_value_raw))
+      p_value_missing <- is.na(p_value_raw) | is.na(p_value_text) |
+        !nzchar(p_value_text) | tolower(p_value_text) %in% c(".", "na", "nan", "null")
+      p_value_parse_failures <- which(!p_value_missing & is.na(p_value_numeric))
+    }
     out$p_value <- p_value_numeric
   }
   attr(out, "missing_columns") <- character()
