@@ -11,7 +11,8 @@ read_candidates_batch(
   columns = NULL,
   order = c("none", "reconstructed", "exact"),
   threads = 1L,
-  bind = FALSE
+  bind = FALSE,
+  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag")
 )
 }
 \arguments{
@@ -41,6 +42,13 @@ each store is read with one decoder thread when several stores are given.}
 list of data frames in the order of \code{stores} (names preserved). If \code{TRUE}
 return one data frame with a leading \code{store} column holding the store
 names (or positions when unnamed).}
+
+\item{strategy}{\code{"auto"} (default; exact, never uses the flag),
+\code{"exceptions"} (exceptions-only; error unless the threshold is below the
+exceptions edge), \code{"z_stream"}, or \code{"pvalue_flag"} (explicit opt-in: the
+writer-time flag membership, which follows a supplied p-value when one was
+available and so can differ from the reconstructed-p definition; requires
+a flag domain whose threshold equals \code{pvalue_threshold}).}
 }
 \value{
 A list or data frame; \code{attr(x, "candidate_strategy")} is the
