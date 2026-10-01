@@ -66,16 +66,35 @@ test_that("read_candidates equals the filtered full read for every strategy", {
   expect_identical(attr(read_candidates(store, edge), "candidate_strategy"), "z_stream")
 })
 
-test_that("flag strategy is used at the flag threshold and matches", {
+test_that("auto never uses the flag; explicit pvalue_flag is opt-in", {
   skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
   store <- candidate_store(flag = TRUE)
   got <- read_candidates(store, 5e-8)
-  expect_identical(attr(got, "candidate_strategy"), "pvalue_flag")
+  expect_identical(attr(got, "candidate_strategy"), "z_exceptions")
   expect_identical(drop_row(got), reference_filter(store, 5e-8))
-  expect_identical(attr(read_candidates(store, 1e-6), "candidate_strategy"),
-                   "z_exceptions")
-  expect_identical(drop_row(read_candidates(store, 1e-6)),
-                   reference_filter(store, 1e-6))
+  expect_identical(attr(read_candidates(store, 5e-8, strategy = "pvalue_flag"),
+                        "candidate_strategy"), "pvalue_flag")
+  expect_error(read_candidates(store, 1e-6, strategy = "pvalue_flag"), "requires")
+  expect_error(read_candidates(store, 0.5, strategy = "exceptions"), "requires")
+})
+
+test_that("flag threshold with disagreeing supplied p matches full read", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
+  set.seed(1); n <- 400
+  d <- data.frame(chromosome = "1", base_pair_location = seq(1e5, by = 10, length.out = n),
+    reference_allele = "A", alternate_allele = "G", effect_allele = "G",
+    other_allele = "A", beta = rnorm(n, 0, 0.01), standard_error = 0.01,
+    effect_allele_frequency = 0.3)
+  d$p_value <- 2 * pnorm(-abs(d$beta / d$standard_error))
+  d$p_value[1:3] <- 1e-10
+  d$beta[4] <- NA; d$p_value[4] <- 1e-12
+  d$beta[5] <- 0.1; d$p_value[5] <- 0.2
+  P <- tempfile(); suppressMessages(capture.output(compress_sumstats(d, P)))
+  full <- read_sumstats(P, columns = "p_value")
+  for (th in c(5e-8, 4.99999e-8, 5.00001e-8)) {
+    r <- read_candidates(P, th, columns = "p_value")
+    expect_identical(r$row, which(!is.na(full$p_value) & full$p_value <= th) - 1L)
+  }
 })
 
 test_that("empty results, ordering and errors behave", {
@@ -135,4 +154,26 @@ test_that("all projectable columns match the full read", {
   row.names(want) <- NULL
   for (nm in cols) expect_equal(got[[nm]], want[[nm]], tolerance = 1e-12)
   expect_error(read_candidates(store, 0.01, columns = "nope"), "unknown output")
+})
+
+test_that("store caches are keyed on content, not mtime", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
+  A <- candidate_fixture(seed = 3L)
+  P <- tempfile("stale-"); Q <- tempfile("stale-")
+  compress_sumstats(A, P, overwrite = TRUE, qc = "none")
+  rows <- 0:(nrow(A) - 1L)
+  r1 <- read_sumstats(P, variants = rows, columns = c("beta", "standard_error"))
+  mt <- file.mtime(list.files(P, full.names = TRUE))
+  names(mt) <- list.files(P)
+  B <- A; B$beta <- -B$beta
+  compress_sumstats(B, Q, overwrite = TRUE, qc = "none")
+  expected <- read_sumstats(Q, variants = rows, columns = c("beta", "standard_error"))
+  # Rewrite P in place and restore every original mtime.
+  compress_sumstats(B, P, overwrite = TRUE, qc = "none")
+  for (f in list.files(P, full.names = TRUE)) {
+    if (basename(f) %in% names(mt)) Sys.setFileTime(f, mt[[basename(f)]])
+  }
+  r2 <- read_sumstats(P, variants = rows, columns = c("beta", "standard_error"))
+  expect_identical(r2, expected)
+  expect_false(identical(r2, r1))
 })

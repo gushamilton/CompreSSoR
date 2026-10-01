@@ -668,7 +668,8 @@ compress_sumstats <- function(input, output,
 #' @return A `compressor_store` object.
 #' @export
 # Opened-store cache: the parsed manifest and its checksum verification are
-# reused while manifest.json and manifest.sha256 keep their size and mtime.
+# reused while the sha256 of manifest.json and the recorded manifest.sha256
+# line are unchanged (content identity; mtimes can be restored or coarse).
 .compressor_open_cache <- new.env(parent = emptyenv())
 
 open_compressor <- function(path) {
@@ -677,10 +678,13 @@ open_compressor <- function(path) {
   manifest_path <- file.path(path, "manifest.json")
   stamp <- NULL
   if (file.exists(manifest_path)) {
-    info <- file.info(c(manifest_path, pcodec_manifest_checksum_path(manifest_path)))
-    if (!anyNA(info$size)) {
-      stamp <- paste(info$size, format(as.numeric(info$mtime), digits = 17),
-                     collapse = "|")
+    checksum_path <- pcodec_manifest_checksum_path(manifest_path)
+    recorded <- if (file.exists(checksum_path)) {
+      readLines(checksum_path, warn = FALSE, n = 1L)
+    } else NULL
+    if (length(recorded) == 1L) {
+      stamp <- paste(digest::digest(manifest_path, algo = "sha256", file = TRUE),
+                     trimws(recorded), sep = "|")
       hit <- .compressor_open_cache[[path]]
       if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
     }

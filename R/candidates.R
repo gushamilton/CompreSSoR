@@ -79,9 +79,14 @@ candidates_open <- function(store) {
 }
 
 # Returns list(rows (sorted zero-based), strategy).
-candidates_select_rows <- function(store, index, threshold, threads) {
+candidates_select_rows <- function(store, index, threshold, threads,
+                                   strategy = "auto") {
   flag <- (store$manifest$domains %||% list())$pvalue_flag
-  if (is.list(flag) && isTRUE(as.numeric(flag$threshold) == threshold)) {
+  if (identical(strategy, "pvalue_flag")) {
+    if (!is.list(flag) || !isTRUE(as.numeric(flag$threshold) == threshold)) {
+      stop("strategy = \"pvalue_flag\" requires a pvalue_flag domain whose ",
+           "threshold equals pvalue_threshold", call. = FALSE)
+    }
     rows <- candidates_read_flag_rows(store, threads)
     # Reconstructed p for flagged rows, taken from the exception sidecar when
     # the row is a Z exception (the usual case); NA otherwise.
@@ -101,7 +106,13 @@ candidates_select_rows <- function(store, index, threshold, threads) {
   # and the decoder table; falling back is always safe.
   exceptions_only <- is.finite(edge$p) && threshold < edge$p * (1 - 1e-9) &&
     identical(semantic$z_range[1], -semantic$z_range[2])
-  if (exceptions_only) {
+  if (identical(strategy, "exceptions") && !exceptions_only) {
+    stop("strategy = \"exceptions\" requires pvalue_threshold below the ",
+         "outermost central Z bin p-value (", format(edge$p, digits = 3), ")",
+         call. = FALSE)
+  }
+  if (identical(strategy, "exceptions") ||
+      (identical(strategy, "auto") && exceptions_only)) {
     e <- pcodec_native_read_all_exceptions(store, index)
     zexc <- bitwAnd(as.integer(e$flags), 1L) != 0L
     e <- e[zexc, , drop = FALSE]
@@ -186,16 +197,16 @@ candidates_exact_ranks <- function(store, rows) {
 #' The strategy is chosen automatically and recorded in
 #' `attr(x, "candidate_strategy")`:
 #'
-#' 1. `"pvalue_flag"` when the store has a flag domain whose threshold equals
-#'    `pvalue_threshold` exactly. Membership is then the writer-time flag
-#'    (which follows a supplied p-value when one was available).
-#' 2. `"z_exceptions"` when `pvalue_threshold` is below the p-value of the
+#' 1. `"z_exceptions"` when `pvalue_threshold` is below the p-value of the
 #'    outermost central Z bin centre (about 4.8e-4 for the standard profile).
 #'    Every row beyond the central Z range is stored as an exact float32 Z
 #'    exception, so candidates are precisely the Z-exception rows meeting the
 #'    threshold and only the small exception sidecar is decoded.
-#' 3. `"z_stream"` otherwise: only the Z stream is decoded and masked through
+#' 2. `"z_stream"` otherwise: only the Z stream is decoded and masked through
 #'    a per-code p lookup.
+#'
+#' Membership is always the reconstructed-p definition unless
+#' `strategy = "pvalue_flag"` is requested explicitly.
 #'
 #' @param store A native Pcodec store object or path.
 #' @param pvalue_threshold Inclusive threshold in `[0, 1]`.
@@ -212,14 +223,23 @@ candidates_exact_ranks <- function(store, rows) {
 #'   smaller threshold). Candidates without an exact rank (possible only
 #'   because reconstructed and exact p differ) get `NA` and sort last.
 #' @param threads Decoder threads.
+#' @param strategy `"auto"` (default; exact, never uses the flag),
+#'   `"exceptions"` (exceptions-only; error unless the threshold is below the
+#'   exceptions edge), `"z_stream"`, or `"pvalue_flag"` (explicit opt-in: the
+#'   writer-time flag membership, which follows a supplied p-value when one was
+#'   available and so can differ from the reconstructed-p definition; requires
+#'   a flag domain whose threshold equals `pvalue_threshold`).
 #' @return A data frame with attributes `candidate_strategy`,
 #'   `candidate_threshold` and `candidate_order`.
 #' @export
 read_candidates <- function(store, pvalue_threshold, region = NULL,
                             columns = NULL,
                             order = c("none", "reconstructed", "exact"),
-                            threads = 1L) {
+                            threads = 1L,
+                            strategy = c("auto", "exceptions", "z_stream",
+                                         "pvalue_flag")) {
   order <- match.arg(order)
+  strategy <- match.arg(strategy)
   threshold <- candidates_validate_threshold(pvalue_threshold)
   threads <- pcodec_validate_threads(threads)
   store <- candidates_open(store)
@@ -240,7 +260,7 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
     }
   }
   index <- pcodec_native_read_index(store)
-  picked <- candidates_select_rows(store, index, threshold, threads)
+  picked <- candidates_select_rows(store, index, threshold, threads, strategy)
   rows <- picked$rows
   allowed <- c("global_position", "substitution", "chromosome", "base_pair_location",
                "reference_allele", "alternate_allele", "effect_allele", "other_allele",
@@ -318,7 +338,10 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
 read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
                                   columns = NULL,
                                   order = c("none", "reconstructed", "exact"),
-                                  threads = 1L, bind = FALSE) {
+                                  threads = 1L, bind = FALSE,
+                                  strategy = c("auto", "exceptions", "z_stream",
+                                               "pvalue_flag")) {
+  strategy <- match.arg(strategy)
   order <- match.arg(order)
   if (is.character(stores)) stores <- as.list(stores)
   if (!is.list(stores) || !length(stores)) {
@@ -334,7 +357,8 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   pieces <- pcodec_parallel_lapply(seq_along(stores), function(i) {
     tryCatch(
       read_candidates(stores[[i]], thresholds[[i]], region = region,
-                      columns = columns, order = order, threads = inner),
+                      columns = columns, order = order, threads = inner,
+                      strategy = strategy),
       error = function(e) e
     )
   }, threads = threads)

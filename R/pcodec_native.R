@@ -1013,7 +1013,9 @@ pcodec_native_validate_index_parity <- function(index, n) {
 }
 
 # Parsed-index cache keyed by index path; an entry is reused only while the
-# index file's size and mtime and the manifest row count are unchanged.
+# content identity recorded in the (checksum-verified) manifest -- the index
+# file sha256 and the payload sha256 -- and the row count are unchanged.
+# File mtimes are not used: they can be restored or too coarse.
 .pcodec_native_cache <- new.env(parent = emptyenv())
 
 pcodec_native_file_stamp <- function(path) {
@@ -1021,10 +1023,20 @@ pcodec_native_file_stamp <- function(path) {
   paste(info$size, format(as.numeric(info$mtime), digits = 17), sep = "|")
 }
 
+pcodec_native_cache_stamp <- function(store, index_path) {
+  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
+  integ <- store$manifest$integrity
+  index_sha <- integ$files[[basename(index_path)]]$sha256
+  if (is.null(index_sha) || is.null(integ$payload_sha256)) {
+    # No recorded content identity: fall back to size+mtime.
+    return(paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|"))
+  }
+  paste(index_sha, integ$payload_sha256, n_stamp, sep = "|")
+}
+
 pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
-  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
-  stamp <- paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|")
+  stamp <- pcodec_native_cache_stamp(store, index_path)
   key <- paste0("index:", index_path)
   hit <- .pcodec_native_cache[[key]]
   if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
@@ -1045,8 +1057,7 @@ pcodec_native_read_index <- function(store) {
 # Block matrices handed to the native selective reader, cached per index.
 pcodec_native_select_matrices <- function(store, index) {
   index_path <- file.path(store$path, store$manifest$files$index)
-  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
-  stamp <- paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|")
+  stamp <- pcodec_native_cache_stamp(store, index_path)
   key <- paste0("matrices:", index_path)
   hit <- .pcodec_native_cache[[key]]
   if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)

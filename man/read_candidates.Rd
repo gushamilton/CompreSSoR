@@ -10,7 +10,8 @@ read_candidates(
   region = NULL,
   columns = NULL,
   order = c("none", "reconstructed", "exact"),
-  threads = 1L
+  threads = 1L,
+  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag")
 )
 }
 \arguments{
@@ -34,6 +35,13 @@ smaller threshold). Candidates without an exact rank (possible only
 because reconstructed and exact p differ) get \code{NA} and sort last.}
 
 \item{threads}{Decoder threads.}
+
+\item{strategy}{\code{"auto"} (default; exact, never uses the flag),
+\code{"exceptions"} (exceptions-only; error unless the threshold is below the
+exceptions edge), \code{"z_stream"}, or \code{"pvalue_flag"} (explicit opt-in: the
+writer-time flag membership, which follows a supplied p-value when one was
+available and so can differ from the reconstructed-p definition; requires
+a flag domain whose threshold equals \code{pvalue_threshold}).}
 }
 \value{
 A data frame with attributes \code{candidate_strategy},
@@ -49,9 +57,6 @@ without decoding the whole store when that is avoidable.
 The strategy is chosen automatically and recorded in
 \code{attr(x, "candidate_strategy")}:
 \enumerate{
-\item \code{"pvalue_flag"} when the store has a flag domain whose threshold equals
-\code{pvalue_threshold} exactly. Membership is then the writer-time flag
-(which follows a supplied p-value when one was available).
 \item \code{"z_exceptions"} when \code{pvalue_threshold} is below the p-value of the
 outermost central Z bin centre (about 4.8e-4 for the standard profile).
 Every row beyond the central Z range is stored as an exact float32 Z
@@ -60,4 +65,7 @@ threshold and only the small exception sidecar is decoded.
 \item \code{"z_stream"} otherwise: only the Z stream is decoded and masked through
 a per-code p lookup.
 }
+
+Membership is always the reconstructed-p definition unless
+\code{strategy = "pvalue_flag"} is requested explicitly.
 }
