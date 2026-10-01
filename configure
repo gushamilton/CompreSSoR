@@ -1,9 +1,18 @@
 #!/bin/sh
 
-set -eu
+set -u
 
 package_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 makevars="$package_root/src/Makevars"
+generated_library="$package_root/src/libcompressor_pcodec_native.a"
+target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
+cleanup_partial_build() {
+  rm -rf -- "$target_dir"
+  rm -f -- "$generated_library" "$makevars"
+}
+trap 'cleanup_partial_build; exit 1' HUP INT TERM
+
+rm -f -- "$generated_library" "$makevars"
 if [ -d /opt/homebrew/opt/rustup/bin ]; then
   PATH=/opt/homebrew/opt/rustup/bin:$PATH
   export PATH
@@ -21,8 +30,11 @@ if [ -z "$cargo_bin" ]; then
   exit 1
 fi
 
-target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
-mkdir -p "$target_dir"
+if ! mkdir -p "$target_dir"; then
+  printf '%s\n' 'CompreSSoR could not create a temporary Cargo target directory.' >&2
+  cleanup_partial_build
+  exit 1
+fi
 # Cargo follows the host architecture by default. R can legitimately run
 # under Rosetta, so build for the architecture of the R runtime rather than
 # the architecture of the machine running configure. During R CMD check the
@@ -79,6 +91,26 @@ case "$r_platform:$r_arch" in
   *-linux-gnu*:aarch64|*-linux-gnu*:arm64) cargo_target="aarch64-unknown-linux-gnu" ;;
 esac
 
+# Cargo's C dependencies otherwise inherit the SDK version as their minimum
+# macOS target, which can be newer than the target used by R's linker. Match
+# the minimum version of the running R framework when it is discoverable.
+if [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] &&
+   case "$r_platform" in *-apple-darwin*) true ;; *) false ;; esac &&
+   [ -n "$rscript_bin" ] && command -v otool >/dev/null 2>&1; then
+  r_home="$($rscript_bin --vanilla -e 'cat(R.home())' 2>/dev/null || true)"
+  r_library="$r_home/lib/libR.dylib"
+  if [ -f "$r_library" ]; then
+    r_macos_target="$(otool -l "$r_library" 2>/dev/null |
+      awk '$1 == "minos" { print $2; exit }' || true)"
+    case "$r_macos_target" in
+      [0-9]*.[0-9]*)
+        MACOSX_DEPLOYMENT_TARGET="$r_macos_target"
+        export MACOSX_DEPLOYMENT_TARGET
+        ;;
+    esac
+  fi
+fi
+
 cargo_target_args=""
 native_library="$target_dir/release/libcompressor_pcodec_native.a"
 if [ -n "$cargo_target" ]; then
@@ -90,17 +122,34 @@ if ! RUSTFLAGS="${COMPRESSOR_RUSTFLAGS:-}" "$cargo_bin" build --locked \
      --manifest-path "$package_root/src/pcodec_native/Cargo.toml" \
      --release --target-dir "$target_dir" $cargo_target_args >/dev/null 2>&1; then
   printf '%s\n' 'CompreSSoR could not build its native Pcodec backend with Cargo.' >&2
+  cleanup_partial_build
   exit 1
 fi
 if [ ! -f "$native_library" ]; then
   printf '%s\n' 'Cargo completed without producing the native Pcodec library.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+if ! cp "$native_library" "$generated_library"; then
+  printf '%s\n' 'CompreSSoR could not copy the native Pcodec library into src/.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+if ! rm -rf -- "$target_dir"; then
+  printf '%s\n' 'CompreSSoR could not remove its temporary Cargo target directory.' >&2
+  cleanup_partial_build
   exit 1
 fi
 
-printf '%s\n' \
+if ! printf '%s\n' \
   'CXX_STD = CXX17' \
   'PKG_CPPFLAGS = -DCOMPRESSOR_NATIVE_PCODEC' \
-  "PKG_LIBS = $native_library -lm -ldl -lpthread" > "$makevars"
-printf '%s\n' "Native Pcodec backend enabled ($native_library)"
+  'PKG_LIBS = libcompressor_pcodec_native.a -lm -ldl -lpthread' > "$makevars"; then
+  printf '%s\n' 'CompreSSoR could not write src/Makevars.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+printf '%s\n' "Native Pcodec backend enabled ($generated_library)"
 
+trap - HUP INT TERM
 exit 0

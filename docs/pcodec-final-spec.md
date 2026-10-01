@@ -81,6 +81,19 @@ the core stream encodings or the native format version, and
 `read_pvalue_flag()` returns zero-based row IDs suitable for downstream
 `read_sumstats(..., variants = ...)` projection.
 
+Native stores may also carry the opt-in `pvalue_order.pco` side domain. It is
+a lossless Pcodec `uint32` rank stream aligned to the native value blocks:
+zero means that the row is outside the configured inclusive candidate
+threshold, and ranks `1..k` encode exact pre-lossy p-value order. Finite
+supplied p-values are authoritative; otherwise the rank is derived from exact
+prepared Z before quantisation. Ties use the canonical variant key, which is
+the immutable native row order. The domain is explicitly versioned as
+`aligned_exact_rank_v1`, does not store exact p-values, is disabled by default
+pending its maintained large-file benchmark, and does not change the locked
+core streams or native format version. `read_pvalue_order()` fails safely when
+the exact domain/threshold is unavailable unless reconstructed-p fallback is
+requested explicitly.
+
 The canonical public numerical profile is `Z9/EAF8/SE6`: Z has 9 semantic bits,
 EAF has 8 semantic bits, and SE has 6 semantic bits. The SE semantic codes are
 carried in a physical `uint8` stream; this byte container must not be confused
@@ -163,6 +176,8 @@ Pcodec 1.0.3, level 8:
 Optional aligned domains are separate from the core numerical streams. The
 current `pvalue_flag` domain is an independently framed Pcodec `uint8` stream
 with the same value-block row partition as `z.pco`, `eaf.pco`, and `se.pco`.
+The opt-in `pvalue_order` domain uses the same partition with physical
+`uint32` ranks and zero as its non-candidate sentinel.
 
 Key frames contain 131,072 rows. Numerical value frames contain 65,536
 rows. Pcodec pages use 131,072 rows.

@@ -146,6 +146,16 @@ write_selection_regions <- function(output, selection) {
 #' @param pvalue_flag_threshold Threshold recorded by the p-value flag domain.
 #'   The standard convention is `5e-8` with an inclusive `<=` operator. This
 #'   is separate from `pvalue_threshold`, which controls variant selection.
+#' @param pvalue_order For native Pcodec stores, whether to write an optional
+#'   exact p-value ordering domain. The domain stores one lossless uint32 rank
+#'   per native row for candidates at `pvalue_order_threshold`; zero marks a
+#'   non-candidate. Ordering uses finite supplied p-values when present,
+#'   otherwise exact prepared Z, with canonical variant identity as the
+#'   deterministic tie-break. The default is `FALSE` pending the maintained
+#'   large-file storage benchmark.
+#' @param pvalue_order_threshold Inclusive threshold for the exact p-value
+#'   ordering domain. `NULL` uses `pvalue_flag_threshold`. This domain is
+#'   separate from both variant selection and the binary p-value flag.
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #'   The default is 10,000 bp; the threshold and window are recorded in the
@@ -185,6 +195,8 @@ compress_sumstats <- function(input, output,
                               pvalue_threshold = 1e-5,
                               pvalue_flag = NULL,
                               pvalue_flag_threshold = 5e-8,
+                              pvalue_order = FALSE,
+                              pvalue_order_threshold = NULL,
                               region_padding = 10000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
@@ -240,8 +252,25 @@ compress_sumstats <- function(input, output,
     stop("pvalue_flag must be TRUE, FALSE, or NULL", call. = FALSE)
   }
   pvalue_flag <- if (is.null(pvalue_flag)) identical(backend, "pcodec") else isTRUE(pvalue_flag)
+  if (length(pvalue_order) != 1L || !is.logical(pvalue_order) || is.na(pvalue_order)) {
+    stop("pvalue_order must be TRUE or FALSE", call. = FALSE)
+  }
+  if (is.null(pvalue_order_threshold)) {
+    pvalue_order_threshold <- pvalue_flag_threshold
+  }
+  if (length(pvalue_order_threshold) != 1L ||
+      !is.numeric(pvalue_order_threshold) || is.na(pvalue_order_threshold) ||
+      !is.finite(pvalue_order_threshold) || pvalue_order_threshold < 0 ||
+      pvalue_order_threshold > 1) {
+    stop("pvalue_order_threshold must be NULL or one finite number between 0 and 1",
+         call. = FALSE)
+  }
   if (isTRUE(pvalue_flag) && !identical(backend, "pcodec")) {
     stop("pvalue_flag is currently supported for backend='pcodec' only",
+         call. = FALSE)
+  }
+  if (isTRUE(pvalue_order) && !identical(backend, "pcodec")) {
+    stop("pvalue_order is currently supported for backend='pcodec' only",
          call. = FALSE)
   }
   if (identical(backend, "pcodec") && isTRUE(keep_extras)) {
@@ -268,7 +297,7 @@ compress_sumstats <- function(input, output,
     prepared_core = identical(qc, "none"),
     construct_variant_id = identical(backend, "parquet"),
     include_p_value = selection %in% c("core_plus", "pvalue_regions") ||
-      isTRUE(pvalue_flag)
+      isTRUE(pvalue_flag) || isTRUE(pvalue_order)
   )
   # Import performs the shared zero-row check before any destination or
   # staging directory is created.  This keeps empty input a deliberate public
@@ -454,6 +483,16 @@ compress_sumstats <- function(input, output,
         source = "finite_supplied_p_value_or_p_value_from_prepared_z",
         source_column_present = isTRUE(source_provenance$p_value$column_present),
         standard_default = TRUE
+      ),
+      pvalue_order = list(
+        enabled = isTRUE(pvalue_order),
+        threshold = as.numeric(pvalue_order_threshold),
+        operator = "<=",
+        source = "finite_supplied_p_value_or_p_value_from_exact_prepared_z",
+        source_column_present = isTRUE(source_provenance$p_value$column_present),
+        source_column_alias = source_provenance$p_value$source_alias %||% "absent",
+        tie_break = "canonical_variant_key",
+        standard_default = FALSE
       ),
       selection = selection,
       selection_metadata = prepared$selection_metadata,

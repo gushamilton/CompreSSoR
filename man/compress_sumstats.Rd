@@ -18,7 +18,8 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
                   variant_set = NULL, input_build = "GRCh38",
                   backend = c("pcodec", "parquet"),
                   pvalue_threshold = 1e-05, pvalue_flag = NULL,
-                  pvalue_flag_threshold = 5e-08, region_padding = 10000L,
+                  pvalue_flag_threshold = 5e-08, pvalue_order = FALSE,
+                  pvalue_order_threshold = NULL, region_padding = 10000L,
                   store_build = "GRCh38",
                   selection = c("full", "core", "hm3", "core_plus"),
                   threads = NULL, row_policy = c("report", "error"))
@@ -60,6 +61,13 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
   \item{pvalue_flag_threshold}{Inclusive threshold for the aligned p-value
     flag domain. The standard convention is \code{5e-8}; this is separate
     from \code{pvalue_threshold}, which controls variant selection.}
+  \item{pvalue_order}{For native Pcodec stores, whether to write the optional
+    exact p-value ordering domain. It stores one lossless uint32 rank per
+    native row for candidates at \code{pvalue_order_threshold}; zero marks a
+    non-candidate. The default is \code{FALSE} pending the maintained
+    large-file storage benchmark.}
+  \item{pvalue_order_threshold}{Inclusive threshold for the exact p-value
+    ordering domain. \code{NULL} uses \code{pvalue_flag_threshold}.}
   \item{region_padding}{Base pairs added around p-value-region seeds. The
     default is 10,000 bp and endpoints are inclusive.}
   \item{store_build}{Build represented by the store. It must be the same as

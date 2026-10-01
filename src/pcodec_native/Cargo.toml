@@ -13,4 +13,4 @@ crate-type = ["staticlib"]
 half = { version = "2.7.1", features = ["std"] }
 libc = "0.2.179"
 pco = "1.0.3"
-zstd = "0.13.3"
+zstd = { version = "0.13.3", default-features = false }

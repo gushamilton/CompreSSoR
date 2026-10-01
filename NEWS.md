@@ -1,5 +1,11 @@
 # CompreSSoR 0.5.0
 
+- Adds an opt-in, explicitly versioned `pvalue_order` side domain for exact
+  supplied-p/exact-prepared-Z candidate ordering without changing the locked
+  native core streams. `read_pvalue_order()` fails safely when exact ordering
+  is unavailable and requires an explicit reconstructed-p fallback.
+- Tightens source-package hygiene, native build cleanup, macOS Rust deployment
+  targeting, benchmark-path portability, and Rust formatting.
 - Refactors the installed package around a strict compression-only contract.
   Inputs must already contain chromosome, position, explicit REF/ALT,
   effect/non-effect alleles, beta, and standard error. The core performs

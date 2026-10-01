@@ -43,6 +43,15 @@ For the standard profile, the manifest records the EAF absolute bound, the
 central Z bin bound, the SE relative quantisation bound, and the derived-beta
 error formula; the exact Parquet backend is the lossless route.
 
+The native store can nevertheless preserve the exact ordering needed for
+clumping without retaining p-values themselves. With `pvalue_order = TRUE`,
+an optional row-aligned `uint32` side domain stores candidate ranks derived
+from supplied p-values or exact prepared Z before quantisation. It is exact
+only at its configured inclusive threshold, uses canonical identity to break
+ties, and remains opt-in until its maintained large-file benchmark is
+complete. The default reader fails rather than silently substituting the
+lossy reconstructed-p order.
+
 ## Prepared-input ingestion and build provenance
 
 The installed compressor does not perform reference lookup, allele
@@ -117,7 +126,9 @@ gwas.cpr/
 ├── z.pco
 ├── eaf.pco
 ├── se.pco
-└── exceptions.bin
+├── exceptions.bin
+├── pvalue_flag.pco   (optional aligned membership domain)
+└── pvalue_order.pco  (optional aligned exact-rank domain)
 ```
 
 `native.index.json` is the only index file: it contains the byte offset and

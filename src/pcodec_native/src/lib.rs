@@ -2,7 +2,7 @@
 
 use std::ptr;
 
-use libc::{c_uchar, c_int, c_uint, c_void, size_t};
+use libc::{c_int, c_uchar, c_uint, c_void, size_t};
 use pco::data_types::{Number, NumberType};
 use pco::standalone::guarantee;
 use pco::{match_number_enum, ChunkConfig, PagingSpec};
@@ -23,7 +23,10 @@ pub struct PcoChunkConfig {
 
 impl Default for PcoChunkConfig {
     fn default() -> Self {
-        Self { compression_level: 8, max_page_n: 0 }
+        Self {
+            compression_level: 8,
+            max_page_n: 0,
+        }
     }
 }
 
@@ -57,7 +60,9 @@ fn compress_into<T: Number>(
         return PcoError::PcoCompressionError;
     }
     if n == 0 {
-        unsafe { *n_written = 0; }
+        unsafe {
+            *n_written = 0;
+        }
         return PcoError::PcoSuccess;
     }
     if nums.is_null() || dst.is_null() || n_written.is_null() {
@@ -69,7 +74,9 @@ fn compress_into<T: Number>(
     match pco::standalone::simple_compress_into::<T, _>(source, config, destination) {
         Err(_) => PcoError::PcoCompressionError,
         Ok(remaining) => {
-            unsafe { *n_written = original_len - remaining.len(); }
+            unsafe {
+                *n_written = original_len - remaining.len();
+            }
             PcoError::PcoSuccess
         }
     }
@@ -89,7 +96,9 @@ fn decompress_into<T: Number>(
     match pco::standalone::simple_decompress::<T>(source) {
         Err(_) => PcoError::PcoDecompressionError,
         Ok(values) => {
-            if values.len() > dst_cap { return PcoError::PcoDecompressionError; }
+            if values.len() > dst_cap {
+                return PcoError::PcoDecompressionError;
+            }
             unsafe {
                 ptr::copy_nonoverlapping(values.as_ptr(), dst as *mut T, values.len());
                 *n_written = values.len();
@@ -101,7 +110,9 @@ fn decompress_into<T: Number>(
 
 #[no_mangle]
 pub extern "C" fn compressor_pco_guarantee_file_size(n: size_t, dtype: c_uchar) -> size_t {
-    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else { return 0; };
+    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else {
+        return 0;
+    };
     let paging_spec = PagingSpec::default();
     match_number_enum!(dtype_enum, NumberType<T> => { guarantee_file_size::<T>(n, &paging_spec) })
 }
@@ -119,7 +130,9 @@ pub unsafe extern "C" fn compressor_pco_compress_into(
     if n_written.is_null() {
         return PcoError::PcoCompressionError;
     }
-    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else { return PcoError::PcoInvalidType; };
+    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else {
+        return PcoError::PcoInvalidType;
+    };
     let chunk_config = if config.is_null() {
         PcoChunkConfig::default().to_chunk_config()
     } else {
@@ -142,7 +155,9 @@ pub extern "C" fn compressor_pco_decompress_into(
     if n_written.is_null() {
         return PcoError::PcoDecompressionError;
     }
-    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else { return PcoError::PcoInvalidType; };
+    let Some(dtype_enum) = NumberType::from_descriminant(dtype) else {
+        return PcoError::PcoInvalidType;
+    };
     match_number_enum!(dtype_enum, NumberType<T> => {
         decompress_into::<T>(compressed, compressed_len, dst, dst_cap, n_written)
     })
@@ -157,8 +172,8 @@ pub unsafe extern "C" fn compressor_zstd_compress_into(
     dst_cap: size_t,
     n_written: *mut size_t,
 ) -> PcoError {
-    if n_written.is_null() || (input.is_null() && input_len != 0) ||
-        (dst.is_null() && dst_cap != 0) {
+    if n_written.is_null() || (input.is_null() && input_len != 0) || (dst.is_null() && dst_cap != 0)
+    {
         return PcoError::PcoCompressionError;
     }
     let source = unsafe { std::slice::from_raw_parts(input as *const u8, input_len) };
@@ -184,8 +199,8 @@ pub unsafe extern "C" fn compressor_zstd_decompress_into(
     dst_cap: size_t,
     n_written: *mut size_t,
 ) -> PcoError {
-    if n_written.is_null() || (input.is_null() && input_len != 0) ||
-        (dst.is_null() && dst_cap != 0) {
+    if n_written.is_null() || (input.is_null() && input_len != 0) || (dst.is_null() && dst_cap != 0)
+    {
         return PcoError::PcoDecompressionError;
     }
     let source = unsafe { std::slice::from_raw_parts(input as *const u8, input_len) };

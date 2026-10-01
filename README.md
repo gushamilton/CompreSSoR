@@ -64,7 +64,9 @@ gwas.cpr/
 ├── z.pco                  quantised Z stream
 ├── eaf.pco                arcsine-quantised EAF stream
 ├── se.pco                 block-centred log2-quantised SE stream
-└── exceptions.bin         sparse higher-precision numeric exceptions
+├── exceptions.bin         sparse higher-precision numeric exceptions
+├── pvalue_flag.pco        optional aligned threshold-membership flag
+└── pvalue_order.pco       optional aligned exact candidate-order ranks
 ```
 
 The identity key is stored in every GWAS, so an external variant spine is not
@@ -78,7 +80,8 @@ required for access or comparison. The standard numerical representation is:
 | EAF | 8-bit arcsine code | Quantised EAF |
 | SE | 6-bit semantic block-centred log2 residual in a physical `uint8` stream | Quantised SE |
 | Beta | Not stored per row | Derived as `Z × SE` |
-| p-value | Not stored | Derived from Z |
+| p-value | Exact value not stored | Derived from Z |
+| Candidate p-order | Optional lossless uint32 rank side domain | Exact pre-encoding order at its configured threshold |
 | rsID/text ID | Not stored | Use `chrom:pos:REF:ALT` |
 
 This is intentionally a core numerical format. Exact or arbitrary extra
@@ -249,6 +252,25 @@ mr <- read_sumstats(
 )
 ```
 
+When downstream clumping needs the exact source p-value order rather than the
+lossy reconstructed-p order, opt in while writing and read the resulting
+zero-based native row IDs directly:
+
+```r
+ordered_store <- compress_sumstats(
+  "gwas.tsv.gz", "gwas-ordered.cpr",
+  input_build = "GRCh38", store_build = "GRCh38",
+  pvalue_order = TRUE, pvalue_order_threshold = 5e-8,
+  overwrite = TRUE
+)
+ordered_instruments <- read_pvalue_order(ordered_store)
+```
+
+The ordering side domain stores ranks, not exact p-values. It is opt-in until
+its maintained large-file storage benchmark is complete. Stores without it
+fail safely unless the caller explicitly chooses the approximate
+`fallback = "reconstructed"` mode.
+
 The boundary importer recognises common aliases through a deterministic
 resolution matrix. This includes EAF aliases such as `EAF`, `AF`, and the
 UKB-PPP allele-frequency field `A1FREQ`; a finite supplied EAF is projected and
@@ -335,7 +357,10 @@ column when the standard flag is enabled so the aligned `pvalue_flag.pco`
 domain can use a finite supplied p-value authoritatively and otherwise fall
 back to Z. The flag is written at `p <= 5e-8` by convention and can be
 disabled with `pvalue_flag = FALSE`; `pvalue_flag_threshold` is separate from
-the `pvalue_threshold` selection argument. Dense missing-EAF
+the `pvalue_threshold` selection argument. The optional `pvalue_order.pco`
+domain similarly records exact pre-encoding candidate ranks at its own
+inclusive threshold, without storing p-values or changing the core format.
+Dense missing-EAF
 rows remain sparse, block-partitioned exception records and are never repaired
 by imputing a biological EAF.
 
@@ -408,7 +433,7 @@ the same canonical keys to read only the required exposure/outcome values.
 - [Benchmark write-up and reproducible records](benchmarks/README.md)
 - [Technical guide and format details](docs/README-technical.md)
 - [Issue #18 roadmap disposition](docs/issue-18-roadmap-disposition.md)
-- [R package reference](https://gushamilton.github.io/CompreSSoR/)
+- [Source repository and issue tracker](https://github.com/gushamilton/CompreSSoR)
 
 ## Verification
 

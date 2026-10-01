@@ -6,6 +6,7 @@
 .local/
 src/*.o
 src/*.so
+src/libcompressor_pcodec_native.a
 src/symbols.rds
 __pycache__/
 *.pyc

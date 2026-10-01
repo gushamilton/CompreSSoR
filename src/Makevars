@@ -1,0 +1,3 @@
+CXX_STD = CXX17
+PKG_CPPFLAGS = -DCOMPRESSOR_NATIVE_PCODEC
+PKG_LIBS = libcompressor_pcodec_native.a -lm -ldl -lpthread
