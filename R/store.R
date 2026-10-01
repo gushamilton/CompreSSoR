@@ -667,13 +667,28 @@ compress_sumstats <- function(input, output,
 #' @param path Store directory.
 #' @return A `compressor_store` object.
 #' @export
+# Opened-store cache: the parsed manifest and its checksum verification are
+# reused while manifest.json and manifest.sha256 keep their size and mtime.
+.compressor_open_cache <- new.env(parent = emptyenv())
+
 open_compressor <- function(path) {
   path <- normalizePath(path, mustWork = FALSE)
   if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)
-  manifest <- read_manifest(file.path(path, "manifest.json"))
+  manifest_path <- file.path(path, "manifest.json")
+  stamp <- NULL
+  if (file.exists(manifest_path)) {
+    info <- file.info(c(manifest_path, pcodec_manifest_checksum_path(manifest_path)))
+    if (!anyNA(info$size)) {
+      stamp <- paste(info$size, format(as.numeric(info$mtime), digits = 17),
+                     collapse = "|")
+      hit <- .compressor_open_cache[[path]]
+      if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
+    }
+  }
+  manifest <- read_manifest(manifest_path)
   if (!identical(manifest$format, "CompreSSoR")) stop("not a CompreSSoR store", call. = FALSE)
   if (identical(manifest$backend, "pcodec")) {
-    verify_pcodec_manifest(file.path(path, "manifest.json"))
+    verify_pcodec_manifest(manifest_path)
   }
   if (identical(manifest$backend, "pcodec") &&
       !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {
@@ -681,7 +696,11 @@ open_compressor <- function(path) {
          manifest$format_version %||% "missing",
          "; this build reads native 0.4 stores only", call. = FALSE)
   }
-  structure(list(path = path, manifest = manifest), class = "compressor_store")
+  store <- structure(list(path = path, manifest = manifest), class = "compressor_store")
+  if (!is.null(stamp) && identical(manifest$backend, "pcodec")) {
+    .compressor_open_cache[[path]] <- list(stamp = stamp, store = store)
+  }
+  store
 }
 
 print.compressor_store <- function(x, ...) {

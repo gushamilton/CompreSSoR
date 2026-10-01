@@ -1012,8 +1012,22 @@ pcodec_native_validate_index_parity <- function(index, n) {
   invisible(TRUE)
 }
 
+# Parsed-index cache keyed by index path; an entry is reused only while the
+# index file's size and mtime and the manifest row count are unchanged.
+.pcodec_native_cache <- new.env(parent = emptyenv())
+
+pcodec_native_file_stamp <- function(path) {
+  info <- file.info(path)
+  paste(info$size, format(as.numeric(info$mtime), digits = 17), sep = "|")
+}
+
 pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
+  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
+  stamp <- paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|")
+  key <- paste0("index:", index_path)
+  hit <- .pcodec_native_cache[[key]]
+  if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
   index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
   if (!identical(index$format, "CompreSSoR-native-index") ||
       !as.integer(index$version) %in% c(1L, 2L, 3L)) {
@@ -1024,7 +1038,46 @@ pcodec_native_read_index <- function(store) {
     stop("native Pcodec manifest row count is invalid", call. = FALSE)
   }
   pcodec_native_validate_index_parity(index, n)
+  .pcodec_native_cache[[key]] <- list(stamp = stamp, value = index)
   index
+}
+
+# Block matrices handed to the native selective reader, cached per index.
+pcodec_native_select_matrices <- function(store, index) {
+  index_path <- file.path(store$path, store$manifest$files$index)
+  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
+  stamp <- paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|")
+  key <- paste0("matrices:", index_path)
+  hit <- .pcodec_native_cache[[key]]
+  if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
+  key_blocks <- pcodec_native_index_blocks(index, "key")
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  exception_blocks <- index$exceptions$blocks %||% list()
+  last_position <- vapply(key_blocks, function(b) as.numeric(b$last_position), numeric(1))
+  position <- pcodec_native_block_matrix(key_blocks, index$streams$position$blocks,
+                                         first_position = TRUE)
+  position <- cbind(position, last_position)
+  value <- list(
+    files = c(
+      file.path(store$path, index$streams$position$file),
+      file.path(store$path, index$streams$substitution$file),
+      file.path(store$path, index$streams$z$file),
+      file.path(store$path, index$streams$eaf$file),
+      file.path(store$path, index$streams$se$file),
+      file.path(store$path, index$exceptions$file)),
+    position = position,
+    substitution = pcodec_native_block_matrix(key_blocks, index$streams$substitution$blocks,
+                                              first_position = TRUE),
+    z = pcodec_native_block_matrix(value_blocks, index$streams$z$blocks),
+    eaf = pcodec_native_block_matrix(value_blocks, index$streams$eaf$blocks),
+    se = pcodec_native_block_matrix(value_blocks, index$streams$se$blocks),
+    exceptions = do.call(rbind, lapply(exception_blocks, function(block) {
+      c(as.numeric(block$offset), as.numeric(block$length),
+        as.numeric(block$count), as.numeric(block$raw_length))
+    })) %||% matrix(numeric(), nrow = 0L, ncol = 4L)
+  )
+  .pcodec_native_cache[[key]] <- list(stamp = stamp, value = value)
+  value
 }
 
 pcodec_native_read_blob <- function(path, offset, length) {
@@ -1707,7 +1760,9 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
     ok <- codes$se >= 0L & codes$se < se_count
     safe <- pmin(1 - 1e-12, pmax(1e-12, output$eaf))
     residual <- se_range[1] + (codes$se + 0.5) * diff(se_range) / se_count
-    se[ok] <- 2^(residual[ok] + centres[centre_id] -
+    centre <- centres[centre_id]
+    if (length(centre) > 1L) centre <- centre[ok]
+    se[ok] <- 2^(residual[ok] + centre -
       0.5 * log2(2 * safe[ok] * (1 - safe[ok])))
     output$se <- se
   }
@@ -1810,6 +1865,14 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
                                       build = build)
     attr(output, "source_bytes_read") <- NA_real_
     return(output)
+  }
+
+  if (isTRUE(getOption("CompreSSoR.pcodec.native_select", TRUE)) &&
+      is.loaded("compressor_read_pcodec_native_select", PACKAGE = "CompreSSoR") &&
+      !(!is.null(region) && !is.null(variants))) {
+    return(pcodec_native_select_read(
+      store, index, manifest, build, requested, columns, identity_needed, need_z,
+      need_se, need_eaf, needed, row_targets, key_targets, lower, upper, threads))
   }
 
   source_bytes <- 0
@@ -1972,6 +2035,83 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   attr(output, "source_bytes_read") <- source_bytes
   output
 }
+
+# Native selective read: one native call decodes only the touched blocks and
+# returns codes + exceptions for the selected rows; values are then produced
+# with the same R arithmetic as the per-block R path so results are identical.
+pcodec_native_select_read <- function(store, index, manifest, build, requested,
+                                      columns, identity_needed, need_z, need_se,
+                                      need_eaf, needed, row_targets, key_targets,
+                                      lower, upper, threads) {
+  threads <- pcodec_validate_threads(threads)
+  check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
+  if (nzchar(check_limit) && check_limit != "false") threads <- min(threads, 2L)
+  mats <- pcodec_native_select_matrices(store, index)
+  if (!is.null(lower)) {
+    mode <- 1L
+    selection <- c(as.numeric(lower), as.numeric(upper))
+  } else if (!is.null(key_targets)) {
+    mode <- 2L
+    selection <- sort(unique(as.numeric(key_targets$position) * 16 +
+                               as.numeric(key_targets$substitution)))
+  } else {
+    mode <- 0L
+    selection <- sort(as.numeric(row_targets))
+  }
+  streams <- c(needed, if (identity_needed) c("position", "substitution"))
+  if (mode == 0L && !length(selection)) return(pcodec_native_empty_result(columns))
+  res <- .Call("compressor_read_pcodec_native_select", mats$files, mats$position,
+               mats$substitution, mats$z, mats$eaf, mats$se, mats$exceptions,
+               as.numeric(manifest$n_rows %||% manifest$rows), as.character(streams),
+               index$exceptions$codec %||% "raw", as.integer(threads), mode,
+               selection, isTRUE(identity_needed),
+               identical(index$position_encoding, "delta_u32_within_block"),
+               PACKAGE = "CompreSSoR")
+  rows <- res$rows
+  m <- length(rows)
+  if (!m) return(pcodec_native_empty_result(columns))
+  decoded <- list()
+  if (length(needed)) {
+    semantic <- manifest$semantic_codec
+    exceptions <- data.frame(row = res$exc_index + 1L, z = res$exc_z,
+                             log2se = res$exc_log2se, eaf = res$exc_eaf,
+                             flags = res$exc_flags)
+    centre_id <- floor(rows / as.integer(
+      semantic$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
+    )) + 1L
+    decoded <- pcodec_native_decode_values(
+      list(z = res$z, eaf = res$eaf, se = res$se), exceptions, centre_id,
+      as.numeric(unlist(semantic$block_centers_log2_residual)),
+      1L, m, needed, semantic
+    )
+  }
+  part <- data.frame(row = rows, stringsAsFactors = FALSE)
+  if (identity_needed) {
+    identity_part <- pcodec_native_key_columns(res$position, res$substitution,
+                                               build = build)
+    part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
+  }
+  if ("z" %in% names(decoded)) part$z <- decoded$z
+  if ("se" %in% names(decoded)) part$standard_error <- decoded$se
+  if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
+  if ("beta" %in% requested) part$beta <- part$z * part$standard_error
+  if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
+  output <- part
+  row.names(output) <- NULL
+  if (is.null(columns)) {
+    output <- output[c("row", setdiff(c("chromosome", "base_pair_location",
+      "reference_allele", "alternate_allele",
+      "effect_allele", "other_allele", "z", "beta", "standard_error",
+      "effect_allele_frequency", "p_value"), ""))]
+  } else {
+    missing <- setdiff(requested, names(output))
+    if (length(missing)) stop("requested columns are not present: ", paste(missing, collapse = ", "), call. = FALSE)
+    output <- output[c("row", requested)]
+  }
+  attr(output, "source_bytes_read") <- res$source_bytes
+  output
+}
+
 
 pcodec_native_validate_store <- function(store, full = FALSE) {
   result <- tryCatch({
