@@ -18,3 +18,6 @@ make_fixture <- function(n = 1200L) {
     stringsAsFactors = FALSE
   )
 }
+
+nextafter_up <- function(x) x + abs(x) * .Machine$double.eps
+nextafter_down <- function(x) x - abs(x) * .Machine$double.eps / 2
