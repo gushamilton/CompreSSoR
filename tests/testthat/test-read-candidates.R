@@ -155,3 +155,25 @@ test_that("all projectable columns match the full read", {
   for (nm in cols) expect_equal(got[[nm]], want[[nm]], tolerance = 1e-12)
   expect_error(read_candidates(store, 0.01, columns = "nope"), "unknown output")
 })
+
+test_that("store caches are keyed on content, not mtime", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
+  A <- candidate_fixture(seed = 3L)
+  P <- tempfile("stale-"); Q <- tempfile("stale-")
+  compress_sumstats(A, P, overwrite = TRUE, qc = "none")
+  rows <- 0:(nrow(A) - 1L)
+  r1 <- read_sumstats(P, variants = rows, columns = c("beta", "standard_error"))
+  mt <- file.mtime(list.files(P, full.names = TRUE))
+  names(mt) <- list.files(P)
+  B <- A; B$beta <- -B$beta
+  compress_sumstats(B, Q, overwrite = TRUE, qc = "none")
+  expected <- read_sumstats(Q, variants = rows, columns = c("beta", "standard_error"))
+  # Rewrite P in place and restore every original mtime.
+  compress_sumstats(B, P, overwrite = TRUE, qc = "none")
+  for (f in list.files(P, full.names = TRUE)) {
+    if (basename(f) %in% names(mt)) Sys.setFileTime(f, mt[[basename(f)]])
+  }
+  r2 <- read_sumstats(P, variants = rows, columns = c("beta", "standard_error"))
+  expect_identical(r2, expected)
+  expect_false(identical(r2, r1))
+})
