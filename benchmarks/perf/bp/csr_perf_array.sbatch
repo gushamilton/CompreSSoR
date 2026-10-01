@@ -43,8 +43,18 @@ label="${pair%%:*}"; sha="${pair#*:}"
 
 module purge
 module load languages/R/4.5.1
-module load "$rust_module"
-cargo_dir="$(dirname "$(command -v cargo)")"
+# Cargo >= 1.85 is needed for edition-2024 crates in Cargo.lock. Point
+# CSR_CARGO_DIR at a newer cargo/bin (e.g. extracted from the rust 1.87 dist
+# tarball); otherwise fall back to the (older) rust module's cargo.
+if [[ -n "${CSR_CARGO_DIR:-}" ]]; then
+  cargo_dir="$CSR_CARGO_DIR"
+else
+  module load "$rust_module"
+  cargo_dir="$(dirname "$(command -v cargo)")"
+fi
+# Compute nodes may be offline: crates must be prefetched (cargo fetch --locked)
+# on the login node into the shared ~/.cargo registry.
+export CARGO_NET_OFFLINE="${CARGO_NET_OFFLINE:-true}"
 export PATH="$rust_root/bin:$cargo_dir:$PATH"
 export LD_LIBRARY_PATH="$rust_root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 rustc --version >&2; cargo --version >&2
