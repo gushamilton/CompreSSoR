@@ -30,4 +30,8 @@ jobs:
             any::rcmdcheck
             any::arrow
             any::dplyr
+      # Fail on errors only: the Rust std staticlib always carries abort/exit
+      # symbols, which R CMD check reports as a compiled-code WARNING.
       - uses: r-lib/actions/check-r-package@v2
+        with:
+          error-on: '"error"'
