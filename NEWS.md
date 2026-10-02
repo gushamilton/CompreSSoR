@@ -1,3 +1,22 @@
+# CompreSSoR (development)
+
+- Fix: a finite Z one ulp below 3.5 (for example 0.0875 / 0.025, which
+  prints as 3.5) was written with Z code 510, the missing sentinel, and no
+  exception record, so z, beta and p read back as NA. The SE stream had the
+  same collision just below the top of its residual range. Central codes are
+  now clamped into the central range. The on-disk format is unchanged, but
+  stores written before this fix lost these values at write time and must be
+  rewritten from the source to recover them (4 of 10M rows in the FinnGen
+  benchmark store).
+- Fix: region queries are clamped to the chromosome span, so an end past the
+  chromosome end (or a start below 1) no longer returns rows from the next
+  (or previous) chromosome.
+- Faster full reads: identity columns and stream code-domain checks are built
+  natively. On the 10M-row FinnGen store on BluePebble, a fresh-process
+  `read_sumstats()` of the eight logical columns drops from 3.4 s to 1.2 s
+  (8 threads) and numeric-only reads from 1.1 s to 0.6 s; results are
+  identical.
+
 # CompreSSoR 0.6.0
 
 - The exact `pvalue_order` domain is now written by default

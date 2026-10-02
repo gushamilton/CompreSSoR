@@ -518,15 +518,9 @@ candidates_split <- function(x, parts) {
 
 candidates_region_range <- function(region, build) {
   if (is.null(region)) return(NULL)
-  bounds <- read_region_bounds(region)
-  chromosome <- toupper(sub("^CHR", "", as.character(bounds$chromosome),
-                            ignore.case = TRUE))
-  lengths <- compressor_chromosome_lengths(build)
-  if (!chromosome %in% names(lengths)) {
-    stop("unsupported region chromosome", call. = FALSE)
-  }
-  offset <- pcodec_native_offsets(build)[match(chromosome, names(lengths))]
-  c(offset + bounds$start - 1, offset + bounds$end - 1)
+  # An empty overlap is an inverted range, which every caller treats as
+  # matching no rows.
+  pcodec_native_region_range(region, build) %||% c(1, 0)
 }
 
 candidates_stream_reader <- function(store) {
