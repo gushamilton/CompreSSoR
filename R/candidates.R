@@ -661,3 +661,17 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
     stringsAsFactors = FALSE)
   out
 }
+
+#' Feature flags of this CompreSSoR build
+#'
+#' Lets dependent packages feature-detect capabilities without version
+#' parsing. `"candidates_one_pass"` means [read_candidates()] returns values,
+#' `key`, `p_value` (bit-identical to [read_sumstats()]) and exact ranks for
+#' the candidate rows in a single pass, and [read_candidates_batch()] reuses
+#' same-panel identity.
+#'
+#' @return A character vector of capability names.
+#' @export
+compressor_capabilities <- function() {
+  c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction")
+}
