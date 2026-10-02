@@ -20,4 +20,4 @@ read_pvalue_flag(store, name = "pvalue_flag",
 }
 \value{An integer vector of zero-based row IDs, or a logical vector with one
 value per store row.}
-\seealso{\link{compress_sumstats}, \link{read_sumstats}}
+\seealso{\link{compress_sumstats}, \link{read_pvalue_order}, \link{read_sumstats}}

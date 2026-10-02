@@ -214,3 +214,28 @@ aligned flag by default for native Pcodec stores at `p <= 5e-8` (inclusive).
 This is deliberately a separate API setting from the existing
 `pvalue_threshold` argument used by core/core-plus selection; callers can use
 `pvalue_flag_threshold` or disable the domain with `pvalue_flag = FALSE`.
+
+## Exact p-value ordering side-domain acceptance contract
+
+This is a non-authoritative acceptance benchmark for issue #45. Its question
+is how many bytes and how much write/read time are added by the opt-in,
+row-aligned `uint32` exact-rank domain, and whether it returns the same
+deterministic supplied-p/exact-Z order as a direct pre-encoding sort. It does
+not replace the locked FinnGen headline benchmark or change its format claims.
+
+The first input is the existing normalized 10,000,000-row FinnGen SNP source
+used by the authoritative 2026-08-04 comparison. The second is a prepared
+sparse-candidate protein input from the existing external UKB-PPP benchmark
+workspace. Access is read-only and follows the source hashes/build contracts
+already recorded above. The configured inclusive threshold, supplied/derived
+provenance counts, tie count, candidate count, store commit, native format,
+toolchain, and effective workers must be recorded.
+
+Run five independent writes with and without `pvalue_order = TRUE`, followed
+by five `read_pvalue_order()` calls and direct exact-order comparisons. Report
+incremental payload/manifest bytes and median/min/max write and read time. Raw
+GWAS data, generated stores, temporary libraries, and logs remain outside the
+repository. Only the maintained harness plus compact CSV/JSON/Markdown
+summaries may be retained in a new dated directory under `inst/benchmarks/`.
+Until both inputs have completed this contract, the side domain remains
+opt-in and no large-file overhead claim should be made.

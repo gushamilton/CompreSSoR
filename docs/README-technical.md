@@ -43,6 +43,15 @@ For the standard profile, the manifest records the EAF absolute bound, the
 central Z bin bound, the SE relative quantisation bound, and the derived-beta
 error formula; the exact Parquet backend is the lossless route.
 
+The native store can nevertheless preserve the exact ordering needed for
+clumping without retaining p-values themselves. With `pvalue_order = TRUE`,
+an optional row-aligned `uint32` side domain stores candidate ranks derived
+from supplied p-values or exact prepared Z before quantisation. It is exact
+only at its configured inclusive threshold, uses canonical identity to break
+ties, and remains opt-in until its maintained large-file benchmark is
+complete. The default reader fails rather than silently substituting the
+lossy reconstructed-p order.
+
 ## Prepared-input ingestion and build provenance
 
 The installed compressor does not perform reference lookup, allele
@@ -117,7 +126,9 @@ gwas.cpr/
 ├── z.pco
 ├── eaf.pco
 ├── se.pco
-└── exceptions.bin
+├── exceptions.bin
+├── pvalue_flag.pco   (optional aligned membership domain)
+└── pvalue_order.pco  (optional aligned exact-rank domain)
 ```
 
 `native.index.json` is the only index file: it contains the byte offset and
@@ -265,6 +276,26 @@ value frames; the current defaults are documented above. This is an engineering
 benchmark, not a claim about
 every GWAS or sparse workload; the real-GWAS suite should be regenerated for
 the native format before making a new production headline.
+
+### Offline, reproducible Rust build
+
+`configure` requires `cargo` and `rustc` at least as new as the `rust-version`
+in `src/pcodec_native/Cargo.toml` (currently 1.87) and stops early, naming the
+required version and the binary it found, if they are older. Crate sources are
+bundled in `src/pcodec_native/vendor.tar.xz` (about 1.9 MB); `configure`
+unpacks them into a temporary directory, points Cargo at them with a generated
+`--config` file and runs `cargo build --offline --locked`, so installation
+never needs network access or a populated `CARGO_HOME` (useful on offline HPC
+compute nodes). Developers can set `COMPRESSOR_CARGO_ONLINE=1` to use the normal
+registry instead. `COMPRESSOR_RUSTFLAGS` is passed through as before.
+
+After changing `Cargo.toml` or `Cargo.lock`, run `tools/vendor-crates.sh`
+(needs network) and commit the regenerated tarball.
+
+`compressor_build_info()` returns the rustc and cargo versions, a SHA-256 of
+`Cargo.lock` and whether vendored crates were used. The same record is stored in
+new manifests under `provenance$build_info`; it is excluded from
+`canonical_sha256` and does not affect `payload_sha256`.
 
 ## Benchmark interpretation
 

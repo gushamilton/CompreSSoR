@@ -8,7 +8,7 @@ benchmark_metadata <- function() {
     compression_metric = "compression_ratio_vs_source_gzip",
     data = "inst/benchmarks/finngen-10m-bp-20260804/format-screen/whole-file-10m-summary.csv",
     frontier = "inst/benchmarks/finngen-10m-bp-20260804/format-screen/whole-file-10m-frontier.csv",
-    threads = "inst/benchmarks/finngen-10m-bp-20260804/pcodec-thread-compare/pcodec-10m-thread-compare-18268241-summary.csv"
+    threads = "inst/benchmarks/finngen-10m-bp-20260804/pcodec-thread-compare/summary.csv"
   )
 }
 
@@ -46,12 +46,15 @@ benchmark_record_path <- function(relative_path, archived = FALSE) {
 #'   "pareto_chr1" for the current same-data FinnGen chr1 Pareto benchmark.
 #' @return A data.frame containing the selected measured benchmark.
 #' @export
-benchmark_table <- function(kind = c("finngen_10m", "pcodec_10m_threads", "pareto", "vcf", "finngen", "finngen_optimization",
-                                    "modes", "release_gate", "release_gate_followup",
-                                    "pcodec_access", "storage_size",
-                                    "storage_amortization", "native_se8",
-                                    "pareto_chr1")) {
-  kind <- match.arg(kind)
+benchmark_table <- function(kind = NULL) {
+  kinds <- c(
+    "finngen_10m", "pcodec_10m_threads", "pareto", "vcf", "finngen",
+    "finngen_optimization", "modes", "release_gate",
+    "release_gate_followup", "pcodec_access", "storage_size",
+    "storage_amortization", "native_se8", "pareto_chr1"
+  )
+  if (is.null(kind)) kind <- kinds[[1L]]
+  kind <- match.arg(kind, kinds)
   current <- kind %in% c("finngen_10m", "pcodec_10m_threads")
   relative_path <- switch(kind,
                           finngen_10m = file.path(
@@ -59,7 +62,7 @@ benchmark_table <- function(kind = c("finngen_10m", "pcodec_10m_threads", "paret
                             "whole-file-10m-summary.csv"),
                           pcodec_10m_threads = file.path(
                             "finngen-10m-bp-20260804", "pcodec-thread-compare",
-                            "pcodec-10m-thread-compare-18268241-summary.csv"),
+                            "summary.csv"),
                           pareto = "first-pareto.csv",
                           vcf = "vcf-tabix.csv",
                           finngen = "finngen-end-to-end.csv",

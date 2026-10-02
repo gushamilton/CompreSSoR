@@ -98,12 +98,17 @@ parse_canonical_variant_keys <- function(x) {
 }
 
 compressor_normalize_chromosome <- function(chromosome) {
-  chromosome <- toupper(trimws(as.character(chromosome)))
-  chromosome <- sub("^CHR", "", chromosome, ignore.case = TRUE)
-  chromosome[chromosome == "23"] <- "X"
-  chromosome[chromosome == "24"] <- "Y"
+  chromosome <- map_unique_character(chromosome, function(v) {
+    v <- toupper(trimws(v))
+    v <- sub("^CHR", "", v, ignore.case = TRUE)
+    v[v == "23"] <- "X"
+    v[v == "24"] <- "Y"
+    v
+  })
   valid <- c(as.character(1:22), "X", "Y")
-  if (any(is.na(chromosome) | !chromosome %in% valid)) {
+  # Validity is a per-label property, so check it on the distinct labels.
+  distinct <- if (length(chromosome) < 64L) chromosome else unique(chromosome)
+  if (any(is.na(distinct) | !distinct %in% valid)) {
     stop("chromosome must be one of 1-22, X, Y, or their chr/23/24 aliases",
          call. = FALSE)
   }
@@ -123,11 +128,14 @@ compressor_recycle_identity_fields <- function(chromosome, position,
   if (!n || any(lengths != 1L & lengths != n)) {
     stop("key fields must have length one or a common positive length", call. = FALSE)
   }
+  # rep_len() drops attributes (turning factors into integer codes), so only
+  # skip it for non-factors that already have the target length.
+  recycle <- function(x) if (length(x) == n && !is.factor(x)) x else rep_len(x, n)
   list(
-    chromosome = compressor_normalize_chromosome(rep_len(chromosome, n)),
-    position = suppressWarnings(as.numeric(as.character(rep_len(position, n)))),
-    reference_allele = toupper(trimws(as.character(rep_len(reference_allele, n)))),
-    alternate_allele = toupper(trimws(as.character(rep_len(alternate_allele, n))))
+    chromosome = compressor_normalize_chromosome(recycle(chromosome)),
+    position = coordinate_as_numeric(recycle(position)),
+    reference_allele = normalise_allele_vector(recycle(reference_allele)),
+    alternate_allele = normalise_allele_vector(recycle(alternate_allele))
   )
 }
 
@@ -169,6 +177,7 @@ compressor_validate_identity_positions <- function(chromosome, position, build) 
 #' @param build Genome build, `GRCh37`/`hg19` or `GRCh38`/`hg38`.
 #' @return A list containing canonical fields, `global_position`, and
 #'   `substitution`.
+#' @noRd
 compressor_encode_variant_identity <- function(chromosome, position,
                                                reference_allele,
                                                alternate_allele,
@@ -203,12 +212,13 @@ compressor_encode_variant_identity <- function(chromosome, position,
 #' Decode build-aware CompreSSoR variant identity
 #'
 #' @param global_position Zero-based global position produced by
-#'   [compressor_encode_variant_identity()].
+#'   `compressor_encode_variant_identity()`.
 #' @param substitution Directed four-bit REF-to-ALT code produced by
-#'   [compressor_encode_variant_identity()].
+#'   `compressor_encode_variant_identity()`.
 #' @param build Genome build used during encoding.
 #' @return A list containing canonical chromosome, position, REF, and ALT
 #'   fields, plus the supplied encoded values.
+#' @noRd
 compressor_decode_variant_identity <- function(global_position, substitution,
                                                build = "GRCh38") {
   build <- compressor_normalize_build(build)
@@ -223,12 +233,14 @@ compressor_decode_variant_identity <- function(global_position, substitution,
     stop("identity fields must have length one or a common positive length",
          call. = FALSE)
   }
-  global_position <- suppressWarnings(as.numeric(as.character(
-    rep_len(global_position, n)
-  )))
-  substitution <- suppressWarnings(as.numeric(as.character(
-    rep_len(substitution, n)
-  )))
+  global_position <- coordinate_as_numeric(
+    if (length(global_position) == n && !is.factor(global_position)) global_position
+    else rep_len(global_position, n)
+  )
+  substitution <- coordinate_as_numeric(
+    if (length(substitution) == n && !is.factor(substitution)) substitution
+    else rep_len(substitution, n)
+  )
   if (any(!is.finite(global_position) | global_position < 0 |
           global_position != floor(global_position))) {
     stop("global_position must contain non-negative whole-number values",
@@ -281,6 +293,7 @@ compressor_decode_identity <- compressor_decode_variant_identity
 #' @param stored_build Build represented by the encoded identity.
 #' @return A manifest-ready list containing the build-specific identity table
 #'   and provenance fields.
+#' @noRd
 compressor_identity_manifest <- function(build = "GRCh38", input_build = NULL,
                                          stored_build = NULL) {
   default_build <- compressor_normalize_build(build)

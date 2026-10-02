@@ -6,6 +6,7 @@
 .local/
 src/*.o
 src/*.so
+src/libcompressor_pcodec_native.a
 src/symbols.rds
 __pycache__/
 *.pyc
@@ -13,3 +14,5 @@ __pycache__/
 scripts/.syncthing.*.tmp
 /outputs/
 .syncthing.*.tmp
+inst/compressor-build-info.dcf
+!src/pcodec_native/vendor.tar.xz

@@ -375,7 +375,7 @@ pcodec_native_append_stream <- function(values, path, dtype,
        effective_workers = effective_workers)
 }
 
-pcodec_native_pvalue_flag_values <- function(data, threshold) {
+pcodec_native_pvalue_values <- function(data, threshold) {
   threshold <- as.numeric(threshold)
   if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) ||
       threshold < 0 || threshold > 1) {
@@ -413,6 +413,7 @@ pcodec_native_pvalue_flag_values <- function(data, threshold) {
     "supplied"
   }
   list(
+    p_value = p_value,
     values = flags,
     source = source,
     supplied_rows = as.integer(sum(supplied_valid)),
@@ -424,6 +425,35 @@ pcodec_native_pvalue_flag_values <- function(data, threshold) {
     hit_rows = as.integer(sum(flags)),
     threshold = threshold
   )
+}
+
+pcodec_native_pvalue_flag_values <- function(data, threshold) {
+  resolved <- pcodec_native_pvalue_values(data, threshold)
+  resolved$p_value <- NULL
+  resolved
+}
+
+pcodec_native_pvalue_order_values <- function(data, threshold) {
+  resolved <- pcodec_native_pvalue_values(data, threshold)
+  hits <- which(resolved$values != 0L)
+  ordered_hits <- if (length(hits)) {
+    hits[order(resolved$p_value[hits], hits, method = "radix")]
+  } else {
+    integer()
+  }
+  ranks <- numeric(nrow(data))
+  if (length(ordered_hits)) ranks[ordered_hits] <- seq_along(ordered_hits)
+  resolved$p_value <- NULL
+  resolved$values <- ranks
+  resolved$source <- switch(
+    resolved$source,
+    derived_from_z = "derived_from_exact_prepared_z",
+    supplied_with_z_fallback = "supplied_with_exact_prepared_z_fallback",
+    resolved$source
+  )
+  resolved$tie_break <- "canonical_variant_key"
+  resolved$ranked_rows <- as.integer(length(ordered_hits))
+  resolved
 }
 
 pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLOCK_ROWS) {
@@ -676,6 +706,53 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       blocks = flag_stream$blocks
     )
   }
+  pvalue_order_spec <- metadata$pvalue_order %||% list(enabled = FALSE)
+  if (!is.list(pvalue_order_spec) || length(pvalue_order_spec$enabled) != 1L ||
+      !is.logical(pvalue_order_spec$enabled) || is.na(pvalue_order_spec$enabled)) {
+    stop("native Pcodec pvalue_order metadata is malformed", call. = FALSE)
+  }
+  pvalue_order_domain <- NULL
+  if (isTRUE(pvalue_order_spec$enabled)) {
+    order_values <- pcodec_native_pvalue_order_values(
+      ordered, pvalue_order_spec$threshold %||%
+        pvalue_flag_spec$threshold %||% 5e-8
+    )
+    order_stream <- pcodec_native_append_stream(
+      order_values$values, file.path(output, "pvalue_order.pco"), "u32", block_rows,
+      workers = requested_workers
+    )
+    pvalue_order_domain <- list(
+      format = "aligned_exact_rank_v1",
+      name = "pvalue_order",
+      dtype = "uint32",
+      encoding = "zero_non_candidate_one_based_exact_rank",
+      row_alignment = "native.value_blocks",
+      rows = n,
+      file = order_stream$file,
+      threshold = order_values$threshold,
+      operator = pvalue_order_spec$operator %||% "<=",
+      source = order_values$source,
+      fallback_statistic = "exact_prepared_z_before_lossy_encoding",
+      source_column = "p_value",
+      source_column_present = pvalue_order_spec$source_column_present %||% NULL,
+      source_column_alias = pvalue_order_spec$source_column_alias %||% "absent",
+      supplied_rows = order_values$supplied_rows,
+      derived_rows = order_values$derived_rows,
+      fallback_rows = order_values$fallback_rows,
+      missing_rows = order_values$missing_rows,
+      invalid_rows = order_values$invalid_rows,
+      unresolved_rows = order_values$unresolved_rows,
+      hit_rows = order_values$hit_rows,
+      ranked_rows = order_values$ranked_rows,
+      tie_break = order_values$tie_break,
+      standard_default = isTRUE(pvalue_order_spec$standard_default),
+      writer = list(
+        requested_workers = order_stream$requested_workers,
+        effective_workers = order_stream$effective_workers
+      ),
+      blocks = order_stream$blocks
+    )
+  }
   exception_stream <- pcodec_native_write_exceptions(
     values$exceptions, output, block_template, workers = requested_workers
   )
@@ -775,6 +852,10 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   if (!is.null(pvalue_flag_domain)) {
     files$pvalue_flag <- pvalue_flag_domain$file
     domains$pvalue_flag <- pvalue_flag_domain
+  }
+  if (!is.null(pvalue_order_domain)) {
+    files$pvalue_order <- pvalue_order_domain$file
+    domains$pvalue_order <- pvalue_order_domain
   }
   if (!is.null(selection_file)) files$selection_regions <- selection_file
   chromosomes <- compressor_chromosome_lengths(build)
@@ -931,8 +1012,34 @@ pcodec_native_validate_index_parity <- function(index, n) {
   invisible(TRUE)
 }
 
+# Parsed-index cache keyed by index path; an entry is reused only while the
+# content identity recorded in the (checksum-verified) manifest -- the index
+# file sha256 and the payload sha256 -- and the row count are unchanged.
+# File mtimes are not used: they can be restored or too coarse.
+.pcodec_native_cache <- new.env(parent = emptyenv())
+
+pcodec_native_file_stamp <- function(path) {
+  info <- file.info(path)
+  paste(info$size, format(as.numeric(info$mtime), digits = 17), sep = "|")
+}
+
+pcodec_native_cache_stamp <- function(store, index_path) {
+  n_stamp <- as.character(store$manifest$n_rows %||% store$manifest$rows)
+  integ <- store$manifest$integrity
+  index_sha <- integ$files[[basename(index_path)]]$sha256
+  if (is.null(index_sha) || is.null(integ$payload_sha256)) {
+    # No recorded content identity: fall back to size+mtime.
+    return(paste(pcodec_native_file_stamp(index_path), n_stamp, sep = "|"))
+  }
+  paste(index_sha, integ$payload_sha256, n_stamp, sep = "|")
+}
+
 pcodec_native_read_index <- function(store) {
   index_path <- file.path(store$path, store$manifest$files$index)
+  stamp <- pcodec_native_cache_stamp(store, index_path)
+  key <- paste0("index:", index_path)
+  hit <- .pcodec_native_cache[[key]]
+  if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
   index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
   if (!identical(index$format, "CompreSSoR-native-index") ||
       !as.integer(index$version) %in% c(1L, 2L, 3L)) {
@@ -943,7 +1050,45 @@ pcodec_native_read_index <- function(store) {
     stop("native Pcodec manifest row count is invalid", call. = FALSE)
   }
   pcodec_native_validate_index_parity(index, n)
+  .pcodec_native_cache[[key]] <- list(stamp = stamp, value = index)
   index
+}
+
+# Block matrices handed to the native selective reader, cached per index.
+pcodec_native_select_matrices <- function(store, index) {
+  index_path <- file.path(store$path, store$manifest$files$index)
+  stamp <- pcodec_native_cache_stamp(store, index_path)
+  key <- paste0("matrices:", index_path)
+  hit <- .pcodec_native_cache[[key]]
+  if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
+  key_blocks <- pcodec_native_index_blocks(index, "key")
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  exception_blocks <- index$exceptions$blocks %||% list()
+  last_position <- vapply(key_blocks, function(b) as.numeric(b$last_position), numeric(1))
+  position <- pcodec_native_block_matrix(key_blocks, index$streams$position$blocks,
+                                         first_position = TRUE)
+  position <- cbind(position, last_position)
+  value <- list(
+    files = c(
+      file.path(store$path, index$streams$position$file),
+      file.path(store$path, index$streams$substitution$file),
+      file.path(store$path, index$streams$z$file),
+      file.path(store$path, index$streams$eaf$file),
+      file.path(store$path, index$streams$se$file),
+      file.path(store$path, index$exceptions$file)),
+    position = position,
+    substitution = pcodec_native_block_matrix(key_blocks, index$streams$substitution$blocks,
+                                              first_position = TRUE),
+    z = pcodec_native_block_matrix(value_blocks, index$streams$z$blocks),
+    eaf = pcodec_native_block_matrix(value_blocks, index$streams$eaf$blocks),
+    se = pcodec_native_block_matrix(value_blocks, index$streams$se$blocks),
+    exceptions = do.call(rbind, lapply(exception_blocks, function(block) {
+      c(as.numeric(block$offset), as.numeric(block$length),
+        as.numeric(block$count), as.numeric(block$raw_length))
+    })) %||% matrix(numeric(), nrow = 0L, ncol = 4L)
+  )
+  .pcodec_native_cache[[key]] <- list(stamp = stamp, value = value)
+  value
 }
 
 pcodec_native_read_blob <- function(path, offset, length) {
@@ -1107,6 +1252,235 @@ read_pvalue_flag <- function(store, name = "pvalue_flag",
   flags <- pcodec_native_read_pvalue_flag(store, name = name, threads = threads)
   if (identical(as, "logical")) return(as.logical(flags))
   as.integer(which(flags != 0L) - 1L)
+}
+
+pcodec_native_pvalue_order_domain <- function(store, name = "pvalue_order") {
+  if (length(name) != 1L || is.na(name) || !identical(name, "pvalue_order")) {
+    stop("name must be 'pvalue_order'", call. = FALSE)
+  }
+  domain <- (store$manifest$domains %||% list())[[name]]
+  if (is.null(domain) || !is.list(domain)) {
+    stop("this store has no exact p-value ordering domain; write one with pvalue_order=TRUE",
+         call. = FALSE)
+  }
+  n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  if (length(n) != 1L || is.na(n) || n < 0L) {
+    stop("native Pcodec manifest row count is invalid", call. = FALSE)
+  }
+  if (!identical(as.character(domain$format), "aligned_exact_rank_v1") ||
+      !identical(as.character(domain$dtype), "uint32") ||
+      !identical(as.character(domain$encoding),
+                 "zero_non_candidate_one_based_exact_rank") ||
+      !identical(as.character(domain$row_alignment), "native.value_blocks") ||
+      !identical(as.character(domain$operator), "<=") ||
+      !identical(as.character(domain$tie_break), "canonical_variant_key") ||
+      !identical(as.character(domain$fallback_statistic),
+                 "exact_prepared_z_before_lossy_encoding") ||
+      !is.character(domain$source) || length(domain$source) != 1L ||
+      !domain$source %in% c(
+        "supplied", "derived_from_exact_prepared_z",
+        "supplied_with_exact_prepared_z_fallback"
+      )) {
+    stop("native Pcodec p-value ordering domain metadata is invalid", call. = FALSE)
+  }
+  threshold <- as.numeric(domain$threshold)
+  if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) ||
+      threshold < 0 || threshold > 1) {
+    stop("native Pcodec p-value ordering threshold is invalid", call. = FALSE)
+  }
+  hit_rows <- as.integer(domain$hit_rows %||% -1L)
+  ranked_rows <- as.integer(domain$ranked_rows %||% -1L)
+  if (as.integer(domain$rows %||% -1L) != n || hit_rows < 0L ||
+      hit_rows > n || ranked_rows != hit_rows ||
+      !is.character(domain$file) || length(domain$file) != 1L ||
+      !nzchar(domain$file)) {
+    stop("native Pcodec p-value ordering row/file metadata is invalid",
+         call. = FALSE)
+  }
+  index <- pcodec_native_read_index(store)
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  blocks <- domain$blocks
+  if (!is.list(blocks) || length(blocks) != length(value_blocks)) {
+    stop("native Pcodec p-value ordering blocks are not value-block aligned",
+         call. = FALSE)
+  }
+  pcodec_native_validate_index_partition(blocks, n,
+                                         "native p-value ordering blocks")
+  if (length(blocks) && any(vapply(seq_along(blocks), function(i) {
+    as.numeric(blocks[[i]]$row_start) != as.numeric(value_blocks[[i]]$row_start) ||
+      as.numeric(blocks[[i]]$row_stop) != as.numeric(value_blocks[[i]]$row_stop) ||
+      as.numeric(blocks[[i]]$values) !=
+        as.numeric(value_blocks[[i]]$row_stop) - as.numeric(value_blocks[[i]]$row_start)
+  }, logical(1)))) {
+    stop("native Pcodec p-value ordering blocks are not row-aligned",
+         call. = FALSE)
+  }
+  if (!identical(as.character(store$manifest$files$pvalue_order), domain$file)) {
+    stop("native Pcodec p-value ordering file metadata is inconsistent",
+         call. = FALSE)
+  }
+  if (!file.exists(file.path(store$path, domain$file))) {
+    stop("native Pcodec p-value ordering payload is missing", call. = FALSE)
+  }
+  domain
+}
+
+pcodec_native_read_pvalue_order <- function(store, name = "pvalue_order",
+                                              threads = NULL) {
+  if (!pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  domain <- pcodec_native_pvalue_order_domain(store, name = name)
+  blocks <- domain$blocks
+  threads <- pcodec_native_default_threads(threads = threads)
+  read_block <- function(block) {
+    location <- blocks[[block]]
+    blob <- pcodec_native_read_blob(
+      file.path(store$path, domain$file), location$offset, location$length
+    )
+    as.numeric(pcodec_native_decompress(
+      blob, as.integer(location$values), "u32"
+    ))
+  }
+  ranks <- if (length(blocks)) {
+    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads),
+           use.names = FALSE)
+  } else {
+    numeric()
+  }
+  n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  if (length(ranks) != n || any(!is.finite(ranks)) ||
+      any(ranks < 0 | ranks > n | ranks != floor(ranks))) {
+    stop("native Pcodec p-value ordering payload contains invalid ranks",
+         call. = FALSE)
+  }
+  positive <- ranks[ranks > 0]
+  hit_rows <- as.integer(domain$hit_rows)
+  if (length(positive) != hit_rows ||
+      length(unique(positive)) != hit_rows ||
+      (hit_rows && any(sort(positive) != seq_len(hit_rows)))) {
+    stop("native Pcodec p-value ordering ranks are not a complete permutation",
+         call. = FALSE)
+  }
+  as.integer(ranks)
+}
+
+pcodec_native_validate_order_threshold <- function(threshold, label = "threshold") {
+  if (length(threshold) != 1L || !is.numeric(threshold) || is.na(threshold) ||
+      !is.finite(threshold) || threshold < 0 || threshold > 1) {
+    stop(label, " must be one finite number between 0 and 1", call. = FALSE)
+  }
+  as.numeric(threshold)
+}
+
+pcodec_native_reconstructed_pvalue_order <- function(store, threshold,
+                                                       as, threads = NULL) {
+  threshold <- pcodec_native_validate_order_threshold(threshold)
+  flag_domain <- (store$manifest$domains %||% list())$pvalue_flag
+  use_flag <- is.list(flag_domain) && isTRUE(all.equal(
+    as.numeric(flag_domain$threshold), threshold, tolerance = 0
+  ))
+  if (use_flag) {
+    rows <- read_pvalue_flag(store, threads = threads)
+    decoded <- if (length(rows)) {
+      pcodec_native_read_store(store, variants = rows, columns = "p_value",
+                               threads = threads)
+    } else {
+      data.frame(row = integer(), p_value = numeric())
+    }
+  } else {
+    decoded <- pcodec_native_read_store(store, columns = "p_value",
+                                        threads = threads)
+    keep <- is.finite(decoded$p_value) & decoded$p_value >= 0 &
+      decoded$p_value <= threshold
+    decoded <- decoded[keep, , drop = FALSE]
+  }
+  ordered_rows <- if (nrow(decoded)) {
+    as.integer(decoded$row[order(decoded$p_value, decoded$row, method = "radix")])
+  } else {
+    integer()
+  }
+  warning(
+    "using p-values reconstructed from the lossy stored Z stream; ordering is approximate",
+    call. = FALSE
+  )
+  if (identical(as, "row_ids")) return(ordered_rows)
+  ranks <- integer(as.integer(store$manifest$n_rows %||% store$manifest$rows))
+  if (length(ordered_rows)) ranks[ordered_rows + 1L] <- seq_along(ordered_rows)
+  ranks
+}
+
+#' Read exact p-value ordering metadata from a native Pcodec store
+#'
+#' Exact domains are opt-in and contain a one-based rank for each candidate
+#' native row, with zero for rows outside the configured threshold. Ranks are
+#' derived before lossy encoding from finite supplied p-values or exact
+#' prepared Z, and ties use canonical variant identity. The default fails
+#' safely when the exact domain or requested threshold is unavailable.
+#'
+#' @param store A native Pcodec store object or path.
+#' @param threshold Requested inclusive candidate threshold. `NULL` uses the
+#'   exact domain threshold. With `fallback = "reconstructed"` and no exact
+#'   domain, `NULL` uses the p-value flag threshold when available.
+#' @param as Return zero-based row IDs in p-value order, or a full integer rank
+#'   vector aligned to native rows (`0` means non-candidate).
+#' @param fallback Safe default `"error"`, or explicit approximate ordering
+#'   from p-values reconstructed from the lossy stored Z stream.
+#' @param name Domain name. The current supported name is `"pvalue_order"`.
+#' @param threads Number of independent ordering/value frames to decode.
+#' @return An integer vector of zero-based row IDs in deterministic p-value
+#'   order, or a row-aligned integer rank vector.
+#' @export
+read_pvalue_order <- function(store, threshold = NULL,
+                              as = c("row_ids", "ranks"),
+                              fallback = c("error", "reconstructed"),
+                              name = "pvalue_order", threads = NULL) {
+  as <- match.arg(as)
+  fallback <- match.arg(fallback)
+  store <- if (inherits(store, "compressor_store")) store else
+    pcodec_open_store_cached(store)
+  if (!identical(store$manifest$backend, "pcodec")) {
+    stop("read_pvalue_order requires a native Pcodec store", call. = FALSE)
+  }
+  domain_present <- is.list((store$manifest$domains %||% list())[[name]])
+  if (domain_present) {
+    domain <- pcodec_native_pvalue_order_domain(store, name = name)
+    stored_threshold <- as.numeric(domain$threshold)
+    requested_threshold <- if (is.null(threshold)) stored_threshold else
+      pcodec_native_validate_order_threshold(threshold)
+    if (isTRUE(all.equal(requested_threshold, stored_threshold, tolerance = 0))) {
+      ranks <- pcodec_native_read_pvalue_order(store, name = name, threads = threads)
+      if (identical(as, "ranks")) return(ranks)
+      rows <- which(ranks > 0L)
+      return(as.integer(rows[order(ranks[rows], method = "radix")] - 1L))
+    }
+    if (identical(fallback, "error")) {
+      stop(
+        "the exact p-value ordering domain is available only at threshold ",
+        format(stored_threshold, scientific = TRUE), "; requested ",
+        format(requested_threshold, scientific = TRUE),
+        call. = FALSE
+      )
+    }
+    return(pcodec_native_reconstructed_pvalue_order(
+      store, requested_threshold, as = as, threads = threads
+    ))
+  }
+  if (identical(fallback, "error")) {
+    stop("this store has no exact p-value ordering domain; write one with pvalue_order=TRUE or choose fallback='reconstructed' explicitly",
+         call. = FALSE)
+  }
+  if (is.null(threshold)) {
+    flag_domain <- (store$manifest$domains %||% list())$pvalue_flag
+    if (!is.list(flag_domain)) {
+      stop("threshold is required for reconstructed ordering when no p-value flag domain is available",
+           call. = FALSE)
+    }
+    threshold <- as.numeric(flag_domain$threshold)
+  }
+  pcodec_native_reconstructed_pvalue_order(
+    store, threshold, as = as, threads = threads
+  )
 }
 
 pcodec_native_block_matrix <- function(blocks, stream_blocks = blocks,
@@ -1397,7 +1771,9 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
     ok <- codes$se >= 0L & codes$se < se_count
     safe <- pmin(1 - 1e-12, pmax(1e-12, output$eaf))
     residual <- se_range[1] + (codes$se + 0.5) * diff(se_range) / se_count
-    se[ok] <- 2^(residual[ok] + centres[centre_id] -
+    centre <- centres[centre_id]
+    if (length(centre) > 1L) centre <- centre[ok]
+    se[ok] <- 2^(residual[ok] + centre -
       0.5 * log2(2 * safe[ok] * (1 - safe[ok])))
     output$se <- se
   }
@@ -1502,6 +1878,14 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     return(output)
   }
 
+  if (isTRUE(getOption("CompreSSoR.pcodec.native_select", TRUE)) &&
+      is.loaded("compressor_read_pcodec_native_select", PACKAGE = "CompreSSoR") &&
+      !(!is.null(region) && !is.null(variants))) {
+    return(pcodec_native_select_read(
+      store, index, manifest, build, requested, columns, identity_needed, need_z,
+      need_se, need_eaf, needed, row_targets, key_targets, lower, upper, threads))
+  }
+
   source_bytes <- 0
   value_blocks <- pcodec_native_index_blocks(index, "value")
   selected_rows <- selected_position <- selected_substitution <- NULL
@@ -1515,11 +1899,17 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       }, logical(1))]
     }
     if (!is.null(key_targets)) {
-      target_positions <- as.numeric(key_targets$position)
-      key_candidates <- key_candidates[vapply(key_blocks, function(block) {
-        any(target_positions >= as.numeric(block$first_position) &
-              target_positions <= as.numeric(block$last_position))
-      }, logical(1))]
+      # Exact collision-free numeric key: substitution codes are 0..15 and
+      # global positions are < 2^32, so position * 16 + substitution < 2^36.
+      target_codes <- sort(unique(as.numeric(key_targets$position) * 16 +
+                                    as.numeric(key_targets$substitution)))
+      target_positions <- sort(unique(floor(target_codes / 16)))
+      first_pos <- vapply(key_blocks, function(block) as.numeric(block$first_position), numeric(1))
+      last_pos <- vapply(key_blocks, function(block) as.numeric(block$last_position), numeric(1))
+      # a block holds a target iff some target position lies in [first, last]
+      has_target <- findInterval(last_pos, target_positions) >
+        findInterval(first_pos, target_positions, left.open = TRUE)
+      key_candidates <- key_candidates[has_target[key_candidates]]
     }
     if (!is.null(row_targets)) {
       key_candidates <- intersect(key_candidates,
@@ -1535,10 +1925,14 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         as.numeric(index$streams$substitution$blocks[[key_block]]$length)
       keep <- rep(TRUE, length(rows))
       if (!is.null(lower)) keep <- keep & position >= lower & position <= upper
-      if (!is.null(row_targets)) keep <- keep & rows %in% row_targets
+      if (!is.null(row_targets)) {
+        hit <- row_targets[row_targets >= rows[1L] & row_targets <= rows[length(rows)]]
+        in_targets <- logical(length(rows))
+        in_targets[hit - rows[1L] + 1L] <- TRUE
+        keep <- keep & in_targets
+      }
       if (!is.null(key_targets)) {
-        keep <- keep & paste(position, substitution, sep = ":") %in%
-          paste(key_targets$position, key_targets$substitution, sep = ":")
+        keep <- keep & (as.numeric(position) * 16 + as.numeric(substitution)) %in% target_codes
       }
       part <- if (any(keep)) {
         data.frame(
@@ -1575,10 +1969,22 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     row_stop <- as.integer(meta$row_stop)
     rows <- row_start:(row_stop - 1L)
     block_source_bytes <- 0
+    selected_slice <- NULL
     if (identity_needed) {
-      keep <- rows %in% selected_rows
+      # selected_rows is sorted and unique: slice this block's rows by position
+      lo <- findInterval(row_start - 1L, selected_rows) + 1L
+      hi <- findInterval(row_stop - 1L, selected_rows)
+      keep <- logical(length(rows))
+      if (hi >= lo) {
+        selected_slice <- lo:hi
+        keep[selected_rows[selected_slice] - row_start + 1L] <- TRUE
+      }
+    } else if (is.null(row_targets)) {
+      keep <- rep(TRUE, length(rows))
     } else {
-      keep <- if (is.null(row_targets)) rep(TRUE, length(rows)) else rows %in% row_targets
+      hit <- row_targets[row_targets >= row_start & row_targets < row_stop]
+      keep <- logical(length(rows))
+      keep[hit - row_start + 1L] <- TRUE
     }
     if (!any(keep)) return(list(part = NULL, source_bytes = block_source_bytes))
     value_codes <- list()
@@ -1603,7 +2009,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)
     if (identity_needed) {
-      selected_index <- match(rows[keep], selected_rows)
+      selected_index <- selected_slice
       identity_part <- pcodec_native_key_columns(
         selected_position[selected_index], selected_substitution[selected_index],
         build = build)
@@ -1613,7 +2019,13 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     if ("se" %in% names(decoded)) part$standard_error <- decoded$se
     if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
     if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-    if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
+    if ("p_value" %in% requested) {
+      zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
+      p_block <- pcodec_native_p_from_codes(
+        candidates_semantic(store), value_codes$z,
+        as.integer(exceptions$row[zx]) - row_start, exceptions$z[zx])
+      part$p_value <- p_block[keep]
+    }
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
@@ -1641,6 +2053,87 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   output
 }
 
+# Native selective read: one native call decodes only the touched blocks and
+# returns codes + exceptions for the selected rows; values are then produced
+# with the same R arithmetic as the per-block R path so results are identical.
+pcodec_native_select_read <- function(store, index, manifest, build, requested,
+                                      columns, identity_needed, need_z, need_se,
+                                      need_eaf, needed, row_targets, key_targets,
+                                      lower, upper, threads) {
+  threads <- pcodec_validate_threads(threads)
+  check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
+  if (nzchar(check_limit) && check_limit != "false") threads <- min(threads, 2L)
+  mats <- pcodec_native_select_matrices(store, index)
+  if (!is.null(lower)) {
+    mode <- 1L
+    selection <- c(as.numeric(lower), as.numeric(upper))
+  } else if (!is.null(key_targets)) {
+    mode <- 2L
+    selection <- sort(unique(as.numeric(key_targets$position) * 16 +
+                               as.numeric(key_targets$substitution)))
+  } else {
+    mode <- 0L
+    selection <- sort(as.numeric(row_targets))
+  }
+  streams <- c(needed, if (identity_needed) c("position", "substitution"))
+  if (mode == 0L && !length(selection)) return(pcodec_native_empty_result(columns))
+  res <- .Call("compressor_read_pcodec_native_select", mats$files, mats$position,
+               mats$substitution, mats$z, mats$eaf, mats$se, mats$exceptions,
+               as.numeric(manifest$n_rows %||% manifest$rows), as.character(streams),
+               index$exceptions$codec %||% "raw", as.integer(threads), mode,
+               selection, isTRUE(identity_needed),
+               identical(index$position_encoding, "delta_u32_within_block"),
+               PACKAGE = "CompreSSoR")
+  rows <- res$rows
+  m <- length(rows)
+  if (!m) return(pcodec_native_empty_result(columns))
+  decoded <- list()
+  if (length(needed)) {
+    semantic <- manifest$semantic_codec
+    exceptions <- data.frame(row = res$exc_index + 1L, z = res$exc_z,
+                             log2se = res$exc_log2se, eaf = res$exc_eaf,
+                             flags = res$exc_flags)
+    centre_id <- floor(rows / as.integer(
+      semantic$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
+    )) + 1L
+    decoded <- pcodec_native_decode_values(
+      list(z = res$z, eaf = res$eaf, se = res$se), exceptions, centre_id,
+      as.numeric(unlist(semantic$block_centers_log2_residual)),
+      1L, m, needed, semantic
+    )
+  }
+  part <- data.frame(row = rows, stringsAsFactors = FALSE)
+  if (identity_needed) {
+    identity_part <- pcodec_native_key_columns(res$position, res$substitution,
+                                               build = build)
+    part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
+  }
+  if ("z" %in% names(decoded)) part$z <- decoded$z
+  if ("se" %in% names(decoded)) part$standard_error <- decoded$se
+  if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
+  if ("beta" %in% requested) part$beta <- part$z * part$standard_error
+  if ("p_value" %in% requested) {
+    zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
+    part$p_value <- pcodec_native_p_from_codes(
+      candidates_semantic(store), res$z, exceptions$row[zx] - 1L, exceptions$z[zx])
+  }
+  output <- part
+  row.names(output) <- NULL
+  if (is.null(columns)) {
+    output <- output[c("row", setdiff(c("chromosome", "base_pair_location",
+      "reference_allele", "alternate_allele",
+      "effect_allele", "other_allele", "z", "beta", "standard_error",
+      "effect_allele_frequency", "p_value"), ""))]
+  } else {
+    missing <- setdiff(requested, names(output))
+    if (length(missing)) stop("requested columns are not present: ", paste(missing, collapse = ", "), call. = FALSE)
+    output <- output[c("row", requested)]
+  }
+  attr(output, "source_bytes_read") <- res$source_bytes
+  output
+}
+
+
 pcodec_native_validate_store <- function(store, full = FALSE) {
   result <- tryCatch({
     s <- if (inherits(store, "compressor_store")) store else open_compressor(store)
@@ -1652,6 +2145,9 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
     if (length(missing)) errors <- c(errors, paste("missing", missing))
     if (!is.null(m$domains$pvalue_flag)) {
       pcodec_native_pvalue_flag_domain(s)
+    }
+    if (!is.null(m$domains$pvalue_order)) {
+      pcodec_native_pvalue_order_domain(s)
     }
     blocks <- index$blocks
     if (length(blocks)) {
@@ -1676,10 +2172,42 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
                          call. = FALSE)
                   }
                 }
+                if (!is.null(m$domains$pvalue_order)) {
+                  ranks <- pcodec_native_read_pvalue_order(s)
+                  expected_hits <- as.integer(m$domains$pvalue_order$hit_rows %||% -1L)
+                  if (expected_hits >= 0L && sum(ranks > 0L) != expected_hits) {
+                    stop("native Pcodec p-value ordering hit count is inconsistent",
+                         call. = FALSE)
+                  }
+                }
             }
     list(valid = !length(errors), errors = errors,
          rows = as.integer(m$n_rows), profile = m$profile, full = isTRUE(full))
   }, error = function(e) list(valid = FALSE, errors = conditionMessage(e),
                                rows = NA_integer_, profile = NA_character_, full = isTRUE(full)))
   result
+}
+
+#' Native build information
+#'
+#' Reports the Rust toolchain and dependency lockfile that were used to compile
+#' the native Pcodec backend when the package was installed.
+#'
+#' @return A named list with `rustc`, `cargo` (version strings),
+#'   `rust_version_required`, `cargo_lock_sha256` (digest of `Cargo.lock`),
+#'   `vendored` (whether crates came from the bundled `vendor.tar.xz`) and
+#'   `target`. Fields are `NA_character_` if the information is unavailable.
+#' @export
+compressor_build_info <- function() {
+  keys <- c("rustc", "cargo", "rust_version_required", "cargo_lock_sha256",
+            "vendored", "target")
+  out <- stats::setNames(as.list(rep(NA_character_, length(keys))), keys)
+  path <- system.file("compressor-build-info.dcf", package = "CompreSSoR")
+  if (nzchar(path)) {
+    dcf <- tryCatch(read.dcf(path), error = function(e) NULL)
+    if (!is.null(dcf) && nrow(dcf) >= 1L) {
+      for (key in intersect(keys, colnames(dcf))) out[[key]] <- unname(dcf[1L, key])
+    }
+  }
+  out
 }

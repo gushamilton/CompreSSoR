@@ -36,7 +36,9 @@ compressor_manifest_contract <- function(path, build, selection, profile,
     reference = list(status = "not_used"),
     chain = list(status = "not_used"),
     panel = panel %||% NULL,
-    preparation = preparation %||% list(method = "strict_prepared_input")
+    preparation = preparation %||% list(method = "strict_prepared_input"),
+    # Observational: excluded from canonical_sha256 (see pcodec.R).
+    build_info = compressor_build_info()
   )
   if (is.null(manifest$selection)) {
     manifest$selection <- list(name = selection, method = "full_store")
@@ -146,6 +148,23 @@ write_selection_regions <- function(output, selection) {
 #' @param pvalue_flag_threshold Threshold recorded by the p-value flag domain.
 #'   The standard convention is `5e-8` with an inclusive `<=` operator. This
 #'   is separate from `pvalue_threshold`, which controls variant selection.
+#' @param pvalue_order For native Pcodec stores, whether to write the exact
+#'   p-value ordering domain. `NULL` (default) uses the standard native default
+#'   of `TRUE`; set `FALSE` to omit it. The domain stores one lossless uint32
+#'   rank per native row for candidates at `pvalue_order_threshold`; zero marks
+#'   a non-candidate. Ranking and candidate membership use the finite supplied
+#'   full-precision source p-value when present (ties, including p exactly at
+#'   the threshold, are resolved by canonical variant order; NA/invalid
+#'   supplied p-values fall back to exact prepared Z, or are non-candidates if
+#'   that is also unavailable). If the input has no p column, p is derived
+#'   from exact prepared Z at double precision before lossy encoding. Which
+#'   case applied is recorded in `manifest$domains$pvalue_order$source`. The
+#'   domain is an optional side file; stores written without it are unchanged
+#'   and remain readable.
+#' @param pvalue_order_threshold Inclusive threshold for the exact p-value
+#'   ordering domain; `NULL` uses 0.01 (cis-candidate scale). This domain is
+#'   separate from variant selection and from the binary p-value flag
+#'   (threshold `pvalue_flag_threshold`).
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #'   The default is 10,000 bp; the threshold and window are recorded in the
@@ -185,6 +204,8 @@ compress_sumstats <- function(input, output,
                               pvalue_threshold = 1e-5,
                               pvalue_flag = NULL,
                               pvalue_flag_threshold = 5e-8,
+                              pvalue_order = NULL,
+                              pvalue_order_threshold = NULL,
                               region_padding = 10000L,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
@@ -240,8 +261,31 @@ compress_sumstats <- function(input, output,
     stop("pvalue_flag must be TRUE, FALSE, or NULL", call. = FALSE)
   }
   pvalue_flag <- if (is.null(pvalue_flag)) identical(backend, "pcodec") else isTRUE(pvalue_flag)
+  if (!is.null(pvalue_order) &&
+      (length(pvalue_order) != 1L || !is.logical(pvalue_order) || is.na(pvalue_order))) {
+    stop("pvalue_order must be TRUE, FALSE, or NULL", call. = FALSE)
+  }
+  order_default <- is.null(pvalue_order)
+  pvalue_order <- if (order_default) identical(backend, "pcodec") else isTRUE(pvalue_order)
+  # A disabled domain records the pre-existing default (the flag threshold) so
+  # manifests, and hence canonical hashes, of stores written without the
+  # domain are unchanged.
+  if (is.null(pvalue_order_threshold)) {
+    pvalue_order_threshold <- if (pvalue_order) 0.01 else pvalue_flag_threshold
+  }
+  if (length(pvalue_order_threshold) != 1L ||
+      !is.numeric(pvalue_order_threshold) || is.na(pvalue_order_threshold) ||
+      !is.finite(pvalue_order_threshold) || pvalue_order_threshold < 0 ||
+      pvalue_order_threshold > 1) {
+    stop("pvalue_order_threshold must be NULL or one finite number between 0 and 1",
+         call. = FALSE)
+  }
   if (isTRUE(pvalue_flag) && !identical(backend, "pcodec")) {
     stop("pvalue_flag is currently supported for backend='pcodec' only",
+         call. = FALSE)
+  }
+  if (isTRUE(pvalue_order) && !identical(backend, "pcodec")) {
+    stop("pvalue_order is currently supported for backend='pcodec' only",
          call. = FALSE)
   }
   if (identical(backend, "pcodec") && isTRUE(keep_extras)) {
@@ -268,7 +312,7 @@ compress_sumstats <- function(input, output,
     prepared_core = identical(qc, "none"),
     construct_variant_id = identical(backend, "parquet"),
     include_p_value = selection %in% c("core_plus", "pvalue_regions") ||
-      isTRUE(pvalue_flag)
+      isTRUE(pvalue_flag) || isTRUE(pvalue_order)
   )
   # Import performs the shared zero-row check before any destination or
   # staging directory is created.  This keeps empty input a deliberate public
@@ -391,8 +435,8 @@ compress_sumstats <- function(input, output,
   }
   data <- prepared$data
   selection <- prepared$selection
-  eaf_values <- suppressWarnings(as.numeric(as.character(data$effect_allele_frequency)))
-  se_values <- suppressWarnings(as.numeric(as.character(data$standard_error)))
+  eaf_values <- statistic_as_numeric(data$effect_allele_frequency)
+  se_values <- statistic_as_numeric(data$standard_error)
   eaf_predictor_rows <- sum(
     is.finite(se_values) & se_values > 0 &
       !(is.finite(eaf_values) & eaf_values >= 0 & eaf_values <= 1)
@@ -454,6 +498,16 @@ compress_sumstats <- function(input, output,
         source = "finite_supplied_p_value_or_p_value_from_prepared_z",
         source_column_present = isTRUE(source_provenance$p_value$column_present),
         standard_default = TRUE
+      ),
+      pvalue_order = list(
+        enabled = isTRUE(pvalue_order),
+        threshold = as.numeric(pvalue_order_threshold),
+        operator = "<=",
+        source = "finite_supplied_p_value_or_p_value_from_exact_prepared_z",
+        source_column_present = isTRUE(source_provenance$p_value$column_present),
+        source_column_alias = source_provenance$p_value$source_alias %||% "absent",
+        tie_break = "canonical_variant_key",
+        standard_default = isTRUE(order_default) && isTRUE(pvalue_order)
       ),
       selection = selection,
       selection_metadata = prepared$selection_metadata,
@@ -623,6 +677,11 @@ compress_sumstats <- function(input, output,
   open_compressor(transaction$target)
 }
 
+# Opened-store cache: the parsed manifest and its checksum verification are
+# reused while the sha256 of manifest.json and the recorded manifest.sha256
+# line are unchanged (content identity; mtimes can be restored or coarse).
+.compressor_open_cache <- new.env(parent = emptyenv())
+
 #' Open a CompreSSoR store
 #'
 #' @param path Store directory.
@@ -631,10 +690,26 @@ compress_sumstats <- function(input, output,
 open_compressor <- function(path) {
   path <- normalizePath(path, mustWork = FALSE)
   if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)
-  manifest <- read_manifest(file.path(path, "manifest.json"))
+  manifest_path <- file.path(path, "manifest.json")
+  stamp <- NULL
+  recorded <- observed <- NULL
+  if (file.exists(manifest_path)) {
+    checksum_path <- pcodec_manifest_checksum_path(manifest_path)
+    recorded <- if (file.exists(checksum_path)) {
+      readLines(checksum_path, warn = FALSE, n = 1L)
+    } else NULL
+    if (length(recorded) == 1L) {
+      # Hashed once; a cache miss reuses it for checksum verification below.
+      observed <- digest::digest(manifest_path, algo = "sha256", file = TRUE)
+      stamp <- paste(observed, trimws(recorded), sep = "|")
+      hit <- .compressor_open_cache[[path]]
+      if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
+    }
+  }
+  manifest <- read_manifest(manifest_path)
   if (!identical(manifest$format, "CompreSSoR")) stop("not a CompreSSoR store", call. = FALSE)
   if (identical(manifest$backend, "pcodec")) {
-    verify_pcodec_manifest(file.path(path, "manifest.json"))
+    verify_pcodec_manifest(manifest_path, expected = recorded, observed = observed)
   }
   if (identical(manifest$backend, "pcodec") &&
       !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {
@@ -642,7 +717,11 @@ open_compressor <- function(path) {
          manifest$format_version %||% "missing",
          "; this build reads native 0.4 stores only", call. = FALSE)
   }
-  structure(list(path = path, manifest = manifest), class = "compressor_store")
+  store <- structure(list(path = path, manifest = manifest), class = "compressor_store")
+  if (!is.null(stamp) && identical(manifest$backend, "pcodec")) {
+    .compressor_open_cache[[path]] <- list(stamp = stamp, store = store)
+  }
+  store
 }
 
 print.compressor_store <- function(x, ...) {
@@ -825,8 +904,13 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #' calls when an analysis extracts a small instrument set from several files.
 #'
 #' @param stores A non-empty list or character vector of Pcodec stores.
-#' @param variants A canonical `chromosome:position:REF:ALT` vector shared by
-#'   every store, or one such vector per store in a list.
+#' @param variants A canonical `chromosome:position:REF:ALT` vector or a
+#'   zero-based row-ID vector shared by every store, or one such vector per
+#'   store in a list. May be `NULL` when `region` is given.
+#' @param region Optional region string (as in [read_sumstats()]), shared by
+#'   every store or one per store in a list. Stores that share the same variant
+#'   panel (identical position and substitution streams) resolve keys, row IDs
+#'   and regions to rows once, then decode values only.
 #' @param columns Output columns requested from every store.
 #' @param threads Number of independent Pcodec store readers to run in
 #'   parallel on Unix-like systems. The default is one. Windows uses serial
@@ -844,24 +928,31 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #' @export
 read_sumstats_batch <- function(
     stores,
-    variants,
+    variants = NULL,
     columns = c("chromosome", "base_pair_location", "effect_allele",
                 "other_allele", "beta", "standard_error"),
-    threads = 1L) {
+    threads = 1L,
+    region = NULL) {
   if (is.character(stores)) stores <- as.list(stores)
   if (!is.list(stores) || !length(stores)) {
     stop("stores must be a non-empty list or character vector", call. = FALSE)
   }
   store_names <- names(stores)
-  if (is.character(variants)) {
+  if (is.character(variants) || is.numeric(variants) || is.null(variants)) {
     variants <- rep(list(variants), length(stores))
   }
   if (!is.list(variants) || length(variants) != length(stores)) {
-    stop("variants must be a canonical-key vector or one list element per store",
+    stop("variants must be a canonical-key or row-ID vector or one list element per store",
+         call. = FALSE)
+  }
+  if (is.character(region) || is.null(region)) region <- rep(list(region), length(stores))
+  if (!is.list(region) || length(region) != length(stores)) {
+    stop("region must be one region string or one list element per store",
          call. = FALSE)
   }
   result <- pcodec_read_stores(
-    stores, variants, unique(as.character(columns)), threads = threads
+    stores, variants, unique(as.character(columns)), threads = threads,
+    region = region
   )
   if (!is.null(store_names)) names(result) <- store_names
   result

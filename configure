@@ -1,9 +1,20 @@
 #!/bin/sh
 
-set -eu
+set -u
 
 package_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 makevars="$package_root/src/Makevars"
+generated_library="$package_root/src/libcompressor_pcodec_native.a"
+target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
+cleanup_partial_build() {
+  rm -rf -- "$target_dir"
+  rm -f -- "$generated_library" "$makevars" "$build_info"
+}
+trap 'cleanup_partial_build; exit 1' HUP INT TERM
+build_info="$package_root/inst/compressor-build-info.dcf"
+vendor_archive="$package_root/src/pcodec_native/vendor.tar.xz"
+
+rm -f -- "$generated_library" "$makevars"
 if [ -d /opt/homebrew/opt/rustup/bin ]; then
   PATH=/opt/homebrew/opt/rustup/bin:$PATH
   export PATH
@@ -21,8 +32,56 @@ if [ -z "$cargo_bin" ]; then
   exit 1
 fi
 
-target_dir="${TMPDIR:-/tmp}/compressor-pcodec-native-$$"
-mkdir -p "$target_dir"
+# Fail early when the toolchain is older than the crate's rust-version.
+cargo_toml="$package_root/src/pcodec_native/Cargo.toml"
+required_rust="$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
+  "$cargo_toml" | head -n 1)"
+# Echo 0 when $1 >= $2 (dotted numeric versions), 1 otherwise.
+version_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, x, "."); m = split(b, y, ".");
+    for (i = 1; i <= 3; i++) {
+      xi = (i <= n) ? x[i] + 0 : 0; yi = (i <= m) ? y[i] + 0 : 0;
+      if (xi < yi) { print 1; exit } if (xi > yi) { print 0; exit }
+    }
+    print 0 }'
+}
+rustc_bin="${RUSTC:-}"
+if [ -z "$rustc_bin" ]; then
+  rustc_bin="$(dirname "$cargo_bin")/rustc"
+  [ -x "$rustc_bin" ] || rustc_bin="$(command -v rustc 2>/dev/null || true)"
+fi
+cargo_version_line="$("$cargo_bin" --version 2>/dev/null || true)"
+rustc_version_line=""
+if [ -n "$rustc_bin" ]; then
+  rustc_version_line="$("$rustc_bin" --version 2>/dev/null || true)"
+fi
+if [ -n "$required_rust" ]; then
+  for tool in cargo rustc; do
+    if [ "$tool" = cargo ]; then
+      tool_path="$cargo_bin"; tool_line="$cargo_version_line"
+    else
+      tool_path="$rustc_bin"; tool_line="$rustc_version_line"
+    fi
+    found="$(printf '%s\n' "$tool_line" | sed -n 's/^[a-z]* \([0-9][0-9.]*\).*/\1/p')"
+    if [ -z "$found" ]; then
+      printf '%s\n' "CompreSSoR could not determine the $tool version (looked for: ${tool_path:-no $tool on PATH}); Rust >= $required_rust is required." >&2
+      cleanup_partial_build
+      exit 1
+    fi
+    if [ "$(version_lt "$found" "$required_rust")" = 1 ]; then
+      printf '%s\n' "CompreSSoR requires Rust >= $required_rust (rust-version in src/pcodec_native/Cargo.toml), but $tool $found was found at $tool_path. Install a newer toolchain (e.g. via rustup) or put it first on PATH." >&2
+      cleanup_partial_build
+      exit 1
+    fi
+  done
+fi
+
+if ! mkdir -p "$target_dir"; then
+  printf '%s\n' 'CompreSSoR could not create a temporary Cargo target directory.' >&2
+  cleanup_partial_build
+  exit 1
+fi
 # Cargo follows the host architecture by default. R can legitimately run
 # under Rosetta, so build for the architecture of the R runtime rather than
 # the architecture of the machine running configure. During R CMD check the
@@ -79,6 +138,26 @@ case "$r_platform:$r_arch" in
   *-linux-gnu*:aarch64|*-linux-gnu*:arm64) cargo_target="aarch64-unknown-linux-gnu" ;;
 esac
 
+# Cargo's C dependencies otherwise inherit the SDK version as their minimum
+# macOS target, which can be newer than the target used by R's linker. Match
+# the minimum version of the running R framework when it is discoverable.
+if [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] &&
+   case "$r_platform" in *-apple-darwin*) true ;; *) false ;; esac &&
+   [ -n "$rscript_bin" ] && command -v otool >/dev/null 2>&1; then
+  r_home="$($rscript_bin --vanilla -e 'cat(R.home())' 2>/dev/null || true)"
+  r_library="$r_home/lib/libR.dylib"
+  if [ -f "$r_library" ]; then
+    r_macos_target="$(otool -l "$r_library" 2>/dev/null |
+      awk '$1 == "minos" { print $2; exit }' || true)"
+    case "$r_macos_target" in
+      [0-9]*.[0-9]*)
+        MACOSX_DEPLOYMENT_TARGET="$r_macos_target"
+        export MACOSX_DEPLOYMENT_TARGET
+        ;;
+    esac
+  fi
+fi
+
 cargo_target_args=""
 native_library="$target_dir/release/libcompressor_pcodec_native.a"
 if [ -n "$cargo_target" ]; then
@@ -86,21 +165,87 @@ if [ -n "$cargo_target" ]; then
   native_library="$target_dir/$cargo_target/release/libcompressor_pcodec_native.a"
 fi
 
-if ! RUSTFLAGS="${COMPRESSOR_RUSTFLAGS:-}" "$cargo_bin" build --locked \
+# Dependencies come from the vendored crate sources shipped in the package, so
+# the build never touches the network. Developers can set
+# COMPRESSOR_CARGO_ONLINE=1 to use their normal Cargo registry instead.
+offline_args=""
+cargo_config_args=""
+vendored=true
+if [ "${COMPRESSOR_CARGO_ONLINE:-}" = 1 ]; then
+  vendored=false
+else
+  if [ ! -f "$vendor_archive" ]; then
+    printf '%s\n' 'CompreSSoR: src/pcodec_native/vendor.tar.xz is missing (regenerate with tools/vendor-crates.sh, or set COMPRESSOR_CARGO_ONLINE=1).' >&2
+    cleanup_partial_build
+    exit 1
+  fi
+  if ! tar -xJf "$vendor_archive" -C "$target_dir"; then
+    printf '%s\n' 'CompreSSoR could not unpack vendor.tar.xz (needs tar with xz support).' >&2
+    cleanup_partial_build
+    exit 1
+  fi
+  # Drop any macOS AppleDouble (._*) entries: crates such as zstd-sys compile
+  # every *.c file in their source tree.
+  find "$target_dir/vendor" -name '._*' -exec rm -f {} + 2>/dev/null || true
+  cargo_config="$target_dir/cargo-vendor-config.toml"
+  printf '%s\n' \
+    '[source.crates-io]' 'replace-with = "vendored-sources"' \
+    '[source.vendored-sources]' "directory = \"$target_dir/vendor\"" > "$cargo_config"
+  cargo_config_args="--config $cargo_config"
+  offline_args="--offline"
+fi
+
+# shellcheck disable=SC2086
+if ! RUSTFLAGS="${COMPRESSOR_RUSTFLAGS:-}" "$cargo_bin" build --locked $offline_args \
+     $cargo_config_args \
      --manifest-path "$package_root/src/pcodec_native/Cargo.toml" \
-     --release --target-dir "$target_dir" $cargo_target_args >/dev/null 2>&1; then
+     --release --target-dir "$target_dir" $cargo_target_args >"$target_dir/cargo.log" 2>&1; then
+  tail -n 40 "$target_dir/cargo.log" >&2
   printf '%s\n' 'CompreSSoR could not build its native Pcodec backend with Cargo.' >&2
+  cleanup_partial_build
   exit 1
 fi
 if [ ! -f "$native_library" ]; then
   printf '%s\n' 'Cargo completed without producing the native Pcodec library.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+if ! cp "$native_library" "$generated_library"; then
+  printf '%s\n' 'CompreSSoR could not copy the native Pcodec library into src/.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+if ! rm -rf -- "$target_dir"; then
+  printf '%s\n' 'CompreSSoR could not remove its temporary Cargo target directory.' >&2
+  cleanup_partial_build
   exit 1
 fi
 
-printf '%s\n' \
+if ! printf '%s\n' \
   'CXX_STD = CXX17' \
   'PKG_CPPFLAGS = -DCOMPRESSOR_NATIVE_PCODEC' \
-  "PKG_LIBS = $native_library -lm -ldl -lpthread" > "$makevars"
-printf '%s\n' "Native Pcodec backend enabled ($native_library)"
+  'PKG_LIBS = libcompressor_pcodec_native.a -lm -ldl -lpthread' > "$makevars"; then
+  printf '%s\n' 'CompreSSoR could not write src/Makevars.' >&2
+  cleanup_partial_build
+  exit 1
+fi
+lock_sha256="$( (sha256sum "$package_root/src/pcodec_native/Cargo.lock" 2>/dev/null ||
+  shasum -a 256 "$package_root/src/pcodec_native/Cargo.lock" 2>/dev/null ||
+  openssl dgst -sha256 -r "$package_root/src/pcodec_native/Cargo.lock" 2>/dev/null) |
+  awk '{ print $1; exit }')"
+mkdir -p "$package_root/inst" &&
+printf '%s\n' \
+  "rustc: $rustc_version_line" \
+  "cargo: $cargo_version_line" \
+  "rust_version_required: $required_rust" \
+  "cargo_lock_sha256: ${lock_sha256:-unknown}" \
+  "vendored: $vendored" \
+  "target: ${cargo_target:-host}" > "$build_info" || {
+  printf '%s\n' 'CompreSSoR could not write inst/compressor-build-info.dcf.' >&2
+  cleanup_partial_build
+  exit 1
+}
+printf '%s\n' "Native Pcodec backend enabled ($generated_library)"
 
+trap - HUP INT TERM
 exit 0

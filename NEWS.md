@@ -1,3 +1,54 @@
+# CompreSSoR 0.6.0
+
+- The exact `pvalue_order` domain is now written by default
+  (`pvalue_order = TRUE`, `pvalue_order_threshold = 0.01`; `FALSE` omits it).
+  It adds about 1.0% to a 10M-row synthetic store (406 kB on 40.4 MB, 120,904
+  candidates) with no measurable compress-time change. It is an optional side
+  domain: no native format-version or core-stream change, and stores written
+  without it (including `pvalue_order = FALSE`) keep identical payload and
+  canonical hashes. `read_candidates(strategy = "exact_order")` adds
+  source-p membership (threshold must equal the domain threshold); the
+  default `auto` membership is still reconstructed-p. The README gains the
+  membership/order contract table and measured quantisation bounds
+  (#45, #46).
+
+- One-pass candidates: `read_candidates()` returns any `read_sumstats()` column
+  plus a canonical `key` column and (with `order = "exact"`) the exact rank,
+  decoding only the key/value/rank blocks that contain candidate rows.
+  `read_candidates_batch()` decodes key blocks once per same-panel group. The
+  selective (`variants`/`region`) readers now reconstruct `p_value` with the
+  decoder's erfc path, so p is bit-identical across full, selective and
+  candidate reads (previously selective p was `2 * pnorm(-abs(z))`, which
+  could differ in the last ulp). z/beta/se of selective reads are unchanged.
+
+- Performance batch: vectorised key and row matching in the native store
+  reader; ingest fast paths for position, allele, chromosome and p-value
+  coercion; batched reads reuse variant identity resolution across stores that
+  share a panel; a native selective block reader and content-keyed
+  (manifest sha256, not mtime) store/index caches. `read_sumstats_batch()`
+  gains `region` and accepts `variants = NULL` and zero-based row IDs.
+  `read_candidates()` gains a `strategy` override and never auto-selects the
+  writer-time p-value flag. Adds a BP-ready read/ingest benchmark harness.
+
+- Adds `read_candidates()` and `read_candidates_batch()` for threshold and
+  region candidate extraction from native Pcodec stores. The strategy is
+  chosen per store and recorded in `attr(x, "candidate_strategy")`: the
+  Z-exception sidecar alone when the threshold is below the p-value of the outermost
+  central Z bin (every row outside the central range is an exact float32
+  exception); otherwise the Z stream only. Candidate rows are fetched with a
+  block-selective reader that opens each payload once. `order = "exact"` uses
+  the `pvalue_order` domain; `order = "reconstructed"` is labelled approximate. Membership always equals a full read filtered at
+  `p <= threshold`; the writer-time p-value flag is used only with an explicit
+  `strategy = "pvalue_flag"` (flag membership follows a supplied p-value and
+  may differ).
+
+- Adds an opt-in, explicitly versioned `pvalue_order` side domain for exact
+  supplied-p/exact-prepared-Z candidate ordering without changing the locked
+  native core streams. `read_pvalue_order()` fails safely when exact ordering
+  is unavailable and requires an explicit reconstructed-p fallback.
+- Tightens source-package hygiene, native build cleanup, macOS Rust deployment
+  targeting, benchmark-path portability, and Rust formatting.
+
 # CompreSSoR 0.5.0
 
 - Refactors the installed package around a strict compression-only contract.

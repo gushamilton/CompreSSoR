@@ -922,6 +922,384 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
   return R_NilValue;
 }
 
+#ifdef COMPRESSOR_NATIVE_PCODEC
+namespace {
+
+// Per-worker lazily opened stream files: each worker opens every stream file
+// at most once and reuses the handle for all of its blocks.
+class SelectWorkerFiles {
+ public:
+  explicit SelectWorkerFiles(const std::vector<std::string>& paths)
+    : paths_(paths), files_(paths.size()) {}
+  NativePcodecFile& get(std::size_t i) {
+    if (!files_[i]) files_[i].reset(new NativePcodecFile(paths_[i]));
+    return *files_[i];
+  }
+ private:
+  const std::vector<std::string>& paths_;
+  std::vector<std::unique_ptr<NativePcodecFile>> files_;
+};
+
+template <typename Fn>
+void select_run_tasks(std::size_t task_count, std::size_t requested_threads,
+                      const std::vector<std::string>& paths, Fn fn) {
+  if (task_count == 0) return;
+  const std::size_t workers_n = std::max<std::size_t>(
+    1, std::min<std::size_t>(requested_threads, task_count));
+  if (workers_n == 1) {
+    SelectWorkerFiles files(paths);
+    for (std::size_t t = 0; t < task_count; ++t) fn(t, files);
+    return;
+  }
+  std::atomic<std::size_t> next(0);
+  std::mutex error_mutex;
+  std::exception_ptr first_error;
+  std::vector<std::thread> workers;
+  workers.reserve(workers_n);
+  for (std::size_t w = 0; w < workers_n; ++w) {
+    workers.emplace_back([&]() {
+      try {
+        SelectWorkerFiles files(paths);
+        while (true) {
+          const std::size_t t = next.fetch_add(1, std::memory_order_relaxed);
+          if (t >= task_count) break;
+          fn(t, files);
+        }
+      } catch (...) {
+        std::lock_guard<std::mutex> lock(error_mutex);
+        if (!first_error) first_error = std::current_exception();
+      }
+    });
+  }
+  for (std::thread& worker : workers) worker.join();
+  if (first_error) std::rethrow_exception(first_error);
+}
+
+struct SelectKeyOut {
+  std::vector<int> rows;
+  std::vector<double> position;
+  std::vector<int> substitution;
+};
+
+struct SelectExcOut {
+  std::vector<int> index;  // zero-based index into the selection
+  std::vector<double> z, log2se, eaf;
+  std::vector<int> flags;
+};
+
+template <typename T>
+std::vector<T> select_decode(NativePcodecFile& file, const NativePcodecBlock& block,
+                             unsigned char dtype) {
+  return native_decompress_block<T>(file, block, dtype);
+}
+
+SEXP select_int_vector(const std::vector<int>& v) {
+  SEXP out = PROTECT(Rf_allocVector(INTSXP, static_cast<R_xlen_t>(v.size())));
+  if (!v.empty()) std::memcpy(INTEGER(out), v.data(), v.size() * sizeof(int));
+  UNPROTECT(1);
+  return out;
+}
+SEXP select_real_vector(const std::vector<double>& v) {
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, static_cast<R_xlen_t>(v.size())));
+  if (!v.empty()) std::memcpy(REAL(out), v.data(), v.size() * sizeof(double));
+  UNPROTECT(1);
+  return out;
+}
+
+}  // namespace
+#endif
+
+// Selective native reader. One selection (mode 0: sorted unique zero-based
+// row ids; mode 1: inclusive global-position window c(lower, upper); mode 2:
+// sorted unique numeric keys position * 16 + substitution). Decodes only the
+// blocks the selection touches, opening each stream file once per worker, and
+// returns raw codes (and exception records) for the selected rows; the exact
+// R-side arithmetic then turns codes into values.
+extern "C" SEXP compressor_read_pcodec_native_select(
+    SEXP files,
+    SEXP position_blocks,
+    SEXP substitution_blocks,
+    SEXP z_blocks,
+    SEXP eaf_blocks,
+    SEXP se_blocks,
+    SEXP exception_blocks,
+    SEXP row_count,
+    SEXP streams,
+    SEXP exception_codec,
+    SEXP threads,
+    SEXP mode_sexp,
+    SEXP selection,
+    SEXP need_identity_sexp,
+    SEXP delta_sexp) {
+#ifdef COMPRESSOR_NATIVE_PCODEC
+  try {
+    if (TYPEOF(files) != STRSXP || XLENGTH(files) != 6 ||
+        TYPEOF(streams) != STRSXP || TYPEOF(exception_codec) != STRSXP ||
+        XLENGTH(exception_codec) != 1 || STRING_ELT(exception_codec, 0) == NA_STRING ||
+        TYPEOF(selection) != REALSXP ||
+        TYPEOF(need_identity_sexp) != LGLSXP || TYPEOF(delta_sexp) != LGLSXP) {
+      throw std::runtime_error("malformed arguments to native Pcodec selective reader");
+    }
+    const double row_count_value = native_scalar_integer(
+      row_count, true, "native Pcodec row count");
+    const R_xlen_t n = static_cast<R_xlen_t>(row_count_value);
+    const double thread_number = native_scalar_integer(
+      threads, false, "native Pcodec thread count");
+    const std::size_t requested_threads = static_cast<std::size_t>(thread_number);
+    const int mode = static_cast<int>(native_scalar_integer(mode_sexp, true, "native select mode"));
+    const bool need_identity = LOGICAL(need_identity_sexp)[0] == 1;
+    const bool delta = LOGICAL(delta_sexp)[0] == 1;
+    const bool need_z = requested_has(streams, "z");
+    const bool need_se = requested_has(streams, "se");
+    const bool need_eaf = need_se || requested_has(streams, "eaf");
+    const bool need_numeric = need_z || need_se || need_eaf;
+    if (mode < 0 || mode > 2 || (mode > 0 && !need_identity)) {
+      throw std::runtime_error("invalid native select mode");
+    }
+
+    std::vector<NativePcodecBlock> positions = read_native_blocks(position_blocks, n, true);
+    std::vector<NativePcodecBlock> substitutions = read_native_blocks(substitution_blocks, n, true);
+    std::vector<NativePcodecBlock> z_values = read_native_blocks(z_blocks, n, false);
+    std::vector<NativePcodecBlock> eaf_values = read_native_blocks(eaf_blocks, n, false);
+    std::vector<NativePcodecBlock> se_values = read_native_blocks(se_blocks, n, false);
+    std::vector<NativePcodecExceptionBlock> exceptions = read_native_exception_blocks(exception_blocks);
+    require_block_row_parity(positions, substitutions, "native key stream");
+    require_block_row_parity(z_values, eaf_values, "native value stream");
+    require_block_row_parity(z_values, se_values, "native value stream");
+    if (need_numeric && exceptions.size() != z_values.size()) {
+      throw std::runtime_error("native Pcodec exception index does not match value blocks");
+    }
+    std::vector<std::string> paths;
+    const char* labels[6] = {"position", "substitution", "z", "EAF", "SE", "exception"};
+    for (int i = 0; i < 6; ++i) paths.push_back(native_path(files, i, labels[i]));
+    const std::string codec = CHAR(STRING_ELT(exception_codec, 0));
+
+    // last_position is carried as column 7 of the position block matrix.
+    std::vector<double> last_position(positions.size(), 0.0);
+    if (mode == 1 || mode == 2) {
+      const SEXP dims = Rf_getAttrib(position_blocks, R_DimSymbol);
+      if (INTEGER(dims)[1] < 7) throw std::runtime_error("native select needs last positions");
+      for (std::size_t b = 0; b < positions.size(); ++b) {
+        last_position[b] = static_cast<double>(matrix_uint64(
+          position_blocks, static_cast<R_xlen_t>(b), 6, "native Pcodec block last position"));
+      }
+    }
+
+    const double* sel = REAL(selection);
+    const std::size_t sel_len = static_cast<std::size_t>(XLENGTH(selection));
+    std::vector<int> sel_rows;  // mode 0 only
+    std::vector<double> target_positions;  // mode 2
+    if (mode == 0) {
+      sel_rows.reserve(sel_len);
+      for (std::size_t i = 0; i < sel_len; ++i) {
+        if (!R_FINITE(sel[i]) || sel[i] < 0 || sel[i] >= static_cast<double>(n) ||
+            (i > 0 && sel[i] <= sel[i - 1])) {
+          throw std::runtime_error("native select rows must be sorted unique valid row ids");
+        }
+        sel_rows.push_back(static_cast<int>(sel[i]));
+      }
+    } else if (mode == 1) {
+      if (sel_len != 2) throw std::runtime_error("native select window needs two bounds");
+    } else {
+      for (std::size_t i = 0; i < sel_len; ++i) {
+        if (i > 0 && sel[i] <= sel[i - 1]) {
+          throw std::runtime_error("native select keys must be sorted unique");
+        }
+        const double p = std::floor(sel[i] / 16);
+        if (target_positions.empty() || target_positions.back() != p) target_positions.push_back(p);
+      }
+    }
+
+    double source_bytes = 0;
+    std::vector<int> selected;           // selected rows (sorted)
+    std::vector<double> sel_position;
+    std::vector<int> sel_substitution;
+
+    auto block_hits = [&](const std::vector<NativePcodecBlock>& blocks,
+                          const std::vector<int>& rows,
+                          std::vector<std::size_t>& out) {
+      std::size_t cursor = 0;
+      for (std::size_t b = 0; b < blocks.size() && cursor < rows.size(); ++b) {
+        const std::size_t lo = static_cast<std::size_t>(
+          std::lower_bound(rows.begin() + cursor, rows.end(),
+                           static_cast<int>(blocks[b].row_start)) - rows.begin());
+        const std::size_t hi = static_cast<std::size_t>(
+          std::lower_bound(rows.begin() + lo, rows.end(),
+                           static_cast<int>(blocks[b].row_stop)) - rows.begin());
+        if (hi > lo) out.push_back(b);
+        cursor = hi;
+      }
+    };
+
+    if (need_identity) {
+      std::vector<std::size_t> key_candidates;
+      if (mode == 0) {
+        block_hits(positions, sel_rows, key_candidates);
+      } else {
+        for (std::size_t b = 0; b < positions.size(); ++b) {
+          const double first = static_cast<double>(positions[b].first_position);
+          if (mode == 1) {
+            if (last_position[b] >= sel[0] && first <= sel[1]) key_candidates.push_back(b);
+          } else {
+            const auto lo = std::lower_bound(target_positions.begin(), target_positions.end(), first);
+            const auto hi = std::upper_bound(target_positions.begin(), target_positions.end(), last_position[b]);
+            if (lo < hi) key_candidates.push_back(b);
+          }
+        }
+      }
+      std::vector<SelectKeyOut> key_out(key_candidates.size());
+      select_run_tasks(key_candidates.size(), requested_threads, paths,
+        [&](std::size_t t, SelectWorkerFiles& wf) {
+          const std::size_t b = key_candidates[t];
+          const NativePcodecBlock& pb = positions[b];
+          const NativePcodecBlock& sb = substitutions[b];
+          std::vector<std::uint32_t> gaps = select_decode<std::uint32_t>(wf.get(0), pb, kPcoTypeU32);
+          std::vector<std::uint8_t> subs = select_decode<std::uint8_t>(wf.get(1), sb, kPcoTypeU8);
+          std::vector<double> pos(gaps.size());
+          if (delta) {
+            double current = static_cast<double>(pb.first_position);
+            for (std::size_t i = 0; i < gaps.size(); ++i) {
+              current += static_cast<double>(gaps[i]);
+              pos[i] = current;
+            }
+          } else {
+            for (std::size_t i = 0; i < gaps.size(); ++i) pos[i] = static_cast<double>(gaps[i]);
+          }
+          SelectKeyOut& out = key_out[t];
+          auto take = [&](std::size_t i) {
+            out.rows.push_back(static_cast<int>(pb.row_start + i));
+            out.position.push_back(pos[i]);
+            out.substitution.push_back(static_cast<int>(subs[i]));
+          };
+          if (mode == 0) {
+            auto it = std::lower_bound(sel_rows.begin(), sel_rows.end(), static_cast<int>(pb.row_start));
+            for (; it != sel_rows.end() && static_cast<std::uint64_t>(*it) < pb.row_stop; ++it) {
+              take(static_cast<std::size_t>(*it) - static_cast<std::size_t>(pb.row_start));
+            }
+          } else if (mode == 1) {
+            for (std::size_t i = 0; i < pos.size(); ++i) {
+              if (pos[i] >= sel[0] && pos[i] <= sel[1]) take(i);
+            }
+          } else {
+            for (std::size_t i = 0; i < pos.size(); ++i) {
+              if (std::binary_search(sel, sel + sel_len, pos[i] * 16 + static_cast<double>(subs[i]))) take(i);
+            }
+          }
+        });
+      for (std::size_t t = 0; t < key_candidates.size(); ++t) {
+        const std::size_t b = key_candidates[t];
+        source_bytes += static_cast<double>(positions[b].length) +
+          static_cast<double>(substitutions[b].length);
+        const SelectKeyOut& out = key_out[t];
+        selected.insert(selected.end(), out.rows.begin(), out.rows.end());
+        sel_position.insert(sel_position.end(), out.position.begin(), out.position.end());
+        sel_substitution.insert(sel_substitution.end(), out.substitution.begin(), out.substitution.end());
+      }
+    } else {
+      selected = sel_rows;
+    }
+
+    const std::size_t m = selected.size();
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 12));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 12));
+    const char* result_names[12] = {"rows", "position", "substitution", "z", "eaf", "se",
+                                    "exc_index", "exc_z", "exc_log2se", "exc_eaf",
+                                    "exc_flags", "source_bytes"};
+    for (int i = 0; i < 12; ++i) SET_STRING_ELT(names, i, scalar_name(result_names[i]));
+    Rf_setAttrib(result, R_NamesSymbol, names);
+    SET_VECTOR_ELT(result, 0, select_int_vector(selected));
+    if (need_identity) {
+      SET_VECTOR_ELT(result, 1, select_real_vector(sel_position));
+      SET_VECTOR_ELT(result, 2, select_int_vector(sel_substitution));
+    }
+
+    if (m > 0 && need_numeric) {
+      SEXP z_out = need_z ? Rf_allocVector(INTSXP, static_cast<R_xlen_t>(m)) : R_NilValue;
+      if (need_z) SET_VECTOR_ELT(result, 3, z_out);
+      SEXP eaf_out = need_eaf ? Rf_allocVector(INTSXP, static_cast<R_xlen_t>(m)) : R_NilValue;
+      if (need_eaf) SET_VECTOR_ELT(result, 4, eaf_out);
+      SEXP se_out = need_se ? Rf_allocVector(INTSXP, static_cast<R_xlen_t>(m)) : R_NilValue;
+      if (need_se) SET_VECTOR_ELT(result, 5, se_out);
+      int* zp = need_z ? INTEGER(z_out) : nullptr;
+      int* ep = need_eaf ? INTEGER(eaf_out) : nullptr;
+      int* sp = need_se ? INTEGER(se_out) : nullptr;
+
+      std::vector<std::size_t> value_candidates;
+      block_hits(z_values, selected, value_candidates);
+      std::vector<SelectExcOut> exc_out(value_candidates.size());
+      select_run_tasks(value_candidates.size(), requested_threads, paths,
+        [&](std::size_t t, SelectWorkerFiles& wf) {
+          const std::size_t b = value_candidates[t];
+          const NativePcodecBlock& vb = z_values[b];
+          const std::size_t lo = static_cast<std::size_t>(std::lower_bound(
+            selected.begin(), selected.end(), static_cast<int>(vb.row_start)) - selected.begin());
+          const std::size_t hi = static_cast<std::size_t>(std::lower_bound(
+            selected.begin() + lo, selected.end(), static_cast<int>(vb.row_stop)) - selected.begin());
+          if (need_z) {
+            std::vector<std::uint16_t> v = select_decode<std::uint16_t>(wf.get(2), z_values[b], kPcoTypeU16);
+            for (std::size_t i = lo; i < hi; ++i) zp[i] = static_cast<int>(v[selected[i] - vb.row_start]);
+          }
+          if (need_eaf) {
+            std::vector<std::uint8_t> v = select_decode<std::uint8_t>(wf.get(3), eaf_values[b], kPcoTypeU8);
+            for (std::size_t i = lo; i < hi; ++i) ep[i] = static_cast<int>(v[selected[i] - vb.row_start]);
+          }
+          if (need_se) {
+            std::vector<std::uint8_t> v = select_decode<std::uint8_t>(wf.get(4), se_values[b], kPcoTypeU8);
+            for (std::size_t i = lo; i < hi; ++i) sp[i] = static_cast<int>(v[selected[i] - vb.row_start]);
+          }
+          if (exceptions[b].count > 0) {
+            std::vector<int> rows, flags;
+            std::vector<double> ez, el, ee;
+            native_append_exception_block(wf.get(5), exceptions[b], vb,
+              static_cast<std::uint64_t>(n), nullptr, codec, rows, ez, el, ee, flags);
+            SelectExcOut& out = exc_out[t];
+            for (std::size_t k = 0; k < rows.size(); ++k) {
+              auto it = std::lower_bound(selected.begin() + lo, selected.begin() + hi, rows[k]);
+              if (it != selected.begin() + hi && *it == rows[k]) {
+                out.index.push_back(static_cast<int>(it - selected.begin()));
+                out.z.push_back(ez[k]);
+                out.log2se.push_back(el[k]);
+                out.eaf.push_back(ee[k]);
+                out.flags.push_back(flags[k]);
+              }
+            }
+          }
+        });
+      SelectExcOut all;
+      for (std::size_t t = 0; t < value_candidates.size(); ++t) {
+        const std::size_t b = value_candidates[t];
+        if (need_z) source_bytes += static_cast<double>(z_values[b].length);
+        if (need_eaf) source_bytes += static_cast<double>(eaf_values[b].length);
+        if (need_se) source_bytes += static_cast<double>(se_values[b].length);
+        if (exceptions[b].count > 0) source_bytes += static_cast<double>(exceptions[b].length);
+        const SelectExcOut& o = exc_out[t];
+        all.index.insert(all.index.end(), o.index.begin(), o.index.end());
+        all.z.insert(all.z.end(), o.z.begin(), o.z.end());
+        all.log2se.insert(all.log2se.end(), o.log2se.begin(), o.log2se.end());
+        all.eaf.insert(all.eaf.end(), o.eaf.begin(), o.eaf.end());
+        all.flags.insert(all.flags.end(), o.flags.begin(), o.flags.end());
+      }
+      SET_VECTOR_ELT(result, 6, select_int_vector(all.index));
+      SET_VECTOR_ELT(result, 7, select_real_vector(all.z));
+      SET_VECTOR_ELT(result, 8, select_real_vector(all.log2se));
+      SET_VECTOR_ELT(result, 9, select_real_vector(all.eaf));
+      SET_VECTOR_ELT(result, 10, select_int_vector(all.flags));
+    }
+    SET_VECTOR_ELT(result, 11, Rf_ScalarReal(source_bytes));
+    UNPROTECT(2);
+    return result;
+  } catch (const std::exception& exception) {
+    Rf_error("%s", exception.what());
+  } catch (...) {
+    Rf_error("unknown native Pcodec selective reader error");
+  }
+#else
+  Rf_error("native Pcodec is not available in this build");
+#endif
+  return R_NilValue;
+}
+
+
 // Load the compact temporary bridge directly into final R vectors. This avoids
 // expanding uint16/uint8 codes to 32-bit R integer vectors, avoids readBin()
 // copies, and constructs categorical identity columns in the same native pass.
