@@ -1832,6 +1832,32 @@ pcodec_native_empty_result <- function(columns) {
   result[c("row", needed)]
 }
 
+# Global position range [lower, upper] covered by `region`, or NULL when the
+# region does not overlap its chromosome. Global positions are the chromosome
+# offset plus the 1-based position, so the bounds are clamped to
+# [1, chromosome length] first: otherwise an end past the chromosome end
+# reaches into the next chromosome and a start below 1 into the previous one.
+pcodec_native_region_range <- function(region, build = "GRCh38") {
+  bounds <- read_region_bounds(region)
+  chromosome <- toupper(sub("^CHR", "", as.character(bounds$chromosome),
+                            ignore.case = TRUE))
+  lengths <- compressor_chromosome_lengths(build)
+  if (length(chromosome) != 1L || !chromosome %in% names(lengths)) {
+    stop("unsupported region chromosome", call. = FALSE)
+  }
+  start <- suppressWarnings(as.numeric(bounds$start))
+  end <- suppressWarnings(as.numeric(bounds$end))
+  if (length(start) != 1L || length(end) != 1L || is.na(start) || is.na(end)) {
+    stop("region start and end must be numbers", call. = FALSE)
+  }
+  chromosome_length <- as.numeric(lengths[[chromosome]])
+  start <- max(1, ceiling(start))
+  end <- min(chromosome_length, floor(end))
+  if (start > end) return(NULL)
+  offset <- as.numeric(pcodec_native_offsets(build)[[chromosome]])
+  c(offset + start - 1, offset + end - 1)
+}
+
 pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
                                       columns = NULL, threads = NULL) {
   if (!pcodec_native_available()) {
@@ -1878,13 +1904,10 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
 
   lower <- upper <- NULL
   if (!is.null(region)) {
-    bounds <- read_region_bounds(region)
-    chromosome <- toupper(sub("^CHR", "", as.character(bounds$chromosome), ignore.case = TRUE))
-    lengths <- compressor_chromosome_lengths(build)
-    if (!chromosome %in% names(lengths)) stop("unsupported region chromosome", call. = FALSE)
-    offsets <- pcodec_native_offsets(build)
-    lower <- offsets[match(chromosome, names(lengths))] + bounds$start - 1
-    upper <- offsets[match(chromosome, names(lengths))] + bounds$end - 1
+    range <- pcodec_native_region_range(region, build)
+    if (is.null(range)) return(pcodec_native_empty_result(columns))
+    lower <- range[1]
+    upper <- range[2]
   }
   if (is.null(region) && is.null(variants)) {
     output <- pcodec_native_full_read(store, index, requested, identity_needed,
