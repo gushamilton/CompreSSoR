@@ -277,6 +277,26 @@ benchmark, not a claim about
 every GWAS or sparse workload; the real-GWAS suite should be regenerated for
 the native format before making a new production headline.
 
+### Offline, reproducible Rust build
+
+`configure` requires `cargo` and `rustc` at least as new as the `rust-version`
+in `src/pcodec_native/Cargo.toml` (currently 1.87) and stops early, naming the
+required version and the binary it found, if they are older. Crate sources are
+bundled in `src/pcodec_native/vendor.tar.xz` (about 1.9 MB); `configure`
+unpacks them into a temporary directory, points Cargo at them with a generated
+`--config` file and runs `cargo build --offline --locked`, so installation
+never needs network access or a populated `CARGO_HOME` (useful on offline HPC
+compute nodes). Developers can set `COMPRESSOR_CARGO_ONLINE=1` to use the normal
+registry instead. `COMPRESSOR_RUSTFLAGS` is passed through as before.
+
+After changing `Cargo.toml` or `Cargo.lock`, run `tools/vendor-crates.sh`
+(needs network) and commit the regenerated tarball.
+
+`compressor_build_info()` returns the rustc and cargo versions, a SHA-256 of
+`Cargo.lock` and whether vendored crates were used. The same record is stored in
+new manifests under `provenance$build_info`; it is excluded from
+`canonical_sha256` and does not affect `payload_sha256`.
+
 ## Benchmark interpretation
 
 The final cold suite used:

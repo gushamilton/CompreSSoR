@@ -14,3 +14,5 @@ __pycache__/
 scripts/.syncthing.*.tmp
 /outputs/
 .syncthing.*.tmp
+inst/compressor-build-info.dcf
+!src/pcodec_native/vendor.tar.xz

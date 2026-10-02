@@ -36,7 +36,9 @@ compressor_manifest_contract <- function(path, build, selection, profile,
     reference = list(status = "not_used"),
     chain = list(status = "not_used"),
     panel = panel %||% NULL,
-    preparation = preparation %||% list(method = "strict_prepared_input")
+    preparation = preparation %||% list(method = "strict_prepared_input"),
+    # Observational: excluded from canonical_sha256 (see pcodec.R).
+    build_info = compressor_build_info()
   )
   if (is.null(manifest$selection)) {
     manifest$selection <- list(name = selection, method = "full_store")
