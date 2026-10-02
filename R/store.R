@@ -148,16 +148,23 @@ write_selection_regions <- function(output, selection) {
 #' @param pvalue_flag_threshold Threshold recorded by the p-value flag domain.
 #'   The standard convention is `5e-8` with an inclusive `<=` operator. This
 #'   is separate from `pvalue_threshold`, which controls variant selection.
-#' @param pvalue_order For native Pcodec stores, whether to write an optional
-#'   exact p-value ordering domain. The domain stores one lossless uint32 rank
-#'   per native row for candidates at `pvalue_order_threshold`; zero marks a
-#'   non-candidate. Ordering uses finite supplied p-values when present,
-#'   otherwise exact prepared Z, with canonical variant identity as the
-#'   deterministic tie-break. The default is `FALSE` pending the maintained
-#'   large-file storage benchmark.
+#' @param pvalue_order For native Pcodec stores, whether to write the exact
+#'   p-value ordering domain. `NULL` (default) uses the standard native default
+#'   of `TRUE`; set `FALSE` to omit it. The domain stores one lossless uint32
+#'   rank per native row for candidates at `pvalue_order_threshold`; zero marks
+#'   a non-candidate. Ranking and candidate membership use the finite supplied
+#'   full-precision source p-value when present (ties, including p exactly at
+#'   the threshold, are resolved by canonical variant order; NA/invalid
+#'   supplied p-values fall back to exact prepared Z, or are non-candidates if
+#'   that is also unavailable). If the input has no p column, p is derived
+#'   from exact prepared Z at double precision before lossy encoding. Which
+#'   case applied is recorded in `manifest$domains$pvalue_order$source`. The
+#'   domain is an optional side file; stores written without it are unchanged
+#'   and remain readable.
 #' @param pvalue_order_threshold Inclusive threshold for the exact p-value
-#'   ordering domain. `NULL` uses `pvalue_flag_threshold`. This domain is
-#'   separate from both variant selection and the binary p-value flag.
+#'   ordering domain; `NULL` uses 0.01 (cis-candidate scale). This domain is
+#'   separate from variant selection and from the binary p-value flag
+#'   (threshold `pvalue_flag_threshold`).
 #' @param region_padding Number of base pairs added on each side of significant
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #'   The default is 10,000 bp; the threshold and window are recorded in the
@@ -197,7 +204,7 @@ compress_sumstats <- function(input, output,
                               pvalue_threshold = 1e-5,
                               pvalue_flag = NULL,
                               pvalue_flag_threshold = 5e-8,
-                              pvalue_order = FALSE,
+                              pvalue_order = NULL,
                               pvalue_order_threshold = NULL,
                               region_padding = 10000L,
                               store_build = "GRCh38",
@@ -254,11 +261,17 @@ compress_sumstats <- function(input, output,
     stop("pvalue_flag must be TRUE, FALSE, or NULL", call. = FALSE)
   }
   pvalue_flag <- if (is.null(pvalue_flag)) identical(backend, "pcodec") else isTRUE(pvalue_flag)
-  if (length(pvalue_order) != 1L || !is.logical(pvalue_order) || is.na(pvalue_order)) {
-    stop("pvalue_order must be TRUE or FALSE", call. = FALSE)
+  if (!is.null(pvalue_order) &&
+      (length(pvalue_order) != 1L || !is.logical(pvalue_order) || is.na(pvalue_order))) {
+    stop("pvalue_order must be TRUE, FALSE, or NULL", call. = FALSE)
   }
+  order_default <- is.null(pvalue_order)
+  pvalue_order <- if (order_default) identical(backend, "pcodec") else isTRUE(pvalue_order)
+  # A disabled domain records the pre-existing default (the flag threshold) so
+  # manifests, and hence canonical hashes, of stores written without the
+  # domain are unchanged.
   if (is.null(pvalue_order_threshold)) {
-    pvalue_order_threshold <- pvalue_flag_threshold
+    pvalue_order_threshold <- if (pvalue_order) 0.01 else pvalue_flag_threshold
   }
   if (length(pvalue_order_threshold) != 1L ||
       !is.numeric(pvalue_order_threshold) || is.na(pvalue_order_threshold) ||
@@ -494,7 +507,7 @@ compress_sumstats <- function(input, output,
         source_column_present = isTRUE(source_provenance$p_value$column_present),
         source_column_alias = source_provenance$p_value$source_alias %||% "absent",
         tie_break = "canonical_variant_key",
-        standard_default = FALSE
+        standard_default = isTRUE(order_default) && isTRUE(pvalue_order)
       ),
       selection = selection,
       selection_metadata = prepared$selection_metadata,

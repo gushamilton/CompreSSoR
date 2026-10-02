@@ -78,27 +78,46 @@ candidates_open <- function(store) {
   store
 }
 
+# Reconstructed p for the given rows, taken from the exception sidecar when
+# the row is a Z exception (the usual case); NA otherwise.
+candidates_exception_p <- function(store, index, rows) {
+  e <- pcodec_native_read_all_exceptions(store, index)
+  e <- e[bitwAnd(as.integer(e$flags), 1L) != 0L, , drop = FALSE]
+  p <- rep.int(NA_real_, length(rows))
+  at <- match(rows, e$row)
+  if (any(!is.na(at))) {
+    p[!is.na(at)] <- candidates_native_p(candidates_semantic(store),
+                                         exception_z = e$z[at[!is.na(at)]])
+  }
+  p
+}
+
 # Returns list(rows (sorted zero-based), strategy).
 candidates_select_rows <- function(store, index, threshold, threads,
                                    strategy = "auto") {
   flag <- (store$manifest$domains %||% list())$pvalue_flag
+  if (identical(strategy, "exact_order")) {
+    domain <- pcodec_native_pvalue_order_domain(store)
+    if (!isTRUE(as.numeric(domain$threshold) == threshold)) {
+      stop("strategy = \"exact_order\" requires pvalue_threshold equal to the ",
+           "pvalue_order domain threshold (",
+           format(as.numeric(domain$threshold), scientific = TRUE),
+           "); ranks encode order and membership at that threshold only",
+           call. = FALSE)
+    }
+    ranks <- pcodec_native_read_pvalue_order(store, threads = threads)
+    rows <- as.integer(which(ranks > 0L) - 1L)
+    return(list(rows = rows, p = candidates_exception_p(store, index, rows),
+                strategy = "exact_order"))
+  }
   if (identical(strategy, "pvalue_flag")) {
     if (!is.list(flag) || !isTRUE(as.numeric(flag$threshold) == threshold)) {
       stop("strategy = \"pvalue_flag\" requires a pvalue_flag domain whose ",
            "threshold equals pvalue_threshold", call. = FALSE)
     }
     rows <- candidates_read_flag_rows(store, threads)
-    # Reconstructed p for flagged rows, taken from the exception sidecar when
-    # the row is a Z exception (the usual case); NA otherwise.
-    e <- pcodec_native_read_all_exceptions(store, index)
-    e <- e[bitwAnd(as.integer(e$flags), 1L) != 0L, , drop = FALSE]
-    p <- rep.int(NA_real_, length(rows))
-    at <- match(rows, e$row)
-    if (any(!is.na(at))) {
-      p[!is.na(at)] <- candidates_native_p(candidates_semantic(store),
-                                           exception_z = e$z[at[!is.na(at)]])
-    }
-    return(list(rows = rows, p = p, strategy = "pvalue_flag"))
+    return(list(rows = rows, p = candidates_exception_p(store, index, rows),
+                strategy = "pvalue_flag"))
   }
   semantic <- candidates_semantic(store)
   edge <- candidates_central_edge_p(semantic)
@@ -206,7 +225,15 @@ candidates_exact_ranks <- function(store, rows) {
 #'    a per-code p lookup.
 #'
 #' Membership is always the reconstructed-p definition unless
-#' `strategy = "pvalue_flag"` is requested explicitly.
+#' `strategy = "pvalue_flag"` or `strategy = "exact_order"` is requested
+#' explicitly. `"exact_order"` defines membership by the full-precision
+#' source (supplied) p-value recorded at write time in the `pvalue_order`
+#' domain (every row with source p <= the domain threshold, which
+#' `pvalue_threshold` must equal), and so can differ from the reconstructed-p
+#' set by a few rows near the threshold (about 0.5% of rows at p <= 0.01 in
+#' benchmarks). The returned `p_value` column is still the reconstructed p;
+#' `candidate_strategy` is `"exact_order"` and `exact_rank` gives the source
+#' order.
 #'
 #' @param store A native Pcodec store object or path.
 #' @param pvalue_threshold Inclusive threshold in `[0, 1]`.
@@ -228,7 +255,9 @@ candidates_exact_ranks <- function(store, rows) {
 #'   exceptions edge), `"z_stream"`, or `"pvalue_flag"` (explicit opt-in: the
 #'   writer-time flag membership, which follows a supplied p-value when one was
 #'   available and so can differ from the reconstructed-p definition; requires
-#'   a flag domain whose threshold equals `pvalue_threshold`).
+#'   a flag domain whose threshold equals `pvalue_threshold`), or
+#'   `"exact_order"` (explicit opt-in: source-p membership from the
+#'   `pvalue_order` domain, whose threshold must equal `pvalue_threshold`).
 #' @return A data frame with attributes `candidate_strategy`,
 #'   `candidate_threshold` and `candidate_order`.
 #' @export
@@ -237,7 +266,7 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
                             order = c("none", "reconstructed", "exact"),
                             threads = 1L,
                             strategy = c("auto", "exceptions", "z_stream",
-                                         "pvalue_flag")) {
+                                         "pvalue_flag", "exact_order")) {
   order <- match.arg(order)
   strategy <- match.arg(strategy)
   threshold <- candidates_validate_threshold(pvalue_threshold)
@@ -340,7 +369,7 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
                                   order = c("none", "reconstructed", "exact"),
                                   threads = 1L, bind = FALSE,
                                   strategy = c("auto", "exceptions", "z_stream",
-                                               "pvalue_flag")) {
+                                               "pvalue_flag", "exact_order")) {
   strategy <- match.arg(strategy)
   order <- match.arg(order)
   if (is.character(stores)) stores <- as.list(stores)

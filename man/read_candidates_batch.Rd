@@ -12,7 +12,7 @@ read_candidates_batch(
   order = c("none", "reconstructed", "exact"),
   threads = 1L,
   bind = FALSE,
-  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag")
+  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag", "exact_order")
 )
 }
 \arguments{
@@ -48,7 +48,9 @@ names (or positions when unnamed).}
 exceptions edge), \code{"z_stream"}, or \code{"pvalue_flag"} (explicit opt-in: the
 writer-time flag membership, which follows a supplied p-value when one was
 available and so can differ from the reconstructed-p definition; requires
-a flag domain whose threshold equals \code{pvalue_threshold}).}
+a flag domain whose threshold equals \code{pvalue_threshold}), or
+\code{"exact_order"} (explicit opt-in: source-p membership from the
+\code{pvalue_order} domain, whose threshold must equal \code{pvalue_threshold}).}
 }
 \value{
 A list or data frame; \code{attr(x, "candidate_strategy")} is the

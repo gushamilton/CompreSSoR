@@ -1,5 +1,17 @@
 # CompreSSoR 0.5.0
 
+- The exact `pvalue_order` domain is now written by default
+  (`pvalue_order = TRUE`, `pvalue_order_threshold = 0.01`; `FALSE` omits it).
+  It adds about 1.0% to a 10M-row synthetic store (406 kB on 40.4 MB, 120,904
+  candidates) with no measurable compress-time change. It is an optional side
+  domain: no native format-version or core-stream change, and stores written
+  without it (including `pvalue_order = FALSE`) keep identical payload and
+  canonical hashes. `read_candidates(strategy = "exact_order")` adds
+  source-p membership (threshold must equal the domain threshold); the
+  default `auto` membership is still reconstructed-p. The README gains the
+  membership/order contract table and measured quantisation bounds
+  (#45, #46).
+
 - Performance batch: vectorised key and row matching in the native store
   reader; ingest fast paths for position, allele, chromosome and p-value
   coercion; batched reads reuse variant identity resolution across stores that

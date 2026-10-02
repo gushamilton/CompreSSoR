@@ -11,7 +11,7 @@ read_candidates(
   columns = NULL,
   order = c("none", "reconstructed", "exact"),
   threads = 1L,
-  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag")
+  strategy = c("auto", "exceptions", "z_stream", "pvalue_flag", "exact_order")
 )
 }
 \arguments{
@@ -41,7 +41,9 @@ because reconstructed and exact p differ) get \code{NA} and sort last.}
 exceptions edge), \code{"z_stream"}, or \code{"pvalue_flag"} (explicit opt-in: the
 writer-time flag membership, which follows a supplied p-value when one was
 available and so can differ from the reconstructed-p definition; requires
-a flag domain whose threshold equals \code{pvalue_threshold}).}
+a flag domain whose threshold equals \code{pvalue_threshold}), or
+\code{"exact_order"} (explicit opt-in: source-p membership from the
+\code{pvalue_order} domain, whose threshold must equal \code{pvalue_threshold}).}
 }
 \value{
 A data frame with attributes \code{candidate_strategy},
@@ -67,5 +69,13 @@ a per-code p lookup.
 }
 
 Membership is always the reconstructed-p definition unless
-\code{strategy = "pvalue_flag"} is requested explicitly.
+\code{strategy = "pvalue_flag"} or \code{strategy = "exact_order"} is requested
+explicitly. \code{"exact_order"} defines membership by the full-precision
+source (supplied) p-value recorded at write time in the \code{pvalue_order}
+domain (every row with source p <= the domain threshold, which
+\code{pvalue_threshold} must equal), and so can differ from the reconstructed-p
+set by a few rows near the threshold (about 0.5\% of rows at p <= 0.01 in
+benchmarks). The returned \code{p_value} column is still the reconstructed p;
+\code{candidate_strategy} is \code{"exact_order"} and \code{exact_rank} gives the source
+order.
 }
