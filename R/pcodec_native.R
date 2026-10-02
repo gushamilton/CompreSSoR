@@ -2177,3 +2177,27 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
                                rows = NA_integer_, profile = NA_character_, full = isTRUE(full)))
   result
 }
+
+#' Native build information
+#'
+#' Reports the Rust toolchain and dependency lockfile that were used to compile
+#' the native Pcodec backend when the package was installed.
+#'
+#' @return A named list with `rustc`, `cargo` (version strings),
+#'   `rust_version_required`, `cargo_lock_sha256` (digest of `Cargo.lock`),
+#'   `vendored` (whether crates came from the bundled `vendor.tar.xz`) and
+#'   `target`. Fields are `NA_character_` if the information is unavailable.
+#' @export
+compressor_build_info <- function() {
+  keys <- c("rustc", "cargo", "rust_version_required", "cargo_lock_sha256",
+            "vendored", "target")
+  out <- stats::setNames(as.list(rep(NA_character_, length(keys))), keys)
+  path <- system.file("compressor-build-info.dcf", package = "CompreSSoR")
+  if (nzchar(path)) {
+    dcf <- tryCatch(read.dcf(path), error = function(e) NULL)
+    if (!is.null(dcf) && nrow(dcf) >= 1L) {
+      for (key in intersect(keys, colnames(dcf))) out[[key]] <- unname(dcf[1L, key])
+    }
+  }
+  out
+}

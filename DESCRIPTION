@@ -26,7 +26,7 @@ Suggests:
     dplyr,
     testthat (>= 3.0.0)
 Config/testthat/edition: 3
-SystemRequirements: Rust/Cargo (required to build the native Pcodec backend)
+SystemRequirements: Rust/Cargo >= 1.87 (required to build the native Pcodec backend; crate sources are bundled, no network needed)
 NeedsCompilation: yes
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
+Config/roxygen2/version: 8.1.0

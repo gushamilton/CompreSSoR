@@ -6,4 +6,4 @@ package_root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 makevars="$package_root/src/Makevars"
 generated_library="$package_root/src/libcompressor_pcodec_native.a"
 
-rm -f -- "$generated_library" "$makevars"
+rm -f -- "$generated_library" "$makevars" "$package_root/inst/compressor-build-info.dcf"
