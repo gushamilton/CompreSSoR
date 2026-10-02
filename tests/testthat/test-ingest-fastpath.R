@@ -128,13 +128,10 @@ test_that("ingest type variants reproduce pre-optimisation store hashes", {
     got <- ingest_store_hashes(variants[[e$variant]], e$qc)
     label <- paste(e$variant, e$qc)
     expect_identical(as.integer(got$rows), as.integer(e$rows), label = label)
+    # Pin the stored data by payload hash. The canonical manifest hash embeds a
+    # serialize() digest of the input, which differs across R versions (and for
+    # factor columns across sessions), so it is not pinned here.
     expect_identical(got$payload, e$payload, label = label)
-    # The canonical manifest hash embeds a serialize() digest of the input,
-    # which is not stable for factor columns across R sessions, so factor
-    # variants are pinned by payload hash only.
-    if (!grepl("factor", e$variant)) {
-      expect_identical(got$canonical, e$canonical, label = label)
-    }
   }
 })
 
