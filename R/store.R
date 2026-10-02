@@ -692,14 +692,16 @@ open_compressor <- function(path) {
   if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)
   manifest_path <- file.path(path, "manifest.json")
   stamp <- NULL
+  recorded <- observed <- NULL
   if (file.exists(manifest_path)) {
     checksum_path <- pcodec_manifest_checksum_path(manifest_path)
     recorded <- if (file.exists(checksum_path)) {
       readLines(checksum_path, warn = FALSE, n = 1L)
     } else NULL
     if (length(recorded) == 1L) {
-      stamp <- paste(digest::digest(manifest_path, algo = "sha256", file = TRUE),
-                     trimws(recorded), sep = "|")
+      # Hashed once; a cache miss reuses it for checksum verification below.
+      observed <- digest::digest(manifest_path, algo = "sha256", file = TRUE)
+      stamp <- paste(observed, trimws(recorded), sep = "|")
       hit <- .compressor_open_cache[[path]]
       if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
     }
@@ -707,7 +709,7 @@ open_compressor <- function(path) {
   manifest <- read_manifest(manifest_path)
   if (!identical(manifest$format, "CompreSSoR")) stop("not a CompreSSoR store", call. = FALSE)
   if (identical(manifest$backend, "pcodec")) {
-    verify_pcodec_manifest(manifest_path)
+    verify_pcodec_manifest(manifest_path, expected = recorded, observed = observed)
   }
   if (identical(manifest$backend, "pcodec") &&
       !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {

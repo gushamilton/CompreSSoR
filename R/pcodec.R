@@ -56,16 +56,22 @@ seal_pcodec_manifest <- function(path) {
   invisible(checksum)
 }
 
-verify_pcodec_manifest <- function(path) {
-  checksum_path <- pcodec_manifest_checksum_path(path)
-  if (!file.exists(checksum_path)) {
-    stop("Pcodec store is missing manifest.sha256", call. = FALSE)
+# `expected` and `observed` may be supplied by a caller that already read the
+# checksum record and hashed the manifest (open_compressor does, so the file is
+# hashed once per open); standalone callers get the original behaviour.
+verify_pcodec_manifest <- function(path, expected = NULL, observed = NULL) {
+  if (is.null(expected)) {
+    checksum_path <- pcodec_manifest_checksum_path(path)
+    if (!file.exists(checksum_path)) {
+      stop("Pcodec store is missing manifest.sha256", call. = FALSE)
+    }
+    expected <- readLines(checksum_path, warn = FALSE, n = 1L)
   }
-  expected <- trimws(readLines(checksum_path, warn = FALSE, n = 1L))
+  expected <- trimws(expected)
   if (length(expected) != 1L || !grepl("^[0-9a-fA-F]{64}$", expected)) {
     stop("Pcodec manifest checksum record is malformed", call. = FALSE)
   }
-  observed <- digest::digest(path, algo = "sha256", file = TRUE)
+  if (is.null(observed)) observed <- digest::digest(path, algo = "sha256", file = TRUE)
   if (!identical(tolower(expected), tolower(observed))) {
     stop("Pcodec manifest checksum mismatch", call. = FALSE)
   }
