@@ -42,7 +42,8 @@ import_sumstats_impl <- function(input, strict = FALSE,
                                  prepared_core = FALSE,
                                  construct_variant_id = TRUE,
                                  qc_detail = c("full", "compact"),
-                                 include_p_value = FALSE) {
+                                 include_p_value = FALSE,
+                                 hash_threads = 1L) {
   if (length(strict) != 1L || !is.logical(strict) || is.na(strict)) {
     stop("strict must be TRUE or FALSE", call. = FALSE)
   }
@@ -70,7 +71,7 @@ import_sumstats_impl <- function(input, strict = FALSE,
     list(
       kind = "data.frame",
       rows = nrow(input),
-      sha256 = digest::digest(input, algo = "sha256", serialize = TRUE),
+      sha256 = object_sha256(input, threads = hash_threads),
       columns_before = as.integer(length(source_columns)),
       columns_read = as.integer(length(source_columns_read)),
       projected = isTRUE(input_read_metadata$projected),
@@ -188,4 +189,28 @@ preflight_sumstats <- function(input, input_build = "GRCh38", strict = FALSE,
   attr(result$data, "input_build") <- attr(imported, "input_build")
   attr(result$data, "phase_timings") <- attr(imported, "phase_timings")
   result
+}
+
+# digest::digest(object, algo = "sha256", serialize = TRUE), computed by
+# streaming the serialization through SHA-256 natively rather than first
+# materialising the whole serialized object in memory. digest serializes with
+# its configured version in binary XDR form and skips the 14-byte header; any
+# other configuration falls back to digest itself. With threads > 1 a second
+# thread hashes while the main thread serializes.
+object_sha256 <- function(object, threads = 1L) {
+  version <- tryCatch(
+    utils::getFromNamespace(".getSerializeVersion", "digest")(),
+    error = function(e) NULL
+  )
+  no_sharing <- tryCatch(
+    isTRUE(utils::getFromNamespace(".hasNoSharing", "digest")()),
+    error = function(e) TRUE
+  )
+  if (!no_sharing && length(version) == 1L && !is.na(version) &&
+      as.integer(version) %in% c(2L, 3L) &&
+      is.loaded("compressor_serialize_sha256", PACKAGE = "CompreSSoR")) {
+    return(.Call("compressor_serialize_sha256", object, as.integer(version), 14,
+                 as.integer(threads), PACKAGE = "CompreSSoR"))
+  }
+  digest::digest(object, algo = "sha256", serialize = TRUE)
 }

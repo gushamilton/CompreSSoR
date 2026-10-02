@@ -25,6 +25,10 @@ extern SEXP compressor_pcodec_decompress_u16(SEXP, SEXP);
 extern SEXP compressor_pcodec_decompress_u32(SEXP, SEXP);
 extern SEXP compressor_zstd_compress(SEXP, SEXP);
 extern SEXP compressor_zstd_decompress(SEXP, SEXP);
+extern SEXP compressor_unique_strings(SEXP);
+extern SEXP compressor_serialize_sha256(SEXP, SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_compress_blocks(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP compressor_exception_blocks(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
     {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 22},
@@ -42,6 +46,10 @@ static const R_CallMethodDef CallEntries[] = {
     {"compressor_pcodec_decompress_u32", (DL_FUNC) &compressor_pcodec_decompress_u32, 2},
     {"compressor_zstd_compress", (DL_FUNC) &compressor_zstd_compress, 2},
     {"compressor_zstd_decompress", (DL_FUNC) &compressor_zstd_decompress, 2},
+    {"compressor_unique_strings", (DL_FUNC) &compressor_unique_strings, 1},
+    {"compressor_serialize_sha256", (DL_FUNC) &compressor_serialize_sha256, 4},
+    {"compressor_pcodec_compress_blocks", (DL_FUNC) &compressor_pcodec_compress_blocks, 6},
+    {"compressor_exception_blocks", (DL_FUNC) &compressor_exception_blocks, 8},
     {NULL, NULL, 0}
 };
 

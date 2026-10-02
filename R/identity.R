@@ -155,7 +155,8 @@ compressor_validate_identity_positions <- function(chromosome, position, build) 
     stop("position must contain positive whole-number coordinates", call. = FALSE)
   }
   lengths <- compressor_chromosome_lengths(build)
-  chromosome_limit <- unname(lengths[chromosome])
+  # unname(lengths[chromosome]) without a per-row names attribute.
+  chromosome_limit <- unname(lengths)[match(chromosome, names(lengths))]
   if (any(is.na(chromosome_limit) | position > chromosome_limit)) {
     stop("position lies outside its primary chromosome for the selected build",
          call. = FALSE)
@@ -195,9 +196,13 @@ compressor_encode_variant_identity <- function(chromosome, position,
   compressor_validate_identity_alleles(fields$reference_allele,
                                        fields$alternate_allele)
   offsets <- compressor_chromosome_offsets(build)
-  global_position <- unname(offsets[fields$chromosome]) + fields$position - 1
-  substitution <- unname(compressor_identity_base_codes[fields$reference_allele]) * 4L +
-    unname(compressor_identity_base_codes[fields$alternate_allele])
+  # Named-vector lookups by match(): the same values as x[names] without
+  # building (and then dropping) a names attribute per row.
+  global_position <- unname(offsets)[match(fields$chromosome, names(offsets))] +
+    fields$position - 1
+  base_codes <- compressor_identity_base_codes
+  substitution <- unname(base_codes)[match(fields$reference_allele, names(base_codes))] * 4L +
+    unname(base_codes)[match(fields$alternate_allele, names(base_codes))]
   list(
     build = build,
     chromosome = fields$chromosome,

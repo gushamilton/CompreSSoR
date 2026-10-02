@@ -359,45 +359,76 @@ pcodec_native_append_stream <- function(values, path, dtype,
     stop("native Pcodec stream block_rows must be positive", call. = FALSE)
   }
   n <- length(values)
-  blocks <- vector("list", if (n) ceiling(n / block_rows) else 0L)
+  if (n && !pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  if (n && !identical(dtype, "u8") && !identical(dtype, "u16") && !identical(dtype, "u32")) {
+    stop("unsupported native Pcodec dtype: ", dtype, call. = FALSE)
+  }
+  block_count <- if (n) ceiling(n / block_rows) else 0L
   requested_workers <- pcodec_native_validate_worker_count(workers)
-  effective_workers <- pcodec_native_effective_workers(requested_workers, length(blocks))
+  effective_workers <- pcodec_native_effective_workers(requested_workers, block_count)
+  # All frames of the stream are compressed in one native call on
+  # `effective_workers` threads. Each frame is compressed independently, so
+  # the bytes are identical to compressing the blocks one at a time.
+  blobs <- if (n) {
+    .Call("compressor_pcodec_compress_blocks",
+          if (dtype == "u32") as.numeric(values) else as.integer(values),
+          dtype, block_rows, PCODEC_NATIVE_LEVEL, PCODEC_NATIVE_PAGE_ROWS,
+          max(1L, effective_workers), PACKAGE = "CompreSSoR")
+  } else {
+    list()
+  }
   connection <- file(path, open = "wb")
   on.exit(close(connection), add = TRUE)
-  offset <- 0
-  if (n) {
-    for (batch_start in seq.int(1L, length(blocks), by = effective_workers)) {
-      batch_stop <- min(length(blocks), batch_start + effective_workers - 1L)
-      batch <- seq.int(batch_start, batch_stop)
-      results <- pcodec_native_parallel_batch(batch, function(block) {
-        start <- (block - 1L) * block_rows + 1L
-        stop <- min(n, block * block_rows)
-        list(block = block, blob = pcodec_native_compress(values[start:stop], dtype),
-             row_start = start - 1L, row_stop = stop, values = stop - start + 1L)
-      }, workers = effective_workers)
-      for (result in results) {
-        blob <- result$blob
-        writeBin(blob, connection, useBytes = TRUE)
-        blocks[[result$block]] <- list(
-          row_start = result$row_start, row_stop = result$row_stop,
-          offset = offset, length = length(blob), values = result$values
-        )
-        offset <- offset + length(blob)
-      }
-    }
+  lengths <- lengths(blobs)
+  offsets <- c(0, cumsum(as.numeric(lengths)))
+  blocks <- vector("list", length(blobs))
+  for (block in seq_along(blobs)) {
+    writeBin(blobs[[block]], connection, useBytes = TRUE)
+    start <- (block - 1L) * block_rows + 1L
+    stop <- min(n, block * block_rows)
+    blocks[[block]] <- list(
+      row_start = start - 1L, row_stop = stop,
+      offset = offsets[[block]], length = lengths[[block]],
+      values = stop - start + 1L
+    )
   }
-  list(file = basename(path), bytes = offset, blocks = blocks,
+  list(file = basename(path), bytes = offsets[[length(offsets)]], blocks = blocks,
        requested_workers = requested_workers,
        effective_workers = effective_workers)
 }
 
-pcodec_native_pvalue_values <- function(data, threshold) {
+pcodec_native_pvalue_values <- function(data, threshold,
+                                        resolved = pcodec_native_pvalue_resolve(data)) {
   threshold <- as.numeric(threshold)
   if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) ||
       threshold < 0 || threshold > 1) {
     stop("p-value flag threshold must be one finite number between 0 and 1",
          call. = FALSE)
   }
+  p_value <- resolved$p_value
+  flags <- as.integer(is.finite(p_value) & p_value >= 0 & p_value <= 1 &
+                      p_value <= threshold)
+  list(
+    p_value = p_value,
+    values = flags,
+    source = resolved$source,
+    supplied_rows = resolved$supplied_rows,
+    derived_rows = resolved$derived_rows,
+    fallback_rows = resolved$fallback_rows,
+    missing_rows = resolved$missing_rows,
+    invalid_rows = resolved$invalid_rows,
+    unresolved_rows = resolved$unresolved_rows,
+    hit_rows = as.integer(sum(flags)),
+    threshold = threshold
+  )
+}
+
+# Threshold-independent part of the p-value domains: the per-row p-value
+# (finite supplied value, else derived from the exact prepared Z) and its
+# provenance counts. Computed once and shared by the flag and order domains.
+pcodec_native_pvalue_resolve <- function(data) {
   n <- nrow(data)
   z <- if ("z" %in% names(data)) suppressWarnings(as.numeric(data$z)) else {
     rep(NA_real_, n)
@@ -419,8 +450,6 @@ pcodec_native_pvalue_values <- function(data, threshold) {
   p_value[supplied_valid] <- supplied[supplied_valid]
   fallback <- source_present & !supplied_valid
   unresolved <- !is.finite(p_value)
-  flags <- as.integer(is.finite(p_value) & p_value >= 0 & p_value <= 1 &
-                      p_value <= threshold)
   source <- if (!source_present || !any(supplied_valid)) {
     "derived_from_z"
   } else if (any(fallback)) {
@@ -430,27 +459,26 @@ pcodec_native_pvalue_values <- function(data, threshold) {
   }
   list(
     p_value = p_value,
-    values = flags,
     source = source,
     supplied_rows = as.integer(sum(supplied_valid)),
     derived_rows = as.integer(sum(derived_valid)),
     fallback_rows = as.integer(sum(fallback)),
     missing_rows = as.integer(sum(supplied_missing)),
     invalid_rows = as.integer(sum(supplied_invalid)),
-    unresolved_rows = as.integer(sum(unresolved)),
-    hit_rows = as.integer(sum(flags)),
-    threshold = threshold
+    unresolved_rows = as.integer(sum(unresolved))
   )
 }
 
-pcodec_native_pvalue_flag_values <- function(data, threshold) {
-  resolved <- pcodec_native_pvalue_values(data, threshold)
+pcodec_native_pvalue_flag_values <- function(data, threshold,
+                                             resolved = pcodec_native_pvalue_resolve(data)) {
+  resolved <- pcodec_native_pvalue_values(data, threshold, resolved)
   resolved$p_value <- NULL
   resolved
 }
 
-pcodec_native_pvalue_order_values <- function(data, threshold) {
-  resolved <- pcodec_native_pvalue_values(data, threshold)
+pcodec_native_pvalue_order_values <- function(data, threshold,
+                                              resolved = pcodec_native_pvalue_resolve(data)) {
+  resolved <- pcodec_native_pvalue_values(data, threshold, resolved)
   hits <- which(resolved$values != 0L)
   ordered_hits <- if (length(hits)) {
     hits[order(resolved$p_value[hits], hits, method = "radix")]
@@ -571,40 +599,27 @@ pcodec_native_write_exceptions <- function(exceptions, output, blocks, workers =
   path <- file.path(output, "exceptions.bin")
   connection <- file(path, open = "wb")
   on.exit(close(connection), add = TRUE)
-  offset <- 0
   locations <- vector("list", length(blocks))
-  exception_members <- vector("list", length(blocks))
-  if (nrow(exceptions) && length(blocks)) {
-    block_stops <- vapply(blocks, function(block) as.numeric(block$row_stop), numeric(1))
-    exception_block <- findInterval(as.numeric(exceptions$row), block_stops) + 1L
-    if (any(exception_block < 1L | exception_block > length(blocks))) {
-      stop("native Pcodec exception row is outside the value blocks", call. = FALSE)
-    }
-    split_members <- split(seq_len(nrow(exceptions)), exception_block)
-    for (name in names(split_members)) {
-      exception_members[[as.integer(name)]] <- split_members[[name]]
-    }
-  }
+  offset <- 0
   if (length(blocks)) {
-    for (batch_start in seq.int(1L, length(blocks), by = effective_workers)) {
-      batch_stop <- min(length(blocks), batch_start + effective_workers - 1L)
-      batch <- seq.int(batch_start, batch_stop)
-      results <- pcodec_native_parallel_batch(batch, function(block) {
-        members <- exception_members[[block]] %||% integer()
-        raw_blob <- pcodec_native_exception_bytes(exceptions[members, , drop = FALSE])
-        blob <- if (length(raw_blob)) pcodec_native_zstd_compress(raw_blob, level = 19L) else raw()
-        list(block = block, blob = blob, raw_length = length(raw_blob),
-             count = length(members))
-      }, workers = effective_workers)
-      for (result in results) {
-        blob <- result$blob
-        if (length(blob)) writeBin(blob, connection, useBytes = TRUE)
-        locations[[result$block]] <- list(
-          offset = offset, length = length(blob), raw_length = result$raw_length,
-          count = result$count
-        )
-        offset <- offset + length(blob)
-      }
+    block_stops <- vapply(blocks, function(block) as.numeric(block$row_stop), numeric(1))
+    # One native call frames every block's records (the same 17-byte column
+    # layout as pcodec_native_exception_bytes()) and compresses the frames
+    # with Zstandard level 19 on `effective_workers` threads.
+    framed <- .Call("compressor_exception_blocks",
+                    as.integer(exceptions$row), as.numeric(exceptions$z),
+                    as.numeric(exceptions$log2se), as.numeric(exceptions$eaf),
+                    as.integer(exceptions$flags), block_stops, 19L,
+                    max(1L, effective_workers), PACKAGE = "CompreSSoR")
+    blobs <- framed[[1L]]
+    for (block in seq_along(blocks)) {
+      blob <- blobs[[block]]
+      if (length(blob)) writeBin(blob, connection, useBytes = TRUE)
+      locations[[block]] <- list(
+        offset = offset, length = length(blob), raw_length = framed[[2L]][[block]],
+        count = framed[[3L]][[block]]
+      )
+      offset <- offset + length(blob)
     }
   }
   list(file = basename(path), bytes = offset, codec = "zstd", record_bytes = 17L,
@@ -642,7 +657,14 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   if (anyDuplicated(compressor_identity_code(ordered_position, ordered_substitution))) {
     stop("duplicate full REF/ALT identity keys", call. = FALSE)
   }
-  ordered <- data[order, , drop = FALSE]
+  # Input already in canonical key order needs no reordered copy: a sorted
+  # permutation is the identity, and data[order, ] would only re-materialise
+  # every column (and the row.names) unchanged.
+  ordered <- if (identical(class(data), "data.frame") && !is.unsorted(order)) {
+    data
+  } else {
+    data[order, , drop = FALSE]
+  }
   identity_seconds <- phase_seconds(identity_started)
   encode_started <- phase_clock()
   quantisation_started <- phase_clock()
@@ -686,9 +708,15 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     stop("native Pcodec pvalue_flag metadata is malformed", call. = FALSE)
   }
   pvalue_flag_domain <- NULL
+  # The per-row p-value resolution is shared by both p-value domains.
+  pvalue_resolved <- NULL
+  pvalue_resolution <- function() {
+    if (is.null(pvalue_resolved)) pvalue_resolved <<- pcodec_native_pvalue_resolve(ordered)
+    pvalue_resolved
+  }
   if (isTRUE(pvalue_flag_spec$enabled)) {
     flag_values <- pcodec_native_pvalue_flag_values(
-      ordered, pvalue_flag_spec$threshold %||% 5e-8
+      ordered, pvalue_flag_spec$threshold %||% 5e-8, pvalue_resolution()
     )
     flag_stream <- pcodec_native_append_stream(
       flag_values$values, file.path(output, "pvalue_flag.pco"), "u8", block_rows,
@@ -731,7 +759,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   if (isTRUE(pvalue_order_spec$enabled)) {
     order_values <- pcodec_native_pvalue_order_values(
       ordered, pvalue_order_spec$threshold %||%
-        pvalue_flag_spec$threshold %||% 5e-8
+        pvalue_flag_spec$threshold %||% 5e-8, pvalue_resolution()
     )
     order_stream <- pcodec_native_append_stream(
       order_values$values, file.path(output, "pvalue_order.pco"), "u32", block_rows,
@@ -769,6 +797,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       blocks = order_stream$blocks
     )
   }
+  pvalue_resolved <- NULL
   exception_stream <- pcodec_native_write_exceptions(
     values$exceptions, output, block_template, workers = requested_workers
   )

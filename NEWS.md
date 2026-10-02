@@ -1,5 +1,21 @@
 # CompreSSoR (development)
 
+- Faster store writes with a lower memory peak; the stores are byte-for-byte
+  unchanged. On the 10M-row FinnGen table on BluePebble (8 threads, default
+  settings including the p-value order domain), `compress_sumstats()` takes
+  38.7 s instead of 96.8 s (median of 3 fresh-process runs) and peaks at
+  4,670 MiB instead of 5,269 MiB RSS. The changes:
+  - every frame of a stream, and every exception frame, is compressed in one
+    native call on `threads` threads, instead of forking one R worker per
+    block (forking a multi-GB R process cost about 20 s per 10M rows);
+  - the `data.frame` input fingerprint (the same SHA-256 as
+    `digest::digest()`) is computed while streaming the serialization, without
+    materialising it, on a second thread when `threads > 1`;
+  - structural QC evaluates allele and text checks once per distinct value,
+    skips bookkeeping for rejection reasons no row triggers, and looks up
+    chromosome lengths and offsets with `match()`;
+  - the flag and order p-value domains share one p-value resolution, and
+    already-sorted or fully kept input is not copied.
 - Fix: a finite Z one ulp below 3.5 (for example 0.0875 / 0.025, which
   prints as 3.5) was written with Z code 510, the missing sentinel, and no
   exception record, so z, beta and p read back as NA. The SE stream had the

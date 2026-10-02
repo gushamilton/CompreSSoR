@@ -344,8 +344,40 @@ alias_key <- function(x) gsub("[^a-z0-9#]", "", tolower(as.character(x)), perl =
 map_unique_character <- function(x, f) {
   if (is.factor(x)) x <- as.character(x)
   if (length(x) < 64L) return(f(as.character(x)))
+  if (is.character(x) && is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
+    # One native hashing pass over the cached CHARSXPs: `f` sees each distinct
+    # string exactly once and the result is indexed back to every element.
+    distinct <- .Call("compressor_unique_strings", x, PACKAGE = "CompreSSoR")
+    return(f(distinct[[1L]])[distinct[[2L]]])
+  }
   u <- unique(x)
   f(as.character(u))[match(x, u)]
+}
+
+# Elementwise transform of an atomic vector of any type, evaluated once per
+# distinct value.  Unlike map_unique_character(), `f` receives the original
+# (uncoerced) values, so it may also inspect missingness of non-character
+# input.  Equivalent to f(x) for any elementwise `f`.
+map_unique_values <- function(x, f) {
+  if (length(x) < 64L || !is.atomic(x) || is.list(x)) return(f(x))
+  if (is.character(x) && is.null(attributes(x)) &&
+      is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
+    distinct <- .Call("compressor_unique_strings", x, PACKAGE = "CompreSSoR")
+    return(f(distinct[[1L]])[distinct[[2L]]])
+  }
+  u <- unique(x)
+  f(u)[match(x, u)]
+}
+
+# Logical mask of length n that is TRUE at the whole-number row indices in
+# `rows` (1..n); identical to seq_len(n) %in% rows without hashing n values.
+row_index_mask <- function(n, rows) {
+  mask <- logical(n)
+  if (length(rows)) {
+    rows <- rows[!is.na(rows) & rows >= 1 & rows <= n & rows == floor(rows)]
+    mask[rows] <- TRUE
+  }
+  mask
 }
 
 normalise_allele_vector <- function(x) {
@@ -759,14 +791,19 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   assign_parsed("base_pair_location",
                 parse_integer_column(data$base_pair_location, "base_pair_location",
                                      invalid = parse_policy))
-  data$reference_allele <- normalise_allele_vector(data$reference_allele)
-  data$alternate_allele <- normalise_allele_vector(data$alternate_allele)
-  data$effect_allele <- normalise_allele_vector(data$effect_allele)
-  data$other_allele <- normalise_allele_vector(data$other_allele)
-  data$reference_allele[data$reference_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
-  data$alternate_allele[data$alternate_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
-  data$effect_allele[data$effect_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
-  data$other_allele[data$other_allele %in% c("", ".", "NA", "N/A")] <- NA_character_
+  # normalise_allele_vector() followed by mapping missing-value tokens to NA,
+  # as one elementwise transform evaluated once per distinct allele string.
+  normalise_allele_missing <- function(x) {
+    map_unique_character(x, function(v) {
+      out <- toupper(trimws(v))
+      out[out %in% c("", ".", "NA", "N/A")] <- NA_character_
+      out
+    })
+  }
+  data$reference_allele <- normalise_allele_missing(data$reference_allele)
+  data$alternate_allele <- normalise_allele_missing(data$alternate_allele)
+  data$effect_allele <- normalise_allele_missing(data$effect_allele)
+  data$other_allele <- normalise_allele_missing(data$other_allele)
   if (!"beta" %in% names(data)) data$beta <- NA_real_
   if (!"standard_error" %in% names(data)) data$standard_error <- NA_real_
   if (!"z" %in% names(data)) data$z <- NA_real_
@@ -1070,41 +1107,52 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   reason_count <- integer(n)
   add_reason <- function(name, mask) {
     mask <- as.logical(mask)
-    mask[is.na(mask)] <- FALSE
+    if (anyNA(mask)) mask[is.na(mask)] <- FALSE
     if (length(mask) != n) stop("structural QC mask has the wrong number of rows",
                                 call. = FALSE)
     if (identical(detail, "full")) reasons[[name]] <<- mask
     count <- sum(mask)
     rejection_counts[name] <<- as.integer(count)
     examples[[name]] <<- utils::head(which(mask), max(0L, as.integer(max_examples)))
-    invalid <<- invalid | mask
-    reason_count <<- reason_count + as.integer(mask)
+    # An all-FALSE mask leaves the running invalid/reason_count state
+    # unchanged, so skip the two full-length passes for reasons that no row
+    # triggers (the common case).
+    if (count) {
+      invalid <<- invalid | mask
+      reason_count <<- reason_count + as.integer(mask)
+    }
   }
   values <- function(name, default = NA_real_) {
     if (name %in% names(data)) return(data[[name]])
     rep(default, n)
   }
-  text_values <- function(name) {
-    value <- values(name, NA_character_)
-    out <- trimws(as.character(value))
-    out[is.na(value) | out %in% c("", ".", "NA", "N/A")] <- NA_character_
-    out
+  # Elementwise text cleaning, evaluated once per distinct value.
+  text_values <- function(name, upper = FALSE) {
+    map_unique_values(values(name, NA_character_), function(value) {
+      out <- trimws(as.character(value))
+      out[is.na(value) | out %in% c("", ".", "NA", "N/A")] <- NA_character_
+      if (upper) toupper(out) else out
+    })
   }
 
   chromosome <- normalise_chromosome(values("chromosome", NA_character_))
   position <- suppressWarnings(as.numeric(values("base_pair_location", NA_real_)))
-  reference <- toupper(text_values("reference_allele"))
-  alternate <- toupper(text_values("alternate_allele"))
-  effect <- toupper(text_values("effect_allele"))
-  other <- toupper(text_values("other_allele"))
+  reference <- text_values("reference_allele", upper = TRUE)
+  alternate <- text_values("alternate_allele", upper = TRUE)
+  effect <- text_values("effect_allele", upper = TRUE)
+  other <- text_values("other_allele", upper = TRUE)
   rsid <- text_values("rsid")
   variant_id <- text_values("variant_id")
   alias_available <- (!is.na(rsid) & nzchar(rsid)) |
-    grepl("^rs", variant_id, ignore.case = TRUE) |
-    grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y):[0-9]+:[ACGT]:[ACGT]$",
-          variant_id, ignore.case = TRUE)
+    map_unique_values(variant_id, function(value) {
+      grepl("^rs", value, ignore.case = TRUE) |
+        grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y):[0-9]+:[ACGT]:[ACGT]$",
+              value, ignore.case = TRUE)
+    })
   lengths <- sumstats_chromosome_lengths(input_build)
   primary <- sumstats_primary_chromosomes()
+  # lengths[chromosome] without materialising a names attribute per row.
+  chromosome_length <- unname(lengths)[match(chromosome, names(lengths))]
 
   add_reason("missing_chromosome",
              (is.na(chromosome) | !nzchar(chromosome)) & !alias_available)
@@ -1113,25 +1161,36 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   add_reason("missing_coordinate", is.na(position) & !alias_available)
   parse_failures <- attr(data, "parse_failures") %||% list()
   add_reason("malformed_coordinate",
-             position %in% c(NA_real_, NaN) &
-               seq_len(n) %in% (parse_failures$base_pair_location %||% integer()) &
+             is.na(position) &
+               row_index_mask(n, parse_failures$base_pair_location %||% integer()) &
                !alias_available)
   add_reason("nonpositive_coordinate", !is.na(position) & is.finite(position) & position < 1)
   add_reason("noninteger_coordinate", !is.na(position) & is.finite(position) &
                position != trunc(position))
   known_chromosome <- !is.na(chromosome) & chromosome %in% names(lengths)
   add_reason("coordinate_out_of_range", known_chromosome & is.finite(position) &
-               position >= 1 & position > unname(lengths[chromosome]))
+               position >= 1 & position > chromosome_length)
 
   add_reason("missing_reference_allele", is.na(reference) | !nzchar(reference))
   add_reason("missing_alternate_allele", is.na(alternate) | !nzchar(alternate))
   add_reason("missing_effect_allele", is.na(effect) | !nzchar(effect))
   add_reason("missing_other_allele", is.na(other) | !nzchar(other))
-  allele_values <- list(reference, alternate, effect, other)
+  # Each allele predicate is elementwise, so evaluate it once per distinct
+  # allele string and index the result back to the rows.
+  allele_values <- lapply(list(reference, alternate, effect, other), function(value) {
+    if (n >= 64L && is.character(value) && is.null(attributes(value)) &&
+        is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
+      distinct <- .Call("compressor_unique_strings", value, PACKAGE = "CompreSSoR")
+      list(value = distinct[[1L]], index = distinct[[2L]])
+    } else {
+      list(value = value, index = NULL)
+    }
+  })
   any_allele <- function(predicate) {
-    Reduce(`|`, Map(function(value) {
-      present <- !is.na(value)
-      present & predicate(value)
+    Reduce(`|`, Map(function(allele) {
+      present <- !is.na(allele$value)
+      hit <- present & predicate(allele$value)
+      if (is.null(allele$index)) hit else hit[allele$index]
     }, allele_values), init = rep(FALSE, n))
   }
   add_reason("multiallelic", any_allele(function(value) grepl(",", value, fixed = TRUE)))
@@ -1152,7 +1211,7 @@ structural_qc_report <- function(data, input_build = "GRCh38",
                       "p_value", "odds_ratio", "sample_size", "info")
   for (field in numeric_fields) {
     value <- suppressWarnings(as.numeric(values(field, NA_real_)))
-    malformed <- seq_len(n) %in% (parse_failures[[field]] %||% integer())
+    malformed <- row_index_mask(n, parse_failures[[field]] %||% integer())
     add_reason(paste0("malformed_", field), malformed)
     add_reason(paste0("nonfinite_", field), !is.na(value) & !is.finite(value))
   }
@@ -1183,7 +1242,7 @@ structural_qc_report <- function(data, input_build = "GRCh38",
   }
 
   valid_key <- known_chromosome & is.finite(position) & position >= 1 &
-    position == floor(position) & position <= unname(lengths[chromosome]) &
+    position == floor(position) & position <= chromosome_length &
     !is.na(other) & !is.na(effect) & other %in% c("A", "C", "G", "T") &
     effect %in% c("A", "C", "G", "T") & other != effect
   key <- rep(NA_real_, n)
@@ -1195,7 +1254,10 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     key[valid_key] <- compressor_identity_code(identity$global_position,
                                                identity$substitution)
   }
-  duplicate <- !is.na(key) & (duplicated(key) | duplicated(key, fromLast = TRUE))
+  # Rows whose key occurs more than once: equal to
+  # duplicated(key) | duplicated(key, fromLast = TRUE) with one hashing pass.
+  repeated <- duplicated(key)
+  duplicate <- !is.na(key) & (repeated | key %in% key[repeated])
   add_reason("duplicate_variant", duplicate)
   report$rejection_counts <- sort(rejection_counts, decreasing = TRUE)
   report$counts <- report$rejection_counts
@@ -1327,7 +1389,14 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   report$dropped_rows <- as.integer(sum(!keep))
   report$valid <- !length(invalid)
   report$internal <- NULL
-  out <- data[keep, , drop = FALSE]
+  # Keeping every row of a plain data.frame is the identity subset: reuse the
+  # columns instead of copying them (only the row.names representation of
+  # data[keep, , drop = FALSE] would differ).
+  out <- if (identical(class(data), "data.frame") && all(keep)) {
+    data
+  } else {
+    data[keep, , drop = FALSE]
+  }
   # Row-level parse provenance uses input row numbers. Re-index it after QC so
   # a rejected malformed value cannot be misattributed to a retained row
   # during later statistic selection.
