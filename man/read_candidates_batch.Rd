@@ -23,16 +23,23 @@ read_candidates_batch(
 \item{region}{Optional \code{"chr:start-end"} string or \code{c(chr, start, end)}
 (inclusive base-pair range).}
 
-\item{columns}{Output columns (as for \code{\link[=read_sumstats]{read_sumstats()}}). The default is
-chromosome, position, alleles and \code{p_value}. The zero-based native \code{row}
-id is always returned first, and \code{exact_rank} is appended when
-\code{order = "exact"}.}
+\item{columns}{Output columns: any \code{\link[=read_sumstats]{read_sumstats()}} column (identity,
+\code{z}, \code{beta}, \code{standard_error}, \code{effect_allele_frequency}, \code{p_value}) plus
+\code{key}, the canonical variant key
+(\code{compressor_variant_key(chromosome, position, other_allele, effect_allele)}). The default is chromosome, position, alleles and
+\code{p_value}. The zero-based native \code{row} id is always returned first, and
+\code{exact_rank} is appended when \code{order = "exact"}. Only the candidate rows'
+key and value blocks are decoded, in one pass; values and \code{p_value} are
+bit-identical to \code{read_sumstats(store, variants = rows)} and to the
+full read.}
 
 \item{order}{\code{"none"} (native row order), \code{"reconstructed"} (ascending
 reconstructed p, ties by row; approximate, see
 \code{attr(x, "candidate_order")}) or \code{"exact"} (ascending exact rank from the
 \code{pvalue_order} domain; an error if the domain is absent or covers a
-smaller threshold). Candidates without an exact rank (possible only
+smaller threshold). The \code{pvalue_order} blocks are row-aligned pcodec
+frames, so ranks are read by decoding only the blocks that contain
+candidate rows (not the whole domain). Candidates without an exact rank (possible only
 because reconstructed and exact p differ) get \code{NA} and sort last.}
 
 \item{threads}{Number of stores decoded in parallel on Unix-like systems;
@@ -55,5 +62,8 @@ A list or data frame; \code{attr(x, "candidate_strategy")} is the
 per-store strategy vector.
 }
 \description{
-Applies \code{\link[=read_candidates]{read_candidates()}} to each store.
+Applies \code{\link[=read_candidates]{read_candidates()}} to each store. Stores that share a variant
+panel (equal identity signature) decode the position/substitution key
+blocks once, for the union of their candidate rows, when identity columns
+(or \code{key}, or a region) are requested.
 }

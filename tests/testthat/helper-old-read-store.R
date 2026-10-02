@@ -172,7 +172,13 @@ pcodec_native_read_store_reference <- function(store, region = NULL, variants = 
     if ("se" %in% names(decoded)) part$standard_error <- decoded$se
     if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
     if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-    if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
+    if ("p_value" %in% requested) {
+      # p now uses the single shared reconstruction (the decoder's erfc path)
+      zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
+      part$p_value <- pcodec_native_p_from_codes(
+        candidates_semantic(store), value_codes$z,
+        as.integer(exceptions$row[zx]) - row_start, exceptions$z[zx])[keep]
+    }
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
