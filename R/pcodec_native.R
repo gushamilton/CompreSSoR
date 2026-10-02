@@ -2019,7 +2019,13 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     if ("se" %in% names(decoded)) part$standard_error <- decoded$se
     if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
     if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-    if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
+    if ("p_value" %in% requested) {
+      zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
+      p_block <- pcodec_native_p_from_codes(
+        candidates_semantic(store), value_codes$z,
+        as.integer(exceptions$row[zx]) - row_start, exceptions$z[zx])
+      part$p_value <- p_block[keep]
+    }
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
@@ -2106,7 +2112,11 @@ pcodec_native_select_read <- function(store, index, manifest, build, requested,
   if ("se" %in% names(decoded)) part$standard_error <- decoded$se
   if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
   if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-  if ("p_value" %in% requested) part$p_value <- 2 * stats::pnorm(-abs(part$z))
+  if ("p_value" %in% requested) {
+    zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
+    part$p_value <- pcodec_native_p_from_codes(
+      candidates_semantic(store), res$z, exceptions$row[zx] - 1L, exceptions$z[zx])
+  }
   output <- part
   row.names(output) <- NULL
   if (is.null(columns)) {

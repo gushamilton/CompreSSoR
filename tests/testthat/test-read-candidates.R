@@ -177,3 +177,55 @@ test_that("store caches are keyed on content, not mtime", {
   expect_identical(r2, expected)
   expect_false(identical(r2, r1))
 })
+
+test_that("one-pass candidates: values, p and exact ranks match the other readers", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
+  store <- candidate_store(flag = FALSE, order = TRUE)
+  cols <- c("chromosome", "base_pair_location", "effect_allele", "other_allele",
+            "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
+  full <- read_sumstats(store, columns = cols)
+  for (t in c(0.05, 1e-3, 1e-6)) for (strategy in c("auto", "z_stream")) {
+    got <- read_candidates(store, t, columns = c(cols, "key"), order = "exact",
+                           strategy = strategy)
+    rows <- got$row
+    sel <- read_sumstats(store, variants = rows, columns = cols)
+    sel_by_row <- sel[match(rows, sort(unique(rows))), , drop = FALSE]
+    for (nm in cols) expect_identical(got[[nm]], sel_by_row[[nm]])
+    # selective, candidate and full reads agree bit-for-bit on p
+    expect_identical(got$p_value, full$p_value[rows + 1L])
+    expect_identical(sel_by_row$p_value, full$p_value[rows + 1L])
+    # (z/beta/se may differ from the full read by an ulp: pre-existing, the
+    # C decoder table is FMA-contracted; only p is reconstructed identically.)
+    expect_identical(got$key, compressor_variant_key(
+      got$chromosome, got$base_pair_location, got$other_allele, got$effect_allele))
+    ranks <- read_pvalue_order(store, as = "ranks")
+    expect_identical(got$exact_rank,
+                     ifelse(ranks[rows + 1L] > 0L, as.integer(ranks[rows + 1L]),
+                            NA_integer_))
+  }
+  # p of the per-block R fallback matches too
+  old <- options(CompreSSoR.pcodec.native_select = FALSE)
+  on.exit(options(old), add = TRUE)
+  rows <- read_candidates(store, 1e-3)$row
+  expect_identical(read_sumstats(store, variants = rows, columns = "p_value")$p_value,
+                   full$p_value[rows + 1L])
+})
+
+test_that("read_candidates_batch reuses same-panel identity and matches singles", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native backend not built")
+  stores <- lapply(1:3, function(i) {
+    x <- candidate_fixture(seed = 20L + i)
+    x$base_pair_location <- candidate_fixture()$base_pair_location
+    compress_sumstats(x, tempfile("cand-"), overwrite = TRUE, qc = "none",
+                      pvalue_order = TRUE, pvalue_order_threshold = 0.05)
+  })
+  paths <- vapply(stores, function(s) s$path, character(1))
+  cols <- c("key", "p_value", "beta")
+  before <- CompreSSoR:::.pcodec_batch_trace$identity_resolutions
+  b <- read_candidates_batch(paths, 1e-3, columns = cols, order = "exact")
+  expect_identical(CompreSSoR:::.pcodec_batch_trace$identity_resolutions - before, 1L)
+  for (i in 1:3) {
+    one <- read_candidates(paths[[i]], 1e-3, columns = cols, order = "exact")
+    expect_identical(b[[i]], one)
+  }
+})

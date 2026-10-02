@@ -29,14 +29,25 @@ candidates_semantic <- function(store) {
 candidates_native_p <- function(semantic, codes = integer(), exception_z = numeric()) {
   n <- length(codes) + length(exception_z)
   z_codes <- c(as.integer(codes), rep.int(semantic$z_count + 1L, length(exception_z)))
+  pcodec_native_p_from_codes(semantic, z_codes,
+                             seq_along(exception_z) + length(codes) - 1L,
+                             as.numeric(exception_z))
+}
+
+# THE p-value reconstruction used by every reader (full read, selective read
+# and read_candidates): the native decoder's erfc table for central Z codes and
+# erfc of the exact float32 Z for Z-exception rows.  `exc_row0` are zero-based
+# positions into `z_codes` whose Z is overridden by `exc_z`.
+pcodec_native_p_from_codes <- function(semantic, z_codes, exc_row0, exc_z) {
+  n <- length(z_codes)
+  k <- length(exc_z)
   decoded <- .Call(
-    "compressor_decode_native", z_codes, integer(n), integer(n),
+    "compressor_decode_native", as.integer(z_codes), integer(n), integer(n),
     semantic$z_range[1], semantic$z_range[2], semantic$z_count,
     semantic$se_count, semantic$eaf_count, semantic$z_bits, semantic$se_bits,
     semantic$eaf_bits, PCODEC_NATIVE_SE_CENTER_ROWS, numeric(),
-    seq_along(exception_z) + length(codes) - 1L, as.numeric(exception_z),
-    numeric(length(exception_z)), numeric(length(exception_z)),
-    rep.int(1L, length(exception_z)), FALSE, TRUE,
+    as.integer(exc_row0), as.numeric(exc_z),
+    numeric(k), numeric(k), rep.int(1L, k), FALSE, TRUE,
     semantic$se_range[1], semantic$se_range[2],
     PACKAGE = "CompreSSoR"
   )
@@ -239,15 +250,23 @@ candidates_exact_ranks <- function(store, rows) {
 #' @param pvalue_threshold Inclusive threshold in `[0, 1]`.
 #' @param region Optional `"chr:start-end"` string or `c(chr, start, end)`
 #'   (inclusive base-pair range).
-#' @param columns Output columns (as for [read_sumstats()]). The default is
-#'   chromosome, position, alleles and `p_value`. The zero-based native `row`
-#'   id is always returned first, and `exact_rank` is appended when
-#'   `order = "exact"`.
+#' @param columns Output columns: any [read_sumstats()] column (identity,
+#'   `z`, `beta`, `standard_error`, `effect_allele_frequency`, `p_value`) plus
+#'   `key`, the canonical variant key
+#'   (`compressor_variant_key(chromosome, position, other_allele,
+#'   effect_allele)`). The default is chromosome, position, alleles and
+#'   `p_value`. The zero-based native `row` id is always returned first, and
+#'   `exact_rank` is appended when `order = "exact"`. Only the candidate rows'
+#'   key and value blocks are decoded, in one pass; values and `p_value` are
+#'   bit-identical to `read_sumstats(store, variants = rows)` and to the
+#'   full read.
 #' @param order `"none"` (native row order), `"reconstructed"` (ascending
 #'   reconstructed p, ties by row; approximate, see
 #'   `attr(x, "candidate_order")`) or `"exact"` (ascending exact rank from the
 #'   `pvalue_order` domain; an error if the domain is absent or covers a
-#'   smaller threshold). Candidates without an exact rank (possible only
+#'   smaller threshold). The `pvalue_order` blocks are row-aligned pcodec
+#'   frames, so ranks are read by decoding only the blocks that contain
+#'   candidate rows (not the whole domain). Candidates without an exact rank (possible only
 #'   because reconstructed and exact p differ) get `NA` and sort last.
 #' @param threads Decoder threads.
 #' @param strategy `"auto"` (default; exact, never uses the flag),
@@ -269,8 +288,16 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
                                          "pvalue_flag", "exact_order")) {
   order <- match.arg(order)
   strategy <- match.arg(strategy)
-  threshold <- candidates_validate_threshold(pvalue_threshold)
   threads <- pcodec_validate_threads(threads)
+  ctx <- candidates_prepare(store, pvalue_threshold, region, columns, order,
+                            threads, strategy)
+  candidates_finish(ctx, threads)
+}
+
+# Stage 1: validate, open and select candidate rows (no value/key decode).
+candidates_prepare <- function(store, pvalue_threshold, region, columns, order,
+                               threads, strategy) {
+  threshold <- candidates_validate_threshold(pvalue_threshold)
   store <- candidates_open(store)
   if (!is.null(columns) && (!length(columns) || anyNA(columns))) {
     stop("columns must contain at least one column name", call. = FALSE)
@@ -279,6 +306,14 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
     c("chromosome", "base_pair_location", "effect_allele", "other_allele",
       "p_value")
   } else unique(as.character(columns))
+  allowed <- c("global_position", "substitution", "chromosome", "base_pair_location",
+               "reference_allele", "alternate_allele", "effect_allele", "other_allele",
+               "z", "beta", "standard_error", "effect_allele_frequency", "p_value",
+               "key")
+  unknown <- setdiff(out_columns, allowed)
+  if (length(unknown)) {
+    stop("unknown output column(s): ", paste(unknown, collapse = ", "), call. = FALSE)
+  }
   if (identical(order, "exact")) {
     domain <- pcodec_native_pvalue_order_domain(store)
     if (threshold > as.numeric(domain$threshold)) {
@@ -290,33 +325,41 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
   }
   index <- pcodec_native_read_index(store)
   picked <- candidates_select_rows(store, index, threshold, threads, strategy)
-  rows <- picked$rows
-  allowed <- c("global_position", "substitution", "chromosome", "base_pair_location",
-               "reference_allele", "alternate_allele", "effect_allele", "other_allele",
-               "z", "beta", "standard_error", "effect_allele_frequency", "p_value")
-  unknown <- setdiff(out_columns, allowed)
-  if (length(unknown)) {
-    stop("unknown output column(s): ", paste(unknown, collapse = ", "), call. = FALSE)
-  }
   fetch <- unique(c(out_columns, if (identical(order, "reconstructed")) "p_value"))
   build <- compressor_normalize_build(store$manifest$genome_build %||% "GRCh38")
-  range <- candidates_region_range(region, build)
   # p_value is attached from the selection step; Z is needed only when the
   # selection (the flag) did not already provide the reconstructed p.
-  wanted <- setdiff(fetch, "p_value")
+  wanted <- setdiff(fetch, c("p_value", "key"))
+  if ("key" %in% fetch) {
+    wanted <- unique(c(wanted, "chromosome", "base_pair_location",
+                       "other_allele", "effect_allele"))
+  }
   if ("p_value" %in% fetch && anyNA(picked$p)) wanted <- unique(c(wanted, "z"))
+  list(store = store, index = index, picked = picked, threshold = threshold,
+       out_columns = out_columns, fetch = fetch, order = order, build = build,
+       range = candidates_region_range(region, build), wanted = wanted)
+}
+
+# Stage 2: decode keys and values for the candidate rows only, attach p, key
+# and exact rank, order and project.  `keys` is an optional shared key slice
+# (see candidates_fetch()).
+candidates_finish <- function(ctx, threads, keys = NULL) {
+  store <- ctx$store; picked <- ctx$picked; rows <- picked$rows
+  fetch <- ctx$fetch; order <- ctx$order; wanted <- ctx$wanted
   data <- if (length(rows)) {
-    candidates_fetch(store, index, rows, range, build, wanted, threads)
+    candidates_fetch(store, ctx$index, rows, ctx$range, ctx$build, wanted,
+                     threads, keys = keys)
   } else NULL
   if (is.null(data)) {
     data <- pcodec_native_empty_result(unique(c(wanted, "z")))
     data$p_value <- numeric()
   }
   if (nrow(data) && "p_value" %in% fetch) {
-    # Use the full-read decoder's erfc p (the sparse reader's 2 * pnorm can
-    # differ in the last ulp). Flag-selected central-bin rows (rare: only for
-    # flag thresholds above ~4.8e-4) fall back to erfc of the decoded Z,
-    # which can differ from the decoder table by an ulp.
+    # The decoder's erfc p (the one reconstruction shared with full and
+    # selective reads, see pcodec_native_p_from_codes()). Flag-selected
+    # central-bin rows (rare: only for flag thresholds above ~4.8e-4) fall back
+    # to erfc of the decoded Z, which can differ from the decoder table by an
+    # ulp.
     p <- picked$p[match(data$row, rows)]
     if (anyNA(p)) {
       miss <- is.na(p)
@@ -324,6 +367,13 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
                                      exception_z = data$z[miss])
     }
     data$p_value <- p
+  }
+  if ("key" %in% fetch) {
+    data$key <- if (nrow(data)) {
+      compressor_variant_key(data$chromosome, data$base_pair_location,
+                             data$other_allele, data$effect_allele,
+                             build = ctx$build)
+    } else character()
   }
   if (identical(order, "exact")) {
     data$exact_rank <- if (nrow(data)) {
@@ -337,11 +387,11 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
     data <- data[base::order(data$p_value, data$row, method = "radix"), ,
                  drop = FALSE]
   }
-  keep <- c("row", out_columns, if (identical(order, "exact")) "exact_rank")
+  keep <- c("row", ctx$out_columns, if (identical(order, "exact")) "exact_rank")
   data <- data[keep]
   row.names(data) <- NULL
   attr(data, "candidate_strategy") <- picked$strategy
-  attr(data, "candidate_threshold") <- threshold
+  attr(data, "candidate_threshold") <- ctx$threshold
   attr(data, "candidate_order") <- switch(order,
     none = "native_row", reconstructed = "reconstructed_p_approximate",
     exact = "exact_rank")
@@ -350,7 +400,10 @@ read_candidates <- function(store, pvalue_threshold, region = NULL,
 
 #' Read threshold candidates from several native Pcodec stores
 #'
-#' Applies [read_candidates()] to each store.
+#' Applies [read_candidates()] to each store. Stores that share a variant
+#' panel (equal identity signature) decode the position/substitution key
+#' blocks once, for the union of their candidate rows, when identity columns
+#' (or `key`, or a region) are requested.
 #'
 #' @inheritParams read_candidates
 #' @param stores A non-empty list or character vector of native Pcodec stores.
@@ -383,13 +436,47 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   thresholds <- rep_len(pvalue_threshold, length(stores))
   threads <- pcodec_validate_threads(threads)
   inner <- if (length(stores) > 1L) 1L else threads
+  guard <- function(expr) tryCatch(expr, error = function(e) e)
+  # Stage 1 (parallel over stores): select candidate rows.
+  ctxs <- pcodec_parallel_lapply(seq_along(stores), function(i) {
+    guard(candidates_prepare(stores[[i]], thresholds[[i]], region, columns,
+                             order, inner, strategy))
+  }, threads = threads)
+  # Stage 2: stores sharing a variant panel (equal identity signature) decode
+  # the position/substitution blocks once, for the union of their candidate
+  # rows (the candidate analogue of read_sumstats_batch() identity reuse).
+  ok <- !vapply(ctxs, inherits, logical(1), "error")
+  shared <- vector("list", length(stores))
+  need_key <- function(ctx) {
+    id <- c("global_position", "substitution", "chromosome", "base_pair_location",
+            "reference_allele", "alternate_allele", "effect_allele", "other_allele")
+    !is.null(ctx$range) || any(id %in% ctx$wanted)
+  }
+  if (sum(ok) > 1L) {
+    sig <- rep(NA_character_, length(stores))
+    sig[ok] <- vapply(ctxs[ok], function(ctx) {
+      tryCatch(pcodec_identity_signature(ctx$store), error = function(e) NA_character_)
+    }, character(1))
+    sig[ok & !vapply(seq_along(ctxs), function(i) ok[i] && need_key(ctxs[[i]]),
+                     logical(1))] <- NA_character_
+    for (g in unique(stats::na.omit(sig))) {
+      members <- which(sig %in% g)
+      if (length(members) < 2L) next
+      union_rows <- sort(unique(unlist(lapply(ctxs[members], function(ctx) {
+        ctx$picked$rows
+      }), use.names = FALSE)))
+      first <- ctxs[[members[1L]]]
+      keys <- if (length(union_rows)) guard(candidates_fetch_keys(
+        first$store, first$index, union_rows, first$range, threads)) else NULL
+      if (inherits(keys, "error")) next
+      .pcodec_batch_trace$identity_resolutions <-
+        .pcodec_batch_trace$identity_resolutions + 1L
+      for (i in members) shared[[i]] <- keys
+    }
+  }
   pieces <- pcodec_parallel_lapply(seq_along(stores), function(i) {
-    tryCatch(
-      read_candidates(stores[[i]], thresholds[[i]], region = region,
-                      columns = columns, order = order, threads = inner,
-                      strategy = strategy),
-      error = function(e) e
-    )
+    if (!ok[[i]]) return(ctxs[[i]])
+    guard(candidates_finish(ctxs[[i]], inner, keys = shared[[i]]))
   }, threads = threads)
   failed <- vapply(pieces, function(x) !is.data.frame(x), logical(1))
   if (any(failed)) {
@@ -442,12 +529,25 @@ candidates_region_range <- function(region, build) {
   c(offset + bounds$start - 1, offset + bounds$end - 1)
 }
 
-candidates_fetch <- function(store, index, rows, range, build, wanted,
-                             threads) {
-  manifest <- store$manifest
-  semantic <- manifest$semantic_codec %||% list()
+candidates_stream_reader <- function(store) {
+  list(
+    open = function(spec) file(file.path(store$path, spec$file), open = "rb"),
+    read_at = function(con, location) {
+      seek(con, where = as.numeric(location$offset), origin = "start")
+      blob <- readBin(con, raw(), n = as.integer(location$length), endian = "little")
+      if (length(blob) != as.integer(location$length)) {
+        stop("native Pcodec stream is truncated", call. = FALSE)
+      }
+      blob
+    })
+}
+
+# Key (position + substitution) blocks touched by `rows`, restricted to the
+# region range.  Returns list(row, position, substitution) sorted by row, or
+# NULL when nothing survives.  Only key blocks that contain a requested row (and
+# overlap the region) are decoded.
+candidates_fetch_keys <- function(store, index, rows, range, threads) {
   key_blocks <- pcodec_native_index_blocks(index, "key")
-  value_blocks <- pcodec_native_index_blocks(index, "value")
   num <- function(blocks, field) vapply(blocks, function(b) as.numeric(b[[field]]),
                                         numeric(1))
   key_stops <- num(key_blocks, "row_stop")
@@ -455,22 +555,12 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
   key_first <- num(key_blocks, "first_position")
   key_last <- num(key_blocks, "last_position")
   delta <- identical(index$position_encoding, "delta_u32_within_block")
-  identity <- c("global_position", "substitution", "chromosome",
-                "base_pair_location", "reference_allele", "alternate_allele",
-                "effect_allele", "other_allele")
-  need_identity <- !is.null(range) || any(identity %in% wanted)
   key_id <- findInterval(rows, key_stops) + 1L
-  todo <- if (need_identity) unique(key_id) else integer()
+  todo <- unique(key_id)
   if (!is.null(range)) todo <- todo[key_last[todo] >= range[1] & key_first[todo] <= range[2]]
-  open_stream <- function(spec) file(file.path(store$path, spec$file), open = "rb")
-  read_at <- function(con, location) {
-    seek(con, where = as.numeric(location$offset), origin = "start")
-    blob <- readBin(con, raw(), n = as.integer(location$length), endian = "little")
-    if (length(blob) != as.integer(location$length)) {
-      stop("native Pcodec stream is truncated", call. = FALSE)
-    }
-    blob
-  }
+  io <- candidates_stream_reader(store)
+  open_stream <- io$open
+  read_at <- io$read_at
   keys <- pcodec_parallel_lapply(candidates_split(todo, threads), function(chunk) {
     pos_con <- open_stream(index$streams$position)
     sub_con <- open_stream(index$streams$substitution)
@@ -493,17 +583,44 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
            substitution = as.integer(substitution[local[keep]]))
     })
   }, threads = threads)
+  keys <- unlist(keys, recursive = FALSE, use.names = FALSE)
+  keys <- keys[!vapply(keys, is.null, logical(1))]
+  if (!length(keys)) return(NULL)
+  sel_row <- unlist(lapply(keys, `[[`, "row"), use.names = FALSE)
+  o <- order(sel_row)
+  list(row = as.integer(sel_row[o]),
+       position = unlist(lapply(keys, `[[`, "position"), use.names = FALSE)[o],
+       substitution = unlist(lapply(keys, `[[`, "substitution"), use.names = FALSE)[o])
+}
+
+# `keys` (optional): precomputed candidates_fetch_keys() result for a superset
+# of `rows` under the same region (same-panel reuse); sliced, not re-decoded.
+candidates_fetch <- function(store, index, rows, range, build, wanted,
+                             threads, keys = NULL) {
+  manifest <- store$manifest
+  semantic <- manifest$semantic_codec %||% list()
+  value_blocks <- pcodec_native_index_blocks(index, "value")
+  num <- function(blocks, field) vapply(blocks, function(b) as.numeric(b[[field]]),
+                                        numeric(1))
+  identity <- c("global_position", "substitution", "chromosome",
+                "base_pair_location", "reference_allele", "alternate_allele",
+                "effect_allele", "other_allele")
+  need_identity <- !is.null(range) || any(identity %in% wanted)
+  io <- candidates_stream_reader(store)
+  open_stream <- io$open
+  read_at <- io$read_at
   if (need_identity) {
-    keys <- unlist(keys, recursive = FALSE, use.names = FALSE)
-    keys <- keys[!vapply(keys, is.null, logical(1))]
-    if (!length(keys)) return(NULL)
-    sel_row <- unlist(lapply(keys, `[[`, "row"), use.names = FALSE)
-    sel_position <- unlist(lapply(keys, `[[`, "position"), use.names = FALSE)
-    sel_substitution <- unlist(lapply(keys, `[[`, "substitution"), use.names = FALSE)
-    o <- order(sel_row)
-    sel_row <- as.integer(sel_row[o])
-    sel_position <- sel_position[o]
-    sel_substitution <- sel_substitution[o]
+    if (is.null(keys)) {
+      keys <- candidates_fetch_keys(store, index, rows, range, threads)
+    } else {
+      at <- match(rows, keys$row)
+      at <- at[!is.na(at)]
+      keys <- if (length(at)) lapply(keys, function(v) v[at]) else NULL
+    }
+    if (is.null(keys)) return(NULL)
+    sel_row <- keys$row
+    sel_position <- keys$position
+    sel_substitution <- keys$substitution
   } else {
     sel_row <- as.integer(rows)
   }
@@ -572,4 +689,18 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
     "standard_error", "effect_allele_frequency"), names(out)))],
     stringsAsFactors = FALSE)
   out
+}
+
+#' Feature flags of this CompreSSoR build
+#'
+#' Lets dependent packages feature-detect capabilities without version
+#' parsing. `"candidates_one_pass"` means [read_candidates()] returns values,
+#' `key`, `p_value` (bit-identical to [read_sumstats()]) and exact ranks for
+#' the candidate rows in a single pass, and [read_candidates_batch()] reuses
+#' same-panel identity.
+#'
+#' @return A character vector of capability names.
+#' @export
+compressor_capabilities <- function() {
+  c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction")
 }

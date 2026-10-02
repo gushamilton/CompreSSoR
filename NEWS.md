@@ -12,6 +12,15 @@
   membership/order contract table and measured quantisation bounds
   (#45, #46).
 
+- One-pass candidates: `read_candidates()` returns any `read_sumstats()` column
+  plus a canonical `key` column and (with `order = "exact"`) the exact rank,
+  decoding only the key/value/rank blocks that contain candidate rows.
+  `read_candidates_batch()` decodes key blocks once per same-panel group. The
+  selective (`variants`/`region`) readers now reconstruct `p_value` with the
+  decoder's erfc path, so p is bit-identical across full, selective and
+  candidate reads (previously selective p was `2 * pnorm(-abs(z))`, which
+  could differ in the last ulp). z/beta/se of selective reads are unchanged.
+
 - Performance batch: vectorised key and row matching in the native store
   reader; ingest fast paths for position, allele, chromosome and p-value
   coercion; batched reads reuse variant identity resolution across stores that
