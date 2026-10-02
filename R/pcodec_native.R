@@ -1525,6 +1525,37 @@ pcodec_native_validate_code_domains <- function(codes, streams, semantic,
                            (2^as.integer(semantic$se_bits %||% 8L) - 2L))
   eaf_count <- as.integer(semantic$eaf_count %||%
                             (2^as.integer(semantic$eaf_bits %||% 8L) - 1L))
+  messages <- c(
+    "native Pcodec Z stream contains an out-of-domain code",
+    "native Pcodec SE stream contains an out-of-domain code",
+    "native Pcodec EAF stream contains an out-of-domain code",
+    "native Pcodec position stream is outside its sorted uint32 domain",
+    "native Pcodec position stream exceeds the stored chromosome table",
+    "native Pcodec substitution stream contains an invalid code"
+  )
+  if (isTRUE(getOption("CompreSSoR.native_validate_codes", TRUE)) &&
+      is.loaded("compressor_validate_native_codes", PACKAGE = "CompreSSoR")) {
+    # The same checks as below in one native pass per stream; the R version
+    # cost about 0.3 s on a 10M-row full read.
+    lengths <- as.numeric(unlist(identity$chromosome_lengths %||% numeric()))
+    offsets <- as.numeric(unlist(identity$chromosome_offsets %||% numeric()))
+    genome_end <- if (length(lengths) && length(lengths) == length(offsets)) {
+      offsets[length(offsets)] + lengths[length(lengths)]
+    } else Inf
+    pick <- function(name, type) {
+      value <- if (name %in% streams) codes[[name]] else NULL
+      if (is.null(value) || !length(value)) return(NULL)
+      if (identical(type, "double")) as.numeric(value) else as.integer(value)
+    }
+    status <- .Call("compressor_validate_native_codes",
+                    pick("z", "integer"), pick("se", "integer"),
+                    pick("eaf", "integer"), pick("position", "double"),
+                    pick("substitution", "integer"),
+                    as.numeric(c(z_count + 1L, se_count + 1L, eaf_count, genome_end)),
+                    PACKAGE = "CompreSSoR")
+    if (status) stop(messages[[status]], call. = FALSE)
+    return(invisible(codes))
+  }
   if ("z" %in% streams && any(codes$z < 0L | codes$z > z_count + 1L)) {
     stop("native Pcodec Z stream contains an out-of-domain code", call. = FALSE)
   }
@@ -1674,7 +1705,9 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
       PACKAGE = "CompreSSoR")
   } else list(z = numeric(n), standard_error = numeric(n),
               effect_allele_frequency = numeric(n))
-  output <- data.frame(row = seq_len(n) - 1L, stringsAsFactors = FALSE)
+  # Assemble the result as a plain list and set the data.frame attributes
+  # once: cbind()/as.data.frame() on 10M-row columns cost measurable copies.
+  output <- list(row = if (n) 0L:(n - 1L) else integer())
   if (need_identity) {
     position <- codes$position
     substitution <- codes$substitution
@@ -1682,12 +1715,12 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
       output$global_position <- position
       output$substitution <- as.integer(substitution)
     }
-    if (is.null(requested) || any(c("chromosome", "base_pair_location",
-                                    "reference_allele", "alternate_allele",
-                                    "effect_allele", "other_allele") %in% requested)) {
-      output <- cbind(output, as.data.frame(pcodec_native_key_columns(position, substitution,
-                                                                       build = build),
-                                            stringsAsFactors = FALSE))
+    key_wanted <- if (is.null(requested)) PCODEC_NATIVE_KEY_COLUMNS else
+      intersect(PCODEC_NATIVE_KEY_COLUMNS, requested)
+    if (length(key_wanted)) {
+      output <- c(output, pcodec_native_key_columns(position, substitution,
+                                                    build = build,
+                                                    columns = key_wanted))
     }
   }
   if (need_z) output$z <- decoded$z
@@ -1695,7 +1728,8 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   if (need_eaf) output$effect_allele_frequency <- decoded$effect_allele_frequency
   if ("beta" %in% requested) output$beta <- decoded$beta
   if ("p_value" %in% requested) output$p_value <- decoded$p_value
-  output[c("row", if (is.null(requested)) names(output)[-1L] else requested)]
+  output <- output[c("row", if (is.null(requested)) names(output)[-1L] else requested)]
+  structure(output, class = "data.frame", row.names = .set_row_names(n))
 }
 
 pcodec_native_read_exception_block <- function(store, index, block) {
@@ -1724,19 +1758,56 @@ pcodec_native_block_ids_for_rows <- function(index, rows, kind = "value") {
   unique(findInterval(as.numeric(rows), stops) + 1L)
 }
 
-pcodec_native_key_columns <- function(position, substitution, build = "GRCh38") {
+PCODEC_NATIVE_KEY_COLUMNS <- c("chromosome", "base_pair_location",
+                               "reference_allele", "alternate_allele",
+                               "effect_allele", "other_allele")
+
+# Identity columns from global positions and substitution codes. Strings come
+# from small level tables (chromosome labels, the four bases) indexed per row;
+# the native builder does this in one pass without per-row R work. ALT and the
+# effect allele (REF and the other allele) are the same vector.
+pcodec_native_key_columns <- function(position, substitution, build = "GRCh38",
+                                      columns = NULL) {
+  columns <- if (is.null(columns)) PCODEC_NATIVE_KEY_COLUMNS else
+    intersect(PCODEC_NATIVE_KEY_COLUMNS, columns)
   lengths <- compressor_chromosome_lengths(build)
   offsets <- pcodec_native_offsets(build)
-  chromosome_code <- findInterval(position, offsets)
-  chromosome_code <- pmax(1L, pmin(length(lengths), chromosome_code))
-  list(
-    chromosome = names(lengths)[chromosome_code],
-    base_pair_location = as.integer(position - offsets[chromosome_code] + 1),
-    reference_allele = c("A", "C", "G", "T")[bitwShiftR(as.integer(substitution), 2L) + 1L],
-    alternate_allele = c("A", "C", "G", "T")[(bitwAnd(as.integer(substitution), 3L)) + 1L],
-    effect_allele = c("A", "C", "G", "T")[(bitwAnd(as.integer(substitution), 3L)) + 1L],
-    other_allele = c("A", "C", "G", "T")[bitwShiftR(as.integer(substitution), 2L) + 1L]
-  )
+  want <- c(chromosome = "chromosome" %in% columns,
+            local = "base_pair_location" %in% columns,
+            reference = any(c("reference_allele", "other_allele") %in% columns),
+            alternate = any(c("alternate_allele", "effect_allele") %in% columns))
+  if (isTRUE(getOption("CompreSSoR.native_key_columns", TRUE)) &&
+      is.loaded("compressor_pcodec_key_columns", PACKAGE = "CompreSSoR")) {
+    if (!is.double(position) && !is.integer(position)) position <- as.numeric(position)
+    if (!is.integer(substitution)) substitution <- as.integer(substitution)
+    built <- .Call("compressor_pcodec_key_columns", position, substitution,
+                   as.numeric(offsets), names(lengths), unname(want),
+                   PACKAGE = "CompreSSoR")
+    return(list(
+      chromosome = built[[1L]], base_pair_location = built[[2L]],
+      reference_allele = built[[3L]], alternate_allele = built[[4L]],
+      effect_allele = built[[4L]], other_allele = built[[3L]]
+    )[columns])
+  }
+  bases <- c("A", "C", "G", "T")
+  out <- list()
+  if (want[["chromosome"]] || want[["local"]]) {
+    chromosome_code <- findInterval(position, offsets)
+    chromosome_code <- pmax(1L, pmin(length(lengths), chromosome_code))
+    if (want[["chromosome"]]) out$chromosome <- names(lengths)[chromosome_code]
+    if (want[["local"]]) {
+      out$base_pair_location <- as.integer(position - offsets[chromosome_code] + 1)
+    }
+  }
+  if (want[["reference"]]) {
+    out$reference_allele <- out$other_allele <-
+      bases[bitwShiftR(as.integer(substitution), 2L) + 1L]
+  }
+  if (want[["alternate"]]) {
+    out$alternate_allele <- out$effect_allele <-
+      bases[bitwAnd(as.integer(substitution), 3L) + 1L]
+  }
+  out[columns]
 }
 
 pcodec_native_target_keys <- function(variants, build = "GRCh38") {

@@ -14,6 +14,8 @@ extern SEXP compressor_read_pcodec_native_codes(
 extern SEXP compressor_read_pcodec_native_select(
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
     SEXP, SEXP, SEXP);
+extern SEXP compressor_pcodec_key_columns(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP compressor_validate_native_codes(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP compressor_pcodec_native_available(void);
 extern SEXP compressor_pcodec_compress_u8(SEXP, SEXP, SEXP);
 extern SEXP compressor_pcodec_compress_u16(SEXP, SEXP, SEXP);
@@ -29,6 +31,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"compressor_read_pcodec_native_codes", (DL_FUNC) &compressor_read_pcodec_native_codes, 11},
     {"compressor_read_pcodec_native_select", (DL_FUNC) &compressor_read_pcodec_native_select, 15},
     {"compressor_read_pcodec_bridge", (DL_FUNC) &compressor_read_pcodec_bridge, 11},
+    {"compressor_pcodec_key_columns", (DL_FUNC) &compressor_pcodec_key_columns, 5},
+    {"compressor_validate_native_codes", (DL_FUNC) &compressor_validate_native_codes, 6},
     {"compressor_pcodec_native_available", (DL_FUNC) &compressor_pcodec_native_available, 0},
     {"compressor_pcodec_compress_u8", (DL_FUNC) &compressor_pcodec_compress_u8, 3},
     {"compressor_pcodec_compress_u16", (DL_FUNC) &compressor_pcodec_compress_u16, 3},

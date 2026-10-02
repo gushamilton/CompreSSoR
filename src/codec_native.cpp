@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cmath>
 #include <cstddef>
@@ -1670,6 +1671,194 @@ SEXP compressor_read_pcodec_bridge_impl(
   INTEGER(row_names)[0] = NA_INTEGER;
   INTEGER(row_names)[1] = -static_cast<int>(n);
   Rf_setAttrib(output, R_RowNamesSymbol, row_names);
+  UNPROTECT(protect_count);
+  return output;
+}
+
+// Domain checks for decoded code vectors, in one allocation-free pass per
+// stream. Returns 0 when every code is valid, otherwise the number of the
+// first failing check (1 Z, 2 SE, 3 EAF, 4 position order/uint32 domain,
+// 5 position beyond the genome table, 6 substitution); R maps the number to
+// the error message. Any stream may be NULL to skip it.
+extern "C" SEXP compressor_validate_native_codes(
+    SEXP z, SEXP se, SEXP eaf, SEXP position, SEXP substitution,
+    SEXP limits) {
+  if (TYPEOF(limits) != REALSXP || XLENGTH(limits) != 4) {
+    Rf_error("malformed limits for native Pcodec code validation");
+  }
+  const double* limit = REAL(limits);
+  auto check_int = [](SEXP codes, double max_code) -> bool {
+    if (codes == R_NilValue) return true;
+    if (TYPEOF(codes) != INTSXP) return false;
+    const int* value = INTEGER(codes);
+    const R_xlen_t n = XLENGTH(codes);
+    bool ok = true;
+    for (R_xlen_t i = 0; i < n; ++i) {
+      ok &= value[i] >= 0 && static_cast<double>(value[i]) <= max_code;
+    }
+    return ok;
+  };
+  int status = 0;
+  if (!check_int(z, limit[0])) status = 1;
+  else if (!check_int(se, limit[1])) status = 2;
+  else if (!check_int(eaf, limit[2])) status = 3;
+  if (status == 0 && position != R_NilValue) {
+    if (TYPEOF(position) != REALSXP) {
+      status = 4;
+    } else {
+      const double* value = REAL(position);
+      const R_xlen_t n = XLENGTH(position);
+      double previous = 0.0;
+      bool ordered = true;
+      bool inside = true;
+      for (R_xlen_t i = 0; i < n; ++i) {
+        const double current = value[i];
+        // NaN fails every comparison, so it is rejected here as well.
+        ordered &= current >= 0.0 && current <= 4294967295.0 &&
+                   (i == 0 || current >= previous);
+        inside &= !(current >= limit[3]);
+        previous = current;
+      }
+      if (!ordered) status = 4;
+      else if (!inside) status = 5;
+    }
+  }
+  if (status == 0 && substitution != R_NilValue) {
+    if (TYPEOF(substitution) != INTSXP) {
+      status = 6;
+    } else {
+      const int* value = INTEGER(substitution);
+      const R_xlen_t n = XLENGTH(substitution);
+      bool ok = true;
+      for (R_xlen_t i = 0; i < n; ++i) {
+        const int code = value[i];
+        ok &= code >= 0 && code <= 15 && (code >> 2) != (code & 3);
+      }
+      if (!ok) status = 6;
+    }
+  }
+  return Rf_ScalarInteger(status);
+}
+
+// Build the identity columns of a full read from global positions and 4-bit
+// substitution codes in one native pass. Strings are taken from small level
+// tables (chromosome labels and the four bases), so every row stores a shared
+// CHARSXP pointer; nothing is formatted or allocated per row. The semantics
+// match the R definition in pcodec_native_key_columns(): the chromosome is
+// findInterval(position, offsets) clamped to the table, the local position is
+// position - offset + 1, REF is code >> 2 and ALT is code & 3.
+extern "C" SEXP compressor_pcodec_key_columns(
+    SEXP position, SEXP substitution, SEXP offsets, SEXP labels, SEXP wanted) {
+  if ((TYPEOF(position) != REALSXP && TYPEOF(position) != INTSXP) ||
+      TYPEOF(substitution) != INTSXP || TYPEOF(offsets) != REALSXP ||
+      TYPEOF(labels) != STRSXP || TYPEOF(wanted) != LGLSXP ||
+      XLENGTH(wanted) != 4 || XLENGTH(offsets) < 1 ||
+      XLENGTH(offsets) != XLENGTH(labels)) {
+    Rf_error("malformed arguments to native Pcodec key column builder");
+  }
+  const R_xlen_t n = XLENGTH(position);
+  const int* want = LOGICAL(wanted);
+  const bool want_chromosome = want[0] == TRUE;
+  const bool want_local = want[1] == TRUE;
+  const bool want_reference = want[2] == TRUE;
+  const bool want_alternate = want[3] == TRUE;
+  if ((want_reference || want_alternate) && XLENGTH(substitution) != n) {
+    Rf_error("native Pcodec key columns need one substitution per position");
+  }
+  const R_xlen_t k = XLENGTH(offsets);
+  const double* offset = REAL(offsets);
+  for (R_xlen_t i = 0; i < k; ++i) {
+    if (!R_FINITE(offset[i]) || (i > 0 && offset[i] < offset[i - 1])) {
+      Rf_error("native Pcodec chromosome offsets must be finite and sorted");
+    }
+  }
+
+  int protect_count = 0;
+  SEXP output = PROTECT(Rf_allocVector(VECSXP, 4));
+  ++protect_count;
+  SEXP chromosome = R_NilValue, local = R_NilValue;
+  SEXP reference = R_NilValue, alternate = R_NilValue;
+  if (want_chromosome) {
+    chromosome = Rf_allocVector(STRSXP, n);
+    SET_VECTOR_ELT(output, 0, chromosome);
+  }
+  if (want_local) {
+    local = Rf_allocVector(INTSXP, n);
+    SET_VECTOR_ELT(output, 1, local);
+  }
+  if (want_reference) {
+    reference = Rf_allocVector(STRSXP, n);
+    SET_VECTOR_ELT(output, 2, reference);
+  }
+  if (want_alternate) {
+    alternate = Rf_allocVector(STRSXP, n);
+    SET_VECTOR_ELT(output, 3, alternate);
+  }
+
+  if (want_chromosome || want_local) {
+    const bool is_real = TYPEOF(position) == REALSXP;
+    const double* real_position = is_real ? REAL(position) : nullptr;
+    const int* int_position = is_real ? nullptr : INTEGER(position);
+    int* local_out = want_local ? INTEGER(local) : nullptr;
+    R_xlen_t current = 0;
+    for (R_xlen_t row = 0; row < n; ++row) {
+      double value;
+      if (is_real) {
+        value = real_position[row];
+      } else {
+        value = int_position[row] == NA_INTEGER ? NA_REAL
+                                                : static_cast<double>(int_position[row]);
+      }
+      if (ISNAN(value)) {
+        if (want_chromosome) SET_STRING_ELT(chromosome, row, NA_STRING);
+        if (want_local) local_out[row] = NA_INTEGER;
+        continue;
+      }
+      // Sorted stores stay inside the current chromosome or move forward by
+      // one; anything else falls back to a binary search.
+      if (!(offset[current] <= value && (current + 1 == k || value < offset[current + 1]))) {
+        if (current + 1 < k && value >= offset[current + 1] &&
+            (current + 2 == k || value < offset[current + 2])) {
+          ++current;
+        } else {
+          const double* hit = std::upper_bound(offset, offset + k, value);
+          current = hit == offset ? 0 : static_cast<R_xlen_t>(hit - offset) - 1;
+        }
+      }
+      if (want_chromosome) {
+        SET_STRING_ELT(chromosome, row, STRING_ELT(labels, current));
+      }
+      if (want_local) {
+        const double bp = value - offset[current] + 1.0;
+        local_out[row] = (bp >= static_cast<double>(INT_MIN + 1) &&
+                          bp <= static_cast<double>(INT_MAX))
+          ? static_cast<int>(bp) : NA_INTEGER;
+      }
+    }
+  }
+
+  if (want_reference || want_alternate) {
+    SEXP bases[4];
+    const char* base_names[4] = {"A", "C", "G", "T"};
+    for (int i = 0; i < 4; ++i) {
+      bases[i] = PROTECT(Rf_mkChar(base_names[i]));
+      ++protect_count;
+    }
+    const int* code = INTEGER(substitution);
+    for (R_xlen_t row = 0; row < n; ++row) {
+      // Valid codes are 0..15. Other values mirror the R fallback, which
+      // indexes the base table with bitwShiftR()/bitwAnd() on the code.
+      const int value = code[row];
+      if (want_reference) {
+        SET_STRING_ELT(reference, row, value >= 0 && value <= 15
+          ? bases[value >> 2] : NA_STRING);
+      }
+      if (want_alternate) {
+        SET_STRING_ELT(alternate, row, value != NA_INTEGER
+          ? bases[static_cast<unsigned>(value) & 3u] : NA_STRING);
+      }
+    }
+  }
   UNPROTECT(protect_count);
   return output;
 }
