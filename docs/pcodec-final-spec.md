@@ -88,8 +88,8 @@ threshold, and ranks `1..k` encode exact pre-lossy p-value order. Finite
 supplied p-values are authoritative; otherwise the rank is derived from exact
 prepared Z before quantisation. Ties use the canonical variant key, which is
 the immutable native row order. The domain is explicitly versioned as
-`aligned_exact_rank_v1`, does not store exact p-values, is disabled by default
-pending its maintained large-file benchmark, and does not change the locked
+`aligned_exact_rank_v1`, does not store exact p-values, is written by default at `p <= 0.01` (`pvalue_order = FALSE` omits it; measured
++1.0% of store size at 10M rows), and does not change the locked
 core streams or native format version. `read_pvalue_order()` fails safely when
 the exact domain/threshold is unavailable unless reconstructed-p fallback is
 requested explicitly.

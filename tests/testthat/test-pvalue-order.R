@@ -135,3 +135,74 @@ test_that("p-value order arguments are validated", {
     "backend='pcodec' only"
   )
 })
+
+test_that("default writes the exact order domain at p <= 0.01 and can be disabled", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(64L)
+  store <- compress_sumstats(input, tempfile("order-default-"), overwrite = TRUE)
+  domain <- store$manifest$domains$pvalue_order
+  expect_false(is.null(domain))
+  expect_equal(domain$threshold, 0.01)
+  expect_true(isTRUE(domain$standard_default))
+  expect_true(validate_compressor(store, full = TRUE)$valid)
+
+  old <- compress_sumstats(input, tempfile("order-off-"), overwrite = TRUE,
+                           pvalue_order = FALSE)
+  expect_null(old$manifest$domains$pvalue_order)
+  expect_null(old$manifest$files$pvalue_order)
+  expect_false(file.exists(file.path(old$path, "pvalue_order.pco")))
+  expect_error(read_pvalue_order(old), "no exact p-value ordering domain")
+  expect_true(is.data.frame(read_candidates(old, 0.01)))
+  expect_error(read_candidates(old, 0.01, order = "exact"), "no exact")
+  expect_error(read_candidates(old, 0.01, strategy = "exact_order"), "no exact")
+  expect_true(validate_compressor(old, full = TRUE)$valid)
+})
+
+test_that("exact order and membership match brute force on supplied p edge cases", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  n <- 200L
+  input <- make_fixture(n)
+  set.seed(7)
+  p <- stats::runif(n, 0, 0.05)
+  p[1:6] <- c(0, 5e-324, 1e-310, 0.01, 0.01, 0.01)       # zero, denormals, at threshold
+  p[7:8] <- c(0.01 * (1 + 2.3e-16), 0.01 * (1 - 1.2e-16)) # adjacent doubles around it
+  p[9:11] <- 0.003                                         # ties
+  p[12:13] <- c(NA_real_, NA_real_)                        # missing supplied p
+  input$p_value <- p
+  threshold <- 0.01
+  store <- suppressWarnings(compress_sumstats(
+    input, tempfile("order-edge-"), overwrite = TRUE, qc = "none"
+  ))
+  identity <- CompreSSoR:::pcodec_native_identity(input)
+  o <- order(identity$global_position, identity$substitution, method = "radix")
+  np <- p[o]
+  # NA p falls back to exact prepared Z; reproduce that for the oracle.
+  zz <- suppressWarnings(as.numeric(input$z %||% (input$beta / input$standard_error)))
+  eff <- np
+  miss <- is.na(eff)
+  eff[miss] <- 2 * stats::pnorm(-abs(zz[o][miss]))
+  hits <- which(!is.na(eff) & eff <= threshold)
+  expected <- hits[order(eff[hits], hits, method = "radix")] - 1L
+  expect_identical(read_pvalue_order(store), as.integer(expected))
+  expect_identical(store$manifest$domains$pvalue_order$source,
+                   "supplied_with_exact_prepared_z_fallback")
+
+  cand <- read_candidates(store, threshold, order = "exact",
+                          strategy = "exact_order")
+  expect_identical(attr(cand, "candidate_strategy"), "exact_order")
+  expect_identical(cand$row, as.integer(expected))
+  expect_identical(cand$exact_rank, seq_along(expected))
+  # the exactly-at-threshold row is a member under the supplied p
+  expect_true((which(np == 0.01)[1L] - 1L) %in% cand$row)
+
+  # default auto semantics are unchanged: reconstructed-p membership
+  auto <- read_candidates(store, threshold)
+  full <- read_sumstats(store, columns = "p_value")
+  expect_identical(sort(auto$row), as.integer(which(!is.na(full$p_value) &
+                                                   full$p_value <= threshold) - 1L))
+  expect_false(identical(attr(auto, "candidate_strategy"), "exact_order"))
+  expect_error(read_candidates(store, 0.001, strategy = "exact_order"),
+               "equal to the pvalue_order domain threshold")
+})

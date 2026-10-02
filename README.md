@@ -243,33 +243,72 @@ read_sumstats(
   columns = c("chromosome", "base_pair_location", "beta", "standard_error")
 )
 # Standard native stores also carry an aligned p <= 5e-8 flag by convention.
-instrument_rows <- read_pvalue_flag(store)
+# This is candidate MEMBERSHIP only (an unordered row set), not an ordered
+# instrument list and not a general index for other thresholds.
+candidate_rows <- read_pvalue_flag(store)
 mr <- read_sumstats(
-  store, variants = instrument_rows,
+  store, variants = candidate_rows,
   columns = c("chromosome", "base_pair_location", "effect_allele",
               "other_allele", "beta", "standard_error",
               "effect_allele_frequency")
 )
 ```
 
-When downstream clumping needs the exact source p-value order rather than the
-lossy reconstructed-p order, opt in while writing and read the resulting
-zero-based native row IDs directly:
+> **Warning.** `read_pvalue_flag()` selects membership at the store's single
+> configured flag threshold (default `p <= 5e-8`) and nothing else. It is not
+> a p-value ranking, and not an index for arbitrary thresholds such as
+> `p <= 0.01`. `read_sumstats(..., columns = "p_value")` reconstructs p from the
+> lossy stored Z stream, so its order is approximate. Exact greedy LD
+> clumping must use the order domain below (or an explicitly labelled
+> reconstructed-order approximation, or a full re-read of the source data).
+> See [CompreSSoR#45](https://github.com/gushamilton/CompreSSoR/issues/45),
+> [CompreSSoR#46](https://github.com/gushamilton/CompreSSoR/issues/46) and
+> [fastMR#2](https://github.com/gushamilton/fastMR/issues/2).
+
+By default native stores also carry an exact p-value order domain
+(`pvalue_order = TRUE`, `pvalue_order_threshold = 0.01`), written from the
+full-precision supplied p-value (or, if the input has no p column, p derived
+from exact prepared Z in double precision before lossy encoding; the
+manifest records which in `domains$pvalue_order$source`). Ranks are
+deterministic (ties by canonical variant order, p exactly at the threshold
+included, NA/invalid supplied p fall back to exact prepared Z). Read it
+without decoding the whole GWAS:
 
 ```r
-ordered_store <- compress_sumstats(
-  "gwas.tsv.gz", "gwas-ordered.cpr",
-  input_build = "GRCh38", store_build = "GRCh38",
-  pvalue_order = TRUE, pvalue_order_threshold = 5e-8,
-  overwrite = TRUE
-)
-ordered_instruments <- read_pvalue_order(ordered_store)
+ordered_instruments <- read_pvalue_order(store)   # zero-based rows, exact order
+cis <- read_candidates(store, 0.01, region = "1:1000000-2000000",
+                       order = "exact", strategy = "exact_order")
 ```
 
-The ordering side domain stores ranks, not exact p-values. It is opt-in until
-its maintained large-file storage benchmark is complete. Stores without it
-fail safely unless the caller explicitly chooses the approximate
-`fallback = "reconstructed"` mode.
+The domain stores ranks, not p-values, at cost of about 1% of store size on
+a 10M-row synthetic GWAS (see NEWS). Use `pvalue_order = FALSE` to omit it.
+Stores written without it (including all older stores) remain fully readable;
+`read_pvalue_order()` then fails safely unless `fallback = "reconstructed"` is
+chosen explicitly. Every store is self-contained; the domain is an optional
+side file that does not change the core streams, native format version, or the
+payload/canonical hashes of stores written without it.
+
+| Mechanism | Membership at threshold t | Order | Guarantee |
+|---|---|---|---|
+| `pvalue_flag` / `strategy = "pvalue_flag"` | supplied p <= flag threshold (5e-8) only; t must equal it | none | Membership at one fixed threshold; no ordering |
+| Reconstructed p (`read_sumstats`, `read_candidates` default `strategy = "auto"`) | identical to a full read filtered on reconstructed p; any t | `order = "reconstructed"`: approximate | About 0.5% of rows at p <= 0.01 flip membership and about 1.8% of candidate pairs are mis-ordered versus the source p; effectively exact for genome-wide hits (float32 exceptions) |
+| Exact order domain (`read_pvalue_order()`, `order = "exact"`) | rank > 0 iff source p <= domain threshold (0.01); `strategy = "exact_order"` requires t equal to it | exact source-p order, deterministic ties | Exact for the supplied p; `order = "exact"` with `auto` membership gives `NA` rank (sorted last) to reconstructed-p members outside the source-p set |
+
+`read_candidates()` default membership remains "identical to a full read
+filtered on reconstructed p"; source-p membership is opt-in via
+`strategy = "exact_order"` and is labelled in `attr(x, "candidate_strategy")`.
+Recommendation: exact clumping uses `strategy = "exact_order"` with
+`order = "exact"`; use `order = "reconstructed"` only as a documented
+approximation; for thresholds other than the stored ones use the regional or
+full-read workflow.
+
+Measured quantisation error of the standard Z9/EAF8/SE6 profile (2M-row
+synthetic check): SE relative error max 1.12%; central-bin Z absolute error
+<= 0.0069 (rows with |Z| >= 3.5 are exact float32); EAF absolute error
+<= 0.0031. Downstream MR effect (fastMR benchmark): median 0.005 SE, max
+0.033 SE. Steiger r2 is derived from EAF and so is least reliable for rare
+variants (about 8% relative EAF error at the rare end); use source data when
+Steiger filtering depends on rare variants.
 
 The boundary importer recognises common aliases through a deterministic
 resolution matrix. This includes EAF aliases such as `EAF`, `AF`, and the
@@ -357,9 +396,10 @@ column when the standard flag is enabled so the aligned `pvalue_flag.pco`
 domain can use a finite supplied p-value authoritatively and otherwise fall
 back to Z. The flag is written at `p <= 5e-8` by convention and can be
 disabled with `pvalue_flag = FALSE`; `pvalue_flag_threshold` is separate from
-the `pvalue_threshold` selection argument. The optional `pvalue_order.pco`
-domain similarly records exact pre-encoding candidate ranks at its own
-inclusive threshold, without storing p-values or changing the core format.
+the `pvalue_threshold` selection argument. The `pvalue_order.pco`
+domain (default on, `p <= 0.01`) similarly records exact pre-encoding candidate
+ranks at its own inclusive threshold, without storing p-values or changing the
+core format.
 Dense missing-EAF
 rows remain sparse, block-partitioned exception records and are never repaired
 by imputing a biological EAF.
