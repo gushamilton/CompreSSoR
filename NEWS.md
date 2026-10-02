@@ -1,4 +1,4 @@
-# CompreSSoR 0.5.0
+# CompreSSoR 0.6.0
 
 - The exact `pvalue_order` domain is now written by default
   (`pvalue_order = TRUE`, `pvalue_order_threshold = 0.01`; `FALSE` omits it).
@@ -48,6 +48,9 @@
   is unavailable and requires an explicit reconstructed-p fallback.
 - Tightens source-package hygiene, native build cleanup, macOS Rust deployment
   targeting, benchmark-path portability, and Rust formatting.
+
+# CompreSSoR 0.5.0
+
 - Refactors the installed package around a strict compression-only contract.
   Inputs must already contain chromosome, position, explicit REF/ALT,
   effect/non-effect alleles, beta, and standard error. The core performs
