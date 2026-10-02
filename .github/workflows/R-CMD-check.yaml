@@ -30,7 +30,4 @@ jobs:
             any::rcmdcheck
             any::arrow
             any::dplyr
-            bioc::rtracklayer
-            bioc::GenomicRanges
-            bioc::IRanges
       - uses: r-lib/actions/check-r-package@v2
