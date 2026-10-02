@@ -6,22 +6,30 @@
 \usage{
 read_sumstats_batch(
   stores,
-  variants,
+  variants = NULL,
   columns = c("chromosome", "base_pair_location", "effect_allele", "other_allele",
     "beta", "standard_error"),
-  threads = 1L
+  threads = 1L,
+  region = NULL
 )
 }
 \arguments{
 \item{stores}{A non-empty list or character vector of Pcodec stores.}
 
-\item{variants}{A canonical \code{chromosome:position:REF:ALT} vector shared by
-every store, or one such vector per store in a list.}
+\item{variants}{A canonical \code{chromosome:position:REF:ALT} vector or a
+zero-based row-ID vector shared by every store, or one such vector per
+store in a list. May be \code{NULL} when \code{region} is given.}
 
 \item{columns}{Output columns requested from every store.}
 
-\item{threads}{Number of independent Pcodec store readers to run in parallel
-on Unix-like systems. Windows uses serial reads.}
+\item{threads}{Number of independent Pcodec store readers to run in
+parallel on Unix-like systems. The default is one. Windows uses serial
+reads for portability.}
+
+\item{region}{Optional region string (as in \code{\link[=read_sumstats]{read_sumstats()}}), shared by
+every store or one per store in a list. Stores that share the same variant
+panel (identical position and substitution streams) resolve keys, row IDs
+and regions to rows once, then decode values only.}
 }
 \value{
 A list of decoded data frames in the same order as \code{stores}.
@@ -29,7 +37,8 @@ A list of decoded data frames in the same order as \code{stores}.
 \description{
 Reads the requested canonical keys from several GWAS files. With
 \code{threads > 1} on Unix-like systems, independent stores are decoded in
-parallel.
+parallel; this is substantially faster than repeated \code{\link[=read_sumstats]{read_sumstats()}}
+calls when an analysis extracts a small instrument set from several files.
 }
 \examples{
 \dontrun{

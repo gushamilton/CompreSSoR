@@ -177,6 +177,7 @@ compressor_validate_identity_positions <- function(chromosome, position, build) 
 #' @param build Genome build, `GRCh37`/`hg19` or `GRCh38`/`hg38`.
 #' @return A list containing canonical fields, `global_position`, and
 #'   `substitution`.
+#' @noRd
 compressor_encode_variant_identity <- function(chromosome, position,
                                                reference_allele,
                                                alternate_allele,
@@ -211,12 +212,13 @@ compressor_encode_variant_identity <- function(chromosome, position,
 #' Decode build-aware CompreSSoR variant identity
 #'
 #' @param global_position Zero-based global position produced by
-#'   [compressor_encode_variant_identity()].
+#'   `compressor_encode_variant_identity()`.
 #' @param substitution Directed four-bit REF-to-ALT code produced by
-#'   [compressor_encode_variant_identity()].
+#'   `compressor_encode_variant_identity()`.
 #' @param build Genome build used during encoding.
 #' @return A list containing canonical chromosome, position, REF, and ALT
 #'   fields, plus the supplied encoded values.
+#' @noRd
 compressor_decode_variant_identity <- function(global_position, substitution,
                                                build = "GRCh38") {
   build <- compressor_normalize_build(build)
@@ -291,6 +293,7 @@ compressor_decode_identity <- compressor_decode_variant_identity
 #' @param stored_build Build represented by the encoded identity.
 #' @return A manifest-ready list containing the build-specific identity table
 #'   and provenance fields.
+#' @noRd
 compressor_identity_manifest <- function(build = "GRCh38", input_build = NULL,
                                          stored_build = NULL) {
   default_build <- compressor_normalize_build(build)

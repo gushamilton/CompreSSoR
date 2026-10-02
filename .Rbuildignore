@@ -19,3 +19,4 @@
 ^src/Makevars$
 ^src/libcompressor_pcodec_native[.]a$
 ^src/pcodec_native/target$
+^\.Rlib$

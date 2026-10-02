@@ -1,5 +1,14 @@
 # CompreSSoR 0.5.0
 
+- Performance batch: vectorised key and row matching in the native store
+  reader; ingest fast paths for position, allele, chromosome and p-value
+  coercion; batched reads reuse variant identity resolution across stores that
+  share a panel; a native selective block reader and content-keyed
+  (manifest sha256, not mtime) store/index caches. `read_sumstats_batch()`
+  gains `region` and accepts `variants = NULL` and zero-based row IDs.
+  `read_candidates()` gains a `strategy` override and never auto-selects the
+  writer-time p-value flag. Adds a BP-ready read/ingest benchmark harness.
+
 - Adds `read_candidates()` and `read_candidates_batch()` for threshold and
   region candidate extraction from native Pcodec stores. The strategy is
   chosen per store and recorded in `attr(x, "candidate_strategy")`: the

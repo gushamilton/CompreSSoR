@@ -662,16 +662,16 @@ compress_sumstats <- function(input, output,
   open_compressor(transaction$target)
 }
 
-#' Open a CompreSSoR store
-#'
-#' @param path Store directory.
-#' @return A `compressor_store` object.
-#' @export
 # Opened-store cache: the parsed manifest and its checksum verification are
 # reused while the sha256 of manifest.json and the recorded manifest.sha256
 # line are unchanged (content identity; mtimes can be restored or coarse).
 .compressor_open_cache <- new.env(parent = emptyenv())
 
+#' Open a CompreSSoR store
+#'
+#' @param path Store directory.
+#' @return A `compressor_store` object.
+#' @export
 open_compressor <- function(path) {
   path <- normalizePath(path, mustWork = FALSE)
   if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)

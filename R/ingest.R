@@ -164,6 +164,7 @@ import_sumstats_impl <- function(input, strict = FALSE,
 #'   required after canonical derivation.
 #' @param max_examples Maximum row numbers retained per rejection reason.
 #' @return A list with data and report components.
+#' @noRd
 preflight_sumstats <- function(input, input_build = "GRCh38", strict = FALSE,
                                row_policy = c("report", "error"),
                                require_statistics = TRUE, max_examples = 5L) {
