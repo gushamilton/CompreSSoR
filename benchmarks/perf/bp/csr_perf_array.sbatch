@@ -31,7 +31,10 @@ reps_per_op="${CSR_OP_REPS:-3}"
 n_rows="${CSR_N_ROWS:-1e7}"
 multi_rows="${CSR_MULTI_ROWS:-2e6}"
 multi_traits="${CSR_MULTI_TRAITS:-8}"
-rust_root="${CSR_RUST_ROOT:-/user/work/fh6520/CompreSSoR-bp-thread-test/rust-1.87.0/rustc}"
+rust_root="${CSR_RUST_ROOT:-/user/work/fh6520/toolchains/rust-1.87.0/rustc}"
+# Keep cargo state off the (small) home quota.
+export CARGO_HOME="${CARGO_HOME:-/user/work/fh6520/cargo-home}"
+: "${CSR_CARGO_DIR:=/user/work/fh6520/toolchains/rust-1.87.0/cargo/bin}"
 rust_module="${CSR_RUST_MODULE:-rust/1.78.0-n5bm}"   # supplies cargo only
 
 task="${SLURM_ARRAY_TASK_ID:?must run as an array task}"
