@@ -171,6 +171,14 @@ pcodec_native_parallel_batch <- function(X, FUN, workers) {
   pcodec_parallel_lapply(X, FUN, threads = workers)
 }
 
+# Central bin of values already known to lie in [lower, lower + count * step).
+# floor((x - lower) / step) can round up to `count` for x just below the upper
+# bound. `count` is the missing sentinel in both the Z and SE streams, so the
+# code is clamped into the central range 0..count-1.
+pcodec_native_bin_code <- function(x, lower, step, count) {
+  pmin(as.integer(count) - 1L, pmax(0L, as.integer(floor((x - lower) / step))))
+}
+
 pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_ROWS) {
   n <- nrow(data)
   z <- as.numeric(data$z)
@@ -203,7 +211,12 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   z_valid <- is.finite(z)
   z_central <- z_valid & z >= z_min & z < z_max
   z_codes <- rep.int(z_missing, n)
-  z_codes[z_central] <- as.integer(floor((z[z_central] - z_min) / z_step))
+  # A value just below z_max lies in the last central bin, but
+  # (z - z_min) / z_step can round to exactly z_count in double precision:
+  # nextafter(3.5, 0) = 3.4999999999999996, which is what 0.0875 / 0.025
+  # evaluates to, gives 510. Unclamped, that is the missing sentinel, no
+  # exception record is made and the value is lost. Keep it in bin 509.
+  z_codes[z_central] <- pcodec_native_bin_code(z[z_central], z_min, z_step, z_count)
   z_codes[!z_central & z_valid] <- z_exception
 
   safe_eaf_for_se <- pmin(1 - 1e-12, pmax(1e-12, eaf_predictor))
@@ -235,7 +248,10 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
       delta <- residual[inside] - centres[block]
       in_range <- se_central[inside] & delta >= se_min & delta < se_max
       local <- rep.int(se_missing, length(inside))
-      local[in_range] <- as.integer(floor((delta[in_range] - se_min) / se_step))
+      # Same boundary as Z: a residual just below se_max can round up to
+      # se_count, which is the SE missing sentinel. Keep it in the last bin.
+      local[in_range] <- pcodec_native_bin_code(delta[in_range], se_min, se_step,
+                                                se_count)
       local[se_central[inside] & !in_range] <- se_exception
       se_codes[inside] <- local
     }
