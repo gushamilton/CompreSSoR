@@ -184,6 +184,9 @@ else
     cleanup_partial_build
     exit 1
   fi
+  # Drop any macOS AppleDouble (._*) entries: crates such as zstd-sys compile
+  # every *.c file in their source tree.
+  find "$target_dir/vendor" -name '._*' -exec rm -f {} + 2>/dev/null || true
   cargo_config="$target_dir/cargo-vendor-config.toml"
   printf '%s\n' \
     '[source.crates-io]' 'replace-with = "vendored-sources"' \

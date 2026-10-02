@@ -16,7 +16,9 @@ if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
   (cd "$work" && tar --no-recursion --owner=0 --group=0 --numeric-owner \
      --mtime='2000-01-01 00:00:00Z' -T list.txt -cf vendor.tar)
 else
-  (cd "$work" && tar -n --uid 0 --gid 0 --numeric-owner -T list.txt -cf vendor.tar)
+  # bsdtar (macOS): no AppleDouble ._* files, xattrs or mac metadata.
+  (cd "$work" && COPYFILE_DISABLE=1 tar -n --uid 0 --gid 0 --numeric-owner \
+     --no-xattrs --no-mac-metadata -T list.txt -cf vendor.tar)
 fi
 xz -9e -c "$work/vendor.tar" > "$crate/vendor.tar.xz"
 ls -l "$crate/vendor.tar.xz"
