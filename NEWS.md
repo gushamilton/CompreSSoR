@@ -1,5 +1,36 @@
 # CompreSSoR (development)
 
+- Faster `compress_sumstats()`; the store payload (every payload file and the
+  payload hash) is byte-for-byte unchanged, and for file inputs so is the
+  manifest apart from timings and build information:
+  - structural QC records each reason as the rows it rejects, evaluating a
+    full-length mask only when a cheap aggregate test cannot rule the reason
+    out, and finds duplicate keys by an ordered adjacent comparison; the QC
+    report (counts and first examples) is unchanged;
+  - the variant identity QC already encoded is reused instead of encoding it
+    a second time, and the statistic re-validation after compact QC (which
+    could only pass) is no longer run;
+  - EAF coverage is computed once, p-values are derived from Z only for rows
+    without a valid supplied p, within-block position gaps are vectorised,
+    and normalisation skips columns that are already canonical;
+  - the native manifest is built in memory and written once (plus a final
+    write of the commit timing) instead of six write/read round trips.
+- The provenance hash of a data-frame input is now a per-column XXH64
+  content hash of the columns read, combined with SHA-256
+  (`source$hash`, `source$hash_algorithm =
+  "xxh64_per_column_sha256_combined_v1"`), computed in parallel and
+  independent of thread count and platform. It replaces `source$sha256`
+  (the SHA-256 of the whole serialized object) for new data-frame stores, so
+  their canonical manifest hash differs from earlier versions; payloads are
+  unchanged and stores written earlier open and validate as before. File
+  inputs keep `source$sha256` of the file bytes.
+- New `allele_columns` argument of `compress_sumstats()`, e.g.
+  `allele_columns = c(ref = "other_allele", alt = "effect_allele")` for a
+  GWAS-SSF table, declares which input columns hold REF and ALT, so an
+  in-memory table can be written without adding REF/ALT columns or writing a
+  prepared file. The payload equals that of the prepared table.
+- `qc = "none"` is documented as the fast path for tables already validated
+  upstream.
 - Faster canonical-key and batched reads; outputs are unchanged
   (`identical()` to the previous release on the 10M-row FinnGen store and
   20 simulated stores, including error messages for malformed keys). Times are

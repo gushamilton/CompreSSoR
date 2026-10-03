@@ -182,7 +182,8 @@ compressor_validate_identity_positions <- function(chromosome, position, build) 
 compressor_encode_variant_identity <- function(chromosome, position,
                                                reference_allele,
                                                alternate_allele,
-                                               build = "GRCh38") {
+                                               build = "GRCh38",
+                                               validated = FALSE) {
   build <- compressor_normalize_build(build)
   fields <- compressor_recycle_identity_fields(
     chromosome, position, reference_allele, alternate_allele
@@ -192,17 +193,22 @@ compressor_encode_variant_identity <- function(chromosome, position,
                 reference_allele = character(), alternate_allele = character(),
                 global_position = numeric(), substitution = integer()))
   }
-  compressor_validate_identity_positions(fields$chromosome, fields$position, build)
-  compressor_validate_identity_alleles(fields$reference_allele,
-                                       fields$alternate_allele)
+  # `validated = TRUE` is for internal callers that have already established,
+  # row by row, every condition these checks test (structural QC's valid_key);
+  # the checks can only stop(), so skipping them never changes the result.
+  if (!isTRUE(validated)) {
+    compressor_validate_identity_positions(fields$chromosome, fields$position, build)
+    compressor_validate_identity_alleles(fields$reference_allele,
+                                         fields$alternate_allele)
+  }
   offsets <- compressor_chromosome_offsets(build)
   # Named-vector lookups by match(): the same values as x[names] without
   # building (and then dropping) a names attribute per row.
-  global_position <- unname(offsets)[match(fields$chromosome, names(offsets))] +
+  global_position <- unname(offsets)[match_unique(fields$chromosome, names(offsets))] +
     fields$position - 1
   base_codes <- compressor_identity_base_codes
-  substitution <- unname(base_codes)[match(fields$reference_allele, names(base_codes))] * 4L +
-    unname(base_codes)[match(fields$alternate_allele, names(base_codes))]
+  substitution <- unname(base_codes)[match_unique(fields$reference_allele, names(base_codes))] * 4L +
+    unname(base_codes)[match_unique(fields$alternate_allele, names(base_codes))]
   list(
     build = build,
     chromosome = fields$chromosome,

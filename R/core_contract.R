@@ -190,12 +190,38 @@ validate_core_orientation <- function(data, row_policy = c("error", "report")) {
   data
 }
 
-canonicalize_core_identity <- function(data, build, include_variant_id = TRUE) {
+# `identity`, when supplied, is the global position and substitution that
+# structural QC already encoded for exactly these rows (see
+# apply_structural_qc()). QC only keeps rows whose chromosome, coordinate and
+# REF/ALT pass the encoder's own validation, and encodes them from the same
+# canonical columns, so the encoder is not run a second time: the fields are
+# still normalised here (a no-op on canonical columns) and the codes reused.
+canonicalize_core_identity <- function(data, build, include_variant_id = TRUE,
+                                       identity = NULL) {
   build <- compressor_normalize_build(build)
-  identity <- compressor_encode_variant_identity(
-    data$chromosome, data$base_pair_location,
-    data$reference_allele, data$alternate_allele, build = build
-  )
+  n <- nrow(data)
+  identity <- if (is.list(identity) && n > 0L &&
+                  length(identity$global_position) == n &&
+                  length(identity$substitution) == n) {
+    fields <- compressor_recycle_identity_fields(
+      data$chromosome, data$base_pair_location,
+      data$reference_allele, data$alternate_allele
+    )
+    list(
+      build = build,
+      chromosome = fields$chromosome,
+      position = fields$position,
+      reference_allele = fields$reference_allele,
+      alternate_allele = fields$alternate_allele,
+      global_position = as.numeric(identity$global_position),
+      substitution = as.integer(identity$substitution)
+    )
+  } else {
+    compressor_encode_variant_identity(
+      data$chromosome, data$base_pair_location,
+      data$reference_allele, data$alternate_allele, build = build
+    )
+  }
   data$chromosome <- identity$chromosome
   data$base_pair_location <- identity$position
   data$reference_allele <- identity$reference_allele

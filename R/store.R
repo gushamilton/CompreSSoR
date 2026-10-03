@@ -3,7 +3,22 @@ compressor_manifest_contract <- function(path, build, selection, profile,
                                          preparation = NULL, panel = NULL,
                                          qc = "compact") {
   manifest_path <- file.path(path, "manifest.json")
-  manifest <- read_manifest(manifest_path)
+  manifest <- compressor_manifest_contract_apply(
+    read_manifest(manifest_path), build = build, selection = selection,
+    profile = profile, backend = backend, threads = threads,
+    row_policy = row_policy, source = source, preparation = preparation,
+    panel = panel, qc = qc
+  )
+  write_manifest(manifest, manifest_path)
+  if (identical(backend, "pcodec")) seal_pcodec_manifest(manifest_path)
+  invisible(manifest)
+}
+
+# The public-API manifest fields, applied to an in-memory manifest.
+compressor_manifest_contract_apply <- function(manifest, build, selection, profile,
+                                               backend, threads, row_policy, source,
+                                               preparation = NULL, panel = NULL,
+                                               qc = "compact") {
   manifest$genome_build <- build
   manifest$input_build <- build
   manifest$stored_build <- build
@@ -49,22 +64,24 @@ compressor_manifest_contract <- function(path, build, selection, profile,
                     input_build = build, threads = as.integer(threads),
                     row_policy = manifest$row_policy, qc = qc))
   )
-  write_manifest(manifest, manifest_path)
-  if (identical(backend, "pcodec")) seal_pcodec_manifest(manifest_path)
-  invisible(manifest)
+  manifest
 }
 
 record_commit_timing <- function(path, seconds) {
   manifest_path <- file.path(path, "manifest.json")
-  manifest <- read_manifest(manifest_path)
+  manifest <- manifest_with_commit_timing(read_manifest(manifest_path), seconds)
+  write_manifest(manifest, manifest_path)
+  if (identical(manifest$backend, "pcodec")) seal_pcodec_manifest(manifest_path)
+  invisible(manifest)
+}
+
+manifest_with_commit_timing <- function(manifest, seconds) {
   timings <- manifest$timings %||% list(unit = "seconds", phases = list())
   timings$unit <- timings$unit %||% "seconds"
   timings$phases <- timings$phases %||% list()
   timings$phases$commit <- as.numeric(seconds)
   manifest$timings <- timings
-  write_manifest(manifest, manifest_path)
-  if (identical(manifest$backend, "pcodec")) seal_pcodec_manifest(manifest_path)
-  invisible(manifest)
+  manifest
 }
 
 write_selection_regions <- function(output, selection) {
@@ -136,7 +153,27 @@ write_selection_regions <- function(output, selection) {
 #'   is a deliberately unsafe fast path for already-canonical prepared input:
 #'   it skips structural QC, duplicate scans, row reports, alias resolution,
 #'   and temporary variant-ID construction, while retaining build and codec
-#'   identity safety.
+#'   identity safety. Use it only for a table that has already been validated
+#'   (for example by an upstream pipeline that already applied equivalent
+#'   QC): canonical column names, primary
+#'   chromosomes, whole positive coordinates, distinct single-base A/C/G/T
+#'   REF/ALT with `effect_allele` = ALT, no duplicate variants, finite beta,
+#'   positive finite SE, and EAF/p in \[0, 1\]. Rows the native identity cannot
+#'   represent are still dropped (and counted in the manifest), but beta, SE,
+#'   Z, EAF and p are not checked and duplicates stop the write. On such a
+#'   table the payload is identical to the `compact` result (FinnGen, 10M rows:
+#'   about 26 s instead of 41 s at 8 threads).
+#' @param allele_columns Optional mapping for inputs without explicit REF/ALT
+#'   columns, as a character vector `c(ref = "<column>", alt = "<column>")`
+#'   naming the input columns that hold REF and ALT. A GWAS-SSF table, whose
+#'   `effect_allele` is the ALT allele, is written with
+#'   `allele_columns = c(ref = "other_allele", alt = "effect_allele")`; the
+#'   payload is then identical to writing the same table with
+#'   `reference_allele`/`alternate_allele` columns added, without copying or
+#'   rewriting the table. The columns must exist; an input that already has an
+#'   explicit REF or ALT column cannot also declare one. The strict core still
+#'   requires `effect_allele` = ALT and `other_allele` = REF (no flipping), and
+#'   the mapping is recorded in the manifest's source provenance.
 #' @param input_build Input build, explicitly GRCh37/hg19 or GRCh38/hg38.
 #' @param pvalue_threshold Strict p-value threshold for `selection = "pvalue_regions"`
 #'   or `selection = "core_plus"`; finite supplied p-values are authoritative,
@@ -210,7 +247,8 @@ compress_sumstats <- function(input, output,
                               store_build = "GRCh38",
                               selection = c("full", "core", "hm3", "core_plus"),
                               threads = NULL,
-                              row_policy = c("report", "error")) {
+                              row_policy = c("report", "error"),
+                              allele_columns = NULL) {
   builds <- core_builds(input_build, store_build)
   input_build <- builds$input_build
   store_build <- builds$store_build
@@ -313,7 +351,8 @@ compress_sumstats <- function(input, output,
     construct_variant_id = identical(backend, "parquet"),
     include_p_value = selection %in% c("core_plus", "pvalue_regions") ||
       isTRUE(pvalue_flag) || isTRUE(pvalue_order),
-    hash_threads = threads
+    hash_threads = threads,
+    allele_columns = allele_columns
   )
   # Import performs the shared zero-row check before any destination or
   # staging directory is created.  This keeps empty input a deliberate public
@@ -358,7 +397,9 @@ compress_sumstats <- function(input, output,
     }
   } else {
     qc_started <- phase_clock()
-    validate_core_schema(raw, source_columns = source_columns,
+    # Declared allele_columns stand in for explicit REF/ALT source columns.
+    validate_core_schema(raw, source_columns = c(source_columns,
+                                                 names(attr(raw, "allele_columns"))),
                          input_build = input_build, store_build = store_build)
     structural <- apply_structural_qc(
       raw, input_build = input_build, strict = strict,
@@ -390,7 +431,8 @@ compress_sumstats <- function(input, output,
   }
   identity_started <- phase_clock()
   raw <- canonicalize_core_identity(
-    raw, build = store_build, include_variant_id = identical(backend, "parquet")
+    raw, build = store_build, include_variant_id = identical(backend, "parquet"),
+    identity = structural$identity
   )
   phase_timings$phases$identity_sort <- phase_seconds(identity_started)
   attr(raw, "source_columns") <- source_columns
@@ -442,9 +484,20 @@ compress_sumstats <- function(input, output,
     is.finite(se_values) & se_values > 0 &
       !(is.finite(eaf_values) & eaf_values >= 0 & eaf_values <= 1)
   )
+  # EAF coverage counts depend only on the multiset of EAF values. Between
+  # import and here rows are only dropped (QC, identity safety, selection) and
+  # the EAF column is never modified, so an unchanged row count means the same
+  # rows and the import-time coverage is reused. The output coverage is also
+  # what the native writer reports for its (reordered) rows.
+  eaf_input <- source_provenance$eaf %||% eaf_coverage_metadata(raw$effect_allele_frequency)
+  eaf_output <- if (identical(eaf_input$rows, as.integer(nrow(data)))) {
+    eaf_input
+  } else {
+    eaf_coverage_metadata(data$effect_allele_frequency)
+  }
   preparation$eaf <- list(
-    input = source_provenance$eaf %||% eaf_coverage_metadata(raw$effect_allele_frequency),
-    output = eaf_coverage_metadata(data$effect_allele_frequency),
+    input = eaf_input,
+    output = eaf_output,
     missing_policy = "stored_EAF_remains_missing; no_source_EAF_imputation",
     predictor_imputation = list(
       value = as.numeric(PCODEC_NATIVE_MISSING_EAF_PREDICTOR),
@@ -458,7 +511,17 @@ compress_sumstats <- function(input, output,
       }
     )
   )
-  if (identical(qc, "compact")) validate_sumstats_values(data, require_identity = TRUE)
+  # validate_sumstats_values() is not repeated after compact QC: every row it
+  # could reject was already removed by a structural QC reason, so it could
+  # only pass. Chromosome/position NA or < 1 -> the canonical-key conditions
+  # (missing_chromosome, missing/nonpositive_coordinate, ...; identity
+  # encoding stops on any remaining row without a key); missing or empty
+  # effect/other allele -> missing_*_allele; EAF outside [0, 1] ->
+  # invalid/nonfinite_effect_allele_frequency; non-finite beta or z ->
+  # nonfinite_beta/z; non-finite or non-positive SE -> nonfinite_/
+  # invalid_standard_error; p outside [0, 1] -> nonfinite/invalid_p_value;
+  # sample_size and info -> their nonfinite_/invalid_ reasons. Kept duplicate
+  # first copies have no other reason. Selection only subsets rows.
   if (identical(backend, "pcodec")) {
     if (!identical(profile, "standard")) {
       stop("backend='pcodec' currently provides the standard semantic profile; "
@@ -516,9 +579,17 @@ compress_sumstats <- function(input, output,
       qc = qc,
       identity_values = prepared$identity
     )
-    pcodec_write_store(data, output, metadata = pcodec_metadata)
-    compressor_manifest_contract(
-      output, build = store_build, selection = selection_scope,
+    # The manifest is built in memory and written once into the staging
+    # directory (sealed: canonical hash and manifest.sha256), then once more
+    # after the atomic commit to add the commit timing. Timings are excluded
+    # from the canonical hash, so the second write keeps it. The bytes equal
+    # those of the earlier write/read_json/re-seal sequence because every
+    # manifest value serializes identically before and after a JSON round
+    # trip (see tests/testthat/test-manifest-once.R).
+    manifest <- pcodec_write_store(data, output, metadata = pcodec_metadata,
+                                   eaf_coverage = eaf_output, finalize = FALSE)
+    manifest <- compressor_manifest_contract_apply(
+      manifest, build = store_build, selection = selection_scope,
       profile = profile, backend = backend,
       threads = threads, row_policy = row_policy,
       source = attr(raw, "source_provenance") %||% NULL,
@@ -526,11 +597,14 @@ compress_sumstats <- function(input, output,
       panel = preparation$variant_set %||% NULL,
       qc = qc
     )
+    manifest <- pcodec_seal_manifest_value(manifest_json_normalise(manifest))
+    write_pcodec_manifest(manifest, file.path(output, "manifest.json"))
     commit_started <- phase_clock()
     commit_store_output(transaction)
     commit_seconds <- phase_seconds(commit_started)
     completed <- TRUE
-    record_commit_timing(transaction$target, commit_seconds)
+    write_pcodec_manifest(manifest_with_commit_timing(manifest, commit_seconds),
+                          file.path(transaction$target, "manifest.json"))
     return(open_compressor(transaction$target))
   }
 

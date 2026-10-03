@@ -22,7 +22,8 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
                   pvalue_order_threshold = NULL, region_padding = 10000L,
                   store_build = "GRCh38",
                   selection = c("full", "core", "hm3", "core_plus"),
-                  threads = NULL, row_policy = c("report", "error"))
+                  threads = NULL, row_policy = c("report", "error"),
+                  allele_columns = NULL)
 }
 \arguments{
   \item{input}{A data frame or delimited summary-statistics file.}
@@ -41,7 +42,14 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     A pre-canonicalization native-identity safety filter drops unsupported
     primary chromosomes, coordinates, or REF/ALT pairs and records their
     counts in preparation metadata. Malformed canonical statistics remain
-    fail-closed; native duplicate checks still apply.}
+    fail-closed; native duplicate checks still apply. Use it only for a
+    table that is already validated upstream: canonical column names,
+    primary chromosomes, whole positive coordinates, distinct single-base
+    A/C/G/T REF/ALT with \code{effect_allele} = ALT, no duplicate variants,
+    finite beta, positive finite SE, and EAF and p in [0, 1]; statistic
+    values are not row-validated. On such a table the payload is identical
+    to the \code{"compact"} result (FinnGen, 10M rows: about 26 s instead of
+    41 s at 8 threads).}
   \item{keep_extras}{Whether arbitrary non-core input columns should be kept
     in a Parquet extras sidecar.}
   \item{block_rows}{Rows per Parquet write chunk; native Pcodec uses its
@@ -80,6 +88,18 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     in the manifest.}
   \item{row_policy}{\code{"report"} drops structurally invalid rows and
     records aggregate QC counts; \code{"error"} rejects them.}
+  \item{allele_columns}{Optional mapping for inputs without explicit REF/ALT
+    columns: \code{c(ref = "<column>", alt = "<column>")} names the input
+    columns that hold REF and ALT. A GWAS-SSF table, whose
+    \code{effect_allele} is ALT, is written with
+    \code{allele_columns = c(ref = "other_allele", alt = "effect_allele")};
+    the payload is identical to writing the table with
+    \code{reference_allele}/\code{alternate_allele} columns added, without
+    copying or rewriting it. The named columns must exist, and an input that
+    already has an explicit REF or ALT column cannot also declare one. The
+    core still requires \code{effect_allele} = ALT and \code{other_allele} =
+    REF (no flipping). The mapping is recorded in the manifest's source
+    provenance.}
 }
 \value{A \code{compressor_store} object.}
 \examples{

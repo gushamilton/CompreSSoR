@@ -356,9 +356,14 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   )
 }
 
+# `coverage`, when supplied, is eaf_coverage_metadata() of the same rows in any
+# order (the counts do not depend on row order).
 pcodec_native_eaf_observability <- function(eaf, exceptions = NULL,
-                                            predictor_rows = 0L) {
-  coverage <- eaf_coverage_metadata(eaf)
+                                            predictor_rows = 0L,
+                                            coverage = NULL) {
+  if (is.null(coverage) || !identical(coverage$rows, as.integer(length(eaf)))) {
+    coverage <- eaf_coverage_metadata(eaf)
+  }
   exception_flags <- if (is.null(exceptions) || !nrow(exceptions)) {
     integer()
   } else {
@@ -511,7 +516,6 @@ pcodec_native_pvalue_resolve <- function(data) {
   z <- if ("z" %in% names(data)) suppressWarnings(as.numeric(data$z)) else {
     rep(NA_real_, n)
   }
-  derived <- 2 * stats::pnorm(-abs(z))
   source_present <- attr(data, "p_value_source_present", exact = TRUE)
   source_present <- if (is.null(source_present)) "p_value" %in% names(data) else
     isTRUE(source_present)
@@ -523,9 +527,20 @@ pcodec_native_pvalue_resolve <- function(data) {
   supplied_valid <- source_present & is.finite(supplied) & supplied >= 0 & supplied <= 1
   supplied_missing <- source_present & is.na(supplied)
   supplied_invalid <- source_present & !supplied_missing & !supplied_valid
-  derived_valid <- !supplied_valid & is.finite(derived)
-  p_value <- derived
-  p_value[supplied_valid] <- supplied[supplied_valid]
+  # 2 * pnorm(-abs(z)) only where no valid p was supplied: the same
+  # elementwise values as deriving every row and then overwriting the
+  # supplied ones.
+  need_derived <- !supplied_valid
+  if (all(need_derived)) {
+    p_value <- 2 * stats::pnorm(-abs(z))
+    derived_valid <- is.finite(p_value)
+  } else {
+    p_value <- supplied
+    if (any(need_derived)) {
+      p_value[need_derived] <- 2 * stats::pnorm(-abs(z[need_derived]))
+    }
+    derived_valid <- need_derived & is.finite(p_value)
+  }
   fallback <- source_present & !supplied_valid
   unresolved <- !is.finite(p_value)
   source <- if (!source_present || !any(supplied_valid)) {
@@ -585,23 +600,20 @@ pcodec_native_position_gaps <- function(position, block_rows = PCODEC_NATIVE_BLO
   }
   position <- as.numeric(position)
   n <- length(position)
-  if (n && any(!is.finite(position) | position < 0 | position > 4294967295 |
-               position != floor(position))) {
+  if (!n) return(numeric())
+  # range() is NA/NaN when any value is, and +-Inf when any value is.
+  bounds <- range(position)
+  if (anyNA(bounds) || !all(is.finite(bounds)) || bounds[1L] < 0 ||
+      bounds[2L] > 4294967295 || any(position != floor(position))) {
     stop("native Pcodec positions must be uint32 values", call. = FALSE)
   }
-  if (n > 1L && any(diff(position) < 0)) {
+  # Within-block deltas: the global first difference with every block's
+  # first row reset to 0 (the same subtractions as differencing each block).
+  gaps <- c(0, diff(position))
+  if (n > 1L && any(gaps < 0)) {
     stop("native Pcodec positions must be sorted", call. = FALSE)
   }
-  gaps <- numeric(n)
-  if (n) {
-    blocks <- ceiling(n / block_rows)
-    for (block in seq_len(blocks)) {
-      start <- (block - 1L) * block_rows + 1L
-      stop <- min(n, block * block_rows)
-      gaps[start] <- 0
-      if (stop > start) gaps[(start + 1L):stop] <- diff(position[start:stop])
-    }
-  }
+  gaps[seq.int(1L, n, by = block_rows)] <- 0
   gaps
 }
 
@@ -705,7 +717,10 @@ pcodec_native_write_exceptions <- function(exceptions, output, blocks, workers =
        effective_workers = effective_workers)
 }
 
-pcodec_native_write_store <- function(data, output, metadata = list()) {
+# finalize = FALSE returns the manifest without writing it, for a caller that
+# completes and writes it once (compress_sumstats()).
+pcodec_native_write_store <- function(data, output, metadata = list(),
+                                      eaf_coverage = NULL, finalize = TRUE) {
   if (!pcodec_native_enabled()) {
     stop("native Pcodec is not enabled", call. = FALSE)
   }
@@ -753,7 +768,7 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   exceptions_started <- phase_clock()
   eaf_observability <- pcodec_native_eaf_observability(
     ordered$effect_allele_frequency, values$exceptions,
-    predictor_rows = values$eaf_predictor_rows
+    predictor_rows = values$eaf_predictor_rows, coverage = eaf_coverage
   )
   block_rows <- pcodec_native_validate_block_rows(
     metadata$block_rows %||% PCODEC_NATIVE_BLOCK_ROWS, "native Pcodec block_rows")
@@ -1091,6 +1106,7 @@ manifest$tolerances <- list(
                                   " codes"),
     exception_precision = "float32", exact_values_in_exception_sidecar = FALSE
   )
+  if (!isTRUE(finalize)) return(manifest)
   write_manifest(manifest, file.path(output, "manifest.json"))
   seal_pcodec_manifest(file.path(output, "manifest.json"))
   invisible(manifest)
