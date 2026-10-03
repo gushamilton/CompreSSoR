@@ -130,8 +130,10 @@ pcodec_native_default_threads <- function(region = NULL, variants = NULL,
   if (!is.null(threads)) return(pcodec_validate_threads(threads))
   configured <- getOption("CompreSSoR.pcodec.threads", NULL)
   if (!is.null(configured)) return(pcodec_validate_threads(configured))
-  # Whole-file reads benefit from independent stream decoding in parallel;
-  # regional and canonical-key reads are block-selective and avoid forking.
+  # Whole-file reads benefit from independent stream decoding in parallel.
+  # Regional, key and row reads start from one thread here; the native
+  # selective reader then raises it with the number of key blocks touched
+  # (pcodec_native_select_auto_threads()).
   if (!is.null(region) || !is.null(variants)) 1L else 4L
 }
 
@@ -200,6 +202,26 @@ pcodec_identity_signature <- function(store) {
         digest::digest(anchors, algo = "sha1"), sep = "|")
 }
 
+# Batched reads. Two strategies, both returning what read_sumstats() returns
+# for each store:
+# * panel sharing (the default for several stores): stores with the same
+#   variant panel (equal identity signature) resolve keys, row IDs and regions
+#   to rows once, then decode values only, stores in parallel with
+#   threads %/% length(stores) decoder threads each; stores alone in their
+#   group are read in one pass each, in parallel.
+# * one pass per store (always for a single store, which gets all threads):
+#   keys -> rows -> values in one native call per store, stores in parallel.
+#   A shared key list is normalised and parsed once.
+# Measured on 2-20 shared-panel stores (1k and 100k keys, 1-8 threads),
+# sharing is faster in every cell except 2 stores x 100k keys at >= 2 threads
+# (about 10% slower than one pass per store), so it stays the default.
+# options(CompreSSoR.batch_share_panels = TRUE/FALSE) forces a strategy.
+pcodec_batch_share_panels <- function(k, threads) {
+  forced <- getOption("CompreSSoR.batch_share_panels", NULL)
+  if (!is.null(forced)) return(k > 1L && isTRUE(forced))
+  k > 1L
+}
+
 pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
                                region = NULL) {
   if (!length(stores)) stop("stores must be non-empty", call. = FALSE)
@@ -222,7 +244,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",
          call. = FALSE)
   }
-  variants <- lapply(variants, function(keys) {
+  normalise <- function(keys) {
     if (is.null(keys)) return(NULL)
     if (is.character(keys)) {
       if (anyNA(keys) || any(!nzchar(trimws(keys)))) {
@@ -236,45 +258,136 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     }
     stop("each variants element must contain canonical variant keys or row IDs",
          call. = FALSE)
-  })
-
+  }
+  # Normalise each distinct request once. A request shared by every store (the
+  # usual case) is one object, so identical() is a pointer comparison.
+  distinct <- list()
+  slot <- integer(k)
+  for (i in seq_len(k)) {
+    j <- 0L
+    for (u in seq_along(distinct)) {
+      if (identical(distinct[[u]]$raw, variants[[i]])) { j <- u; break }
+    }
+    if (!j) {
+      distinct[[length(distinct) + 1L]] <- list(raw = variants[[i]],
+                                                norm = normalise(variants[[i]]))
+      j <- length(distinct)
+    }
+    slot[i] <- j
+  }
+  variants <- lapply(slot, function(j) distinct[[j]]$norm)
   id_cols <- intersect(columns, PCODEC_IDENTITY_COLUMNS)
   value_cols <- setdiff(columns, id_cols)
+  rows_only <- vapply(seq_len(k), function(i) {
+    is.numeric(variants[[i]]) && is.null(region[[i]]) && !length(id_cols)
+  }, logical(1))
+  full <- vapply(seq_len(k), function(i) {
+    is.null(variants[[i]]) && is.null(region[[i]])
+  }, logical(1))
+
+  # One pass per store for the stores in `idx`, in parallel; a shared key list
+  # is parsed once per genome build. Worker errors are re-raised.
+  parsed <- list()
+  one_pass <- function(idx) {
+    if (!length(idx)) return(list())
+    targets <- vector("list", length(idx))
+    for (t in seq_along(idx)) {
+      i <- idx[t]
+      if (!is.character(variants[[i]])) next
+      build <- compressor_normalize_build(stores[[i]]$manifest$genome_build %||% "GRCh38")
+      ck <- paste(slot[i], build)
+      if (is.null(parsed[[ck]])) {
+        parsed[[ck]] <<- pcodec_native_target_keys(variants[[i]], build = build,
+                                                   trim = TRUE)
+      }
+      targets[t] <- list(parsed[[ck]])
+    }
+    inner <- max(1L, threads %/% length(idx))
+    # A worker error is re-raised below; drop mclapply's generic warning.
+    out <- withCallingHandlers(pcodec_parallel_lapply(seq_along(idx), function(t) {
+      i <- idx[t]
+      pcodec_native_projection(
+        pcodec_native_read_store(stores[[i]], region = region[[i]],
+                                 variants = variants[[i]], columns = columns,
+                                 threads = inner, key_targets = targets[[t]]),
+        columns = columns)
+    }, threads = threads), warning = function(w) {
+      if (grepl("encountered errors? in user code", conditionMessage(w))) {
+        invokeRestart("muffleWarning")
+      }
+    })
+    failed <- vapply(out, inherits, logical(1), "try-error")
+    if (any(failed)) {
+      bad <- out[[which(failed)[1L]]]
+      condition <- attr(bad, "condition")
+      if (inherits(condition, "condition")) stop(condition)
+      stop(as.character(bad), call. = FALSE)
+    }
+    out
+  }
+
+  if (!pcodec_batch_share_panels(k, threads)) {
+    resolutions <- sum(!rows_only & !full)
+    .pcodec_batch_trace$identity_resolutions <-
+      .pcodec_batch_trace$identity_resolutions + resolutions
+    .pcodec_batch_trace$groups <- .pcodec_batch_trace$groups + resolutions
+    decoded <- one_pass(seq_len(k))
+    names(decoded) <- names(stores)
+    return(decoded)
+  }
+
   signature <- vapply(stores, pcodec_identity_signature, character(1))
   # Resolve each distinct (identity group, request) once. Pure value reads
-  # of an explicit row-id request need no identity work at all.
+  # of an explicit row-id request need no identity work at all. Each distinct
+  # request is hashed once.
+  request_hash <- list()
   request_key <- vapply(seq_len(k), function(i) {
-    digest::digest(list(variants[[i]], region[[i]]), algo = "sha1")
+    ck <- paste(slot[i], paste(region[[i]], collapse = "\r"), sep = "\n")
+    if (is.null(request_hash[[ck]])) {
+      request_hash[[ck]] <<- digest::digest(list(variants[[i]], region[[i]]),
+                                            algo = "sha1")
+    }
+    request_hash[[ck]]
   }, character(1))
   resolve_key <- paste(signature, request_key, sep = "#")
+  group_size <- table(resolve_key)
+  # A store alone in its group needs no shared resolution: those stores are
+  # read in one pass each, in parallel.
+  single <- !rows_only & !full & as.integer(group_size[resolve_key]) == 1L
   resolved <- list()
   for (i in seq_len(k)) {
     key <- resolve_key[[i]]
-    if (!is.null(resolved[[key]])) next
-    rows_only <- is.numeric(variants[[i]]) && is.null(region[[i]]) && !length(id_cols)
-    if (rows_only) {
+    if (single[i] || !is.null(resolved[[key]])) next
+    if (rows_only[i]) {
       resolved[[key]] <- list(rows = sort(variants[[i]]), identity = NULL, bytes = 0,
                               direct = TRUE)
       next
     }
-    if (is.null(variants[[i]]) && is.null(region[[i]])) {
+    if (full[i]) {
       resolved[[key]] <- list(full = TRUE)
       next
     }
     .pcodec_batch_trace$identity_resolutions <- .pcodec_batch_trace$identity_resolutions + 1L
     ident <- pcodec_native_read_store(
       stores[[i]], region = region[[i]], variants = variants[[i]],
-      columns = if (length(id_cols)) id_cols else "base_pair_location", threads = threads
+      columns = if (length(id_cols)) id_cols else "base_pair_location",
+      threads = threads
     )
     resolved[[key]] <- list(rows = as.integer(ident$row), identity = ident,
                             bytes = attr(ident, "source_bytes_read", exact = TRUE) %||% 0)
   }
+  .pcodec_batch_trace$identity_resolutions <-
+    .pcodec_batch_trace$identity_resolutions + sum(single)
   .pcodec_batch_trace$groups <- .pcodec_batch_trace$groups + length(unique(signature))
 
-  decoded <- pcodec_parallel_lapply(seq_len(k), function(i) {
+  decoded <- vector("list", k)
+  decoded[which(single)] <- one_pass(which(single))
+  need <- which(!single)
+  inner <- max(1L, threads %/% max(1L, length(need)))
+  decoded[need] <- pcodec_parallel_lapply(need, function(i) {
     res <- resolved[[resolve_key[[i]]]]
     if (isTRUE(res$full)) {
-      return(pcodec_read_store(stores[[i]], columns = columns, threads = 1L))
+      return(pcodec_read_store(stores[[i]], columns = columns, threads = inner))
     }
     if (!length(res$rows)) {
       return(pcodec_native_projection(pcodec_native_empty_result(columns), columns))
@@ -283,7 +396,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     bytes <- res$bytes
     if (length(value_cols)) {
       vals <- pcodec_native_read_store(stores[[i]], variants = res$rows,
-                                       columns = value_cols, threads = 1L)
+                                       columns = value_cols, threads = inner)
       bytes <- bytes + (attr(vals, "source_bytes_read", exact = TRUE) %||% 0)
       out <- if (is.null(res$identity)) vals else {
         cbind(res$identity[setdiff(names(res$identity), "row")], vals[value_cols])

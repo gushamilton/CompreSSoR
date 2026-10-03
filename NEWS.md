@@ -1,5 +1,27 @@
 # CompreSSoR (development)
 
+- Faster canonical-key and batched reads; outputs are unchanged
+  (`identical()` to the previous release on the 10M-row FinnGen store and
+  20 simulated stores, including error messages for malformed keys). Times are
+  medians of 3 fresh-process runs on BluePebble (Cascade Lake), before -> after:
+  - canonical keys are parsed natively (strict `chr:pos:REF:ALT`, with the
+    `trimws()` and de-duplication the read path already applied); any other
+    spelling falls back to the R parser, so validation and messages are
+    unchanged. Within a key block the selection is a galloping merge join
+    instead of one binary search per row. `read_sumstats()` with 100k keys:
+    1.28 -> 0.53 s (1 thread), 0.94 -> 0.33 s (8 threads); 1M keys:
+    13.3 -> 4.8 s, with 25-30% lower peak RSS;
+  - `read_sumstats_batch()` normalises and parses a shared key list once,
+    hashes each distinct request once, reads stores alone in their panel group
+    in one pass each in parallel, and no longer decodes the value pass with
+    one thread. 20 shared-panel stores x 100k keys: 4.67 -> 2.35 s
+    (8 threads); 5 x 100k: 1.78 -> 0.91 s; 1 store x 100k: 1.20 -> 0.48 s;
+    20 stores with distinct panels x 100k keys (one warm process): 16.0 ->
+    2.2 s;
+  - with `threads = NULL`, key and row-ID reads use one thread per touched key
+    block (at most four; one when at most two blocks are touched): 1k keys
+    0.36 -> 0.07 s in a warm process. Region reads keep one thread (more
+    threads did not help).
 - Less aggressive default quantisation. New stores (native format
   `0.4.6-pcodec-native`) use the semantic profile `z10/eaf8/se8+xse`: Z has
   1022 central bins over [-3.5, 3.5) (was 510), the SE log2 residual has 254

@@ -1926,7 +1926,29 @@ pcodec_native_key_columns <- function(position, substitution, build = "GRCh38",
   out[columns]
 }
 
-pcodec_native_target_keys <- function(variants, build = "GRCh38") {
+# Sorted unique identity codes (position * 16 + substitution) of canonical
+# variant keys, with their positions and substitution codes. `trim = TRUE`
+# applies trimws() to each key first (as the read paths always have). Strict
+# canonical keys are parsed natively; any other input takes the R parser,
+# which keeps the established validation and error messages.
+pcodec_native_target_keys <- function(variants, build = "GRCh38", trim = FALSE) {
+  if (is.character(variants) &&
+      is.loaded("compressor_parse_variant_keys", PACKAGE = "CompreSSoR")) {
+    parsed <- .Call("compressor_parse_variant_keys", variants,
+                    as.numeric(pcodec_native_offsets(build)),
+                    as.numeric(compressor_chromosome_lengths(build)), isTRUE(trim),
+                    PACKAGE = "CompreSSoR")
+    if (!is.null(parsed)) return(parsed)
+  }
+  if (isTRUE(trim)) variants <- unique(trimws(variants))
+  parsed <- pcodec_native_target_keys_r(variants, build = build)
+  codes <- sort(unique(as.numeric(parsed$position) * 16 +
+                         as.numeric(parsed$substitution)))
+  list(position = floor(codes / 16), substitution = as.integer(codes %% 16),
+       codes = codes)
+}
+
+pcodec_native_target_keys_r <- function(variants, build = "GRCh38") {
   parsed <- parse_canonical_variant_keys(variants)
   if (anyNA(parsed$chromosome) || anyNA(parsed$base_pair_location) ||
       anyNA(parsed$reference_allele) || anyNA(parsed$alternate_allele)) {
@@ -2047,11 +2069,18 @@ pcodec_native_region_range <- function(region, build = "GRCh38") {
   c(offset + start - 1, offset + end - 1)
 }
 
+# `key_targets` optionally supplies the already parsed `variants` keys
+# (pcodec_native_target_keys(variants, build, trim = TRUE) for this store's
+# build), so batched reads parse a shared key list once.
 pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
-                                      columns = NULL, threads = NULL) {
+                                      columns = NULL, threads = NULL,
+                                      key_targets = NULL) {
   if (!pcodec_native_available()) {
     stop("native Pcodec is not available in this build", call. = FALSE)
   }
+  auto_threads <- is.null(threads) &&
+    is.null(getOption("CompreSSoR.pcodec.threads", NULL)) &&
+    (!is.null(region) || !is.null(variants))
   threads <- pcodec_native_default_threads(region = region, variants = variants,
                                             threads = threads)
   manifest <- store$manifest
@@ -2070,10 +2099,12 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   if (length(unknown)) stop("unknown output column(s): ", paste(unknown, collapse = ", "), call. = FALSE)
 
   row_targets <- NULL
-  key_targets <- NULL
+  if (!is.character(variants)) key_targets <- NULL
   if (!is.null(variants)) {
     if (is.character(variants)) {
-      key_targets <- pcodec_native_target_keys(unique(trimws(variants)), build = build)
+      if (is.null(key_targets)) {
+        key_targets <- pcodec_native_target_keys(variants, build = build, trim = TRUE)
+      }
     } else {
       row_targets <- unique(as.integer(variants))
       if (anyNA(row_targets) || any(row_targets < 0L | row_targets >= n)) {
@@ -2109,6 +2140,11 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   if (isTRUE(getOption("CompreSSoR.pcodec.native_select", TRUE)) &&
       is.loaded("compressor_read_pcodec_native_select", PACKAGE = "CompreSSoR") &&
       !(!is.null(region) && !is.null(variants))) {
+    if (auto_threads) {
+      threads <- pcodec_native_select_auto_threads(
+        pcodec_native_select_matrices(store, index), key_targets, row_targets,
+        lower, upper)
+    }
     return(pcodec_native_select_read(
       store, index, manifest, build, requested, columns, identity_needed, need_z,
       need_se, need_eaf, needed, row_targets, key_targets, lower, upper, threads))
@@ -2129,8 +2165,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     if (!is.null(key_targets)) {
       # Exact collision-free numeric key: substitution codes are 0..15 and
       # global positions are < 2^32, so position * 16 + substitution < 2^36.
-      target_codes <- sort(unique(as.numeric(key_targets$position) * 16 +
-                                    as.numeric(key_targets$substitution)))
+      target_codes <- key_targets$codes
       target_positions <- sort(unique(floor(target_codes / 16)))
       first_pos <- vapply(key_blocks, function(block) as.numeric(block$first_position), numeric(1))
       last_pos <- vapply(key_blocks, function(block) as.numeric(block$last_position), numeric(1))
@@ -2281,6 +2316,33 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
   output
 }
 
+# Default thread count for a key or row-ID read when the caller gave none:
+# one worker per candidate key block, up to PCODEC_NATIVE_SELECT_MAX_THREADS,
+# and one thread when at most PCODEC_NATIVE_SELECT_SERIAL_BLOCKS key blocks
+# are touched. On the 10M-row FinnGen store 25-100k keys (23-77 blocks) run
+# 2.6-2.9x faster on 4 threads than on 1 and 8 threads add nothing; region
+# reads gain nothing from threads (their cost is building the output), so
+# they stay on one thread.
+PCODEC_NATIVE_SELECT_SERIAL_BLOCKS <- 2L
+PCODEC_NATIVE_SELECT_MAX_THREADS <- 4L
+
+pcodec_native_select_auto_threads <- function(mats, key_targets, row_targets,
+                                              lower, upper) {
+  position <- mats$position
+  if (!is.null(lower) || !nrow(position)) return(1L)
+  first <- position[, 6L]
+  last <- position[, 7L]
+  blocks <- if (!is.null(key_targets)) {
+    targets <- unique(key_targets$position)
+    sum(findInterval(last, targets) >
+          findInterval(first, targets, left.open = TRUE))
+  } else if (!is.null(row_targets)) {
+    length(unique(findInterval(as.numeric(row_targets), position[, 5L]) + 1L))
+  } else nrow(position)
+  if (blocks <= PCODEC_NATIVE_SELECT_SERIAL_BLOCKS) return(1L)
+  as.integer(min(PCODEC_NATIVE_SELECT_MAX_THREADS, blocks))
+}
+
 # Native selective read: one native call decodes only the touched blocks and
 # returns codes + exceptions for the selected rows; values are then produced
 # with the same R arithmetic as the per-block R path so results are identical.
@@ -2297,8 +2359,7 @@ pcodec_native_select_read <- function(store, index, manifest, build, requested,
     selection <- c(as.numeric(lower), as.numeric(upper))
   } else if (!is.null(key_targets)) {
     mode <- 2L
-    selection <- sort(unique(as.numeric(key_targets$position) * 16 +
-                               as.numeric(key_targets$substitution)))
+    selection <- key_targets$codes
   } else {
     mode <- 0L
     selection <- sort(as.numeric(row_targets))

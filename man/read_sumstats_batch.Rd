@@ -22,14 +22,16 @@ store in a list. May be \code{NULL} when \code{region} is given.}
 
 \item{columns}{Output columns requested from every store.}
 
-\item{threads}{Number of independent Pcodec store readers to run in
-parallel on Unix-like systems. The default is one. Windows uses serial
-reads for portability.}
+\item{threads}{Number of threads. One store is read with all of them;
+several stores are read in parallel on Unix-like systems, up to \code{threads}
+at a time, each with \code{threads \%/\% length(stores)} (at least one) decoder
+threads. The default is one. Windows uses serial reads for portability.}
 
 \item{region}{Optional region string (as in \code{\link[=read_sumstats]{read_sumstats()}}), shared by
-every store or one per store in a list. Stores that share the same variant
-panel (identical position and substitution streams) resolve keys, row IDs
-and regions to rows once, then decode values only.}
+every store or one per store in a list. Stores that share the same
+variant panel (identical position and substitution streams) resolve keys,
+row IDs and regions to rows once, then decode values only; a store with a
+panel of its own is read in one pass.}
 }
 \value{
 A list of decoded data frames in the same order as \code{stores}.

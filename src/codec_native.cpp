@@ -997,6 +997,69 @@ std::vector<T> select_decode(NativePcodecFile& file, const NativePcodecBlock& bl
   return native_decompress_block<T>(file, block, dtype);
 }
 
+// First index in [lo, n) with values[index] >= target, searching outward
+// from lo in doubling steps (galloping) and finishing with a binary search.
+template <typename Get>
+std::size_t select_gallop(std::size_t lo, std::size_t n, double target, Get get) {
+  if (lo >= n || get(lo) >= target) return lo;
+  std::size_t step = 1;
+  std::size_t prev = lo;  // get(prev) < target
+  std::size_t probe = lo + 1;
+  while (probe < n && get(probe) < target) {
+    prev = probe;
+    step <<= 1;
+    probe = lo + step;
+  }
+  std::size_t first = prev + 1;
+  std::size_t last = std::min(probe, n);
+  while (first < last) {
+    const std::size_t mid = first + (last - first) / 2;
+    if (get(mid) < target) first = mid + 1; else last = mid;
+  }
+  return first;
+}
+
+// Rows of one decoded key block whose code (position * 16 + substitution) is
+// in the sorted unique selection `sel`, in row order. Key blocks are sorted by
+// code, so a galloping merge of the two sorted sequences replaces one binary
+// search of the whole selection per row; a block that is not sorted by code
+// keeps the per-row search. Duplicate codes in a block are all taken, as the
+// per-row search does.
+template <typename Take>
+void select_key_join(const std::vector<double>& pos,
+                     const std::vector<std::uint8_t>& subs,
+                     const double* sel, std::size_t sel_len, Take take) {
+  const std::size_t nb = pos.size();
+  if (!nb || !sel_len) return;
+  std::vector<double> code(nb);
+  bool sorted = true;
+  for (std::size_t i = 0; i < nb; ++i) {
+    code[i] = pos[i] * 16 + static_cast<double>(subs[i]);
+    if (i && code[i] < code[i - 1]) sorted = false;
+  }
+  if (!sorted) {
+    for (std::size_t i = 0; i < nb; ++i) {
+      if (std::binary_search(sel, sel + sel_len, code[i])) take(i);
+    }
+    return;
+  }
+  auto block_at = [&](std::size_t k) { return code[k]; };
+  auto sel_at = [&](std::size_t k) { return sel[k]; };
+  std::size_t j = static_cast<std::size_t>(
+    std::lower_bound(sel, sel + sel_len, code[0]) - sel);
+  std::size_t i = 0;
+  while (i < nb && j < sel_len) {
+    if (code[i] == sel[j]) {
+      take(i);
+      ++i;  // keep j: the next row may repeat this code
+    } else if (code[i] < sel[j]) {
+      i = select_gallop(i + 1, nb, sel[j], block_at);
+    } else {
+      j = select_gallop(j + 1, sel_len, code[i], sel_at);
+    }
+  }
+}
+
 SEXP select_int_vector(const std::vector<int>& v) {
   SEXP out = PROTECT(Rf_allocVector(INTSXP, static_cast<R_xlen_t>(v.size())));
   if (!v.empty()) std::memcpy(INTEGER(out), v.data(), v.size() * sizeof(int));
@@ -1185,9 +1248,7 @@ extern "C" SEXP compressor_read_pcodec_native_select(
               if (pos[i] >= sel[0] && pos[i] <= sel[1]) take(i);
             }
           } else {
-            for (std::size_t i = 0; i < pos.size(); ++i) {
-              if (std::binary_search(sel, sel + sel_len, pos[i] * 16 + static_cast<double>(subs[i]))) take(i);
-            }
+            select_key_join(pos, subs, sel, sel_len, take);
           }
         });
       for (std::size_t t = 0; t < key_candidates.size(); ++t) {

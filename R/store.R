@@ -822,7 +822,10 @@ read_standard_values <- function(store, rows = NULL, include_beta = TRUE, includ
 #'   reader performs indexed stream scans and block decompression in C++; the
 #'   regional, canonical-key and fallback paths use Unix worker processes.
 #'   Set `threads` explicitly, or use `options(CompreSSoR.pcodec.threads = n)`
-#'   for the non-native paths. On Windows, reads remain serial.
+#'   for the non-native paths. When `threads` is `NULL`, whole-store reads use
+#'   four threads, canonical-key and row-ID reads use one thread per key block
+#'   they touch (at most four, and one when at most two blocks are touched),
+#'   and region reads use one thread. On Windows, reads remain serial.
 #' @param use_cache Use an existing q8 cache for a region when available.
 #' @return A data.frame with ordinary summary-statistics columns.
 #' @examples
@@ -909,13 +912,15 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #'   zero-based row-ID vector shared by every store, or one such vector per
 #'   store in a list. May be `NULL` when `region` is given.
 #' @param region Optional region string (as in [read_sumstats()]), shared by
-#'   every store or one per store in a list. Stores that share the same variant
-#'   panel (identical position and substitution streams) resolve keys, row IDs
-#'   and regions to rows once, then decode values only.
+#'   every store or one per store in a list. Stores that share the same
+#'   variant panel (identical position and substitution streams) resolve keys,
+#'   row IDs and regions to rows once, then decode values only; a store with a
+#'   panel of its own is read in one pass.
 #' @param columns Output columns requested from every store.
-#' @param threads Number of independent Pcodec store readers to run in
-#'   parallel on Unix-like systems. The default is one. Windows uses serial
-#'   reads for portability.
+#' @param threads Number of threads. One store is read with all of them;
+#'   several stores are read in parallel on Unix-like systems, up to `threads`
+#'   at a time, each with `threads %/% length(stores)` (at least one) decoder
+#'   threads. The default is one. Windows uses serial reads for portability.
 #' @return A list of decoded data frames in the same order as `stores`.
 #' @examples
 #' \dontrun{
