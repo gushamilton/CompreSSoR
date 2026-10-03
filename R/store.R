@@ -312,7 +312,8 @@ compress_sumstats <- function(input, output,
     prepared_core = identical(qc, "none"),
     construct_variant_id = identical(backend, "parquet"),
     include_p_value = selection %in% c("core_plus", "pvalue_regions") ||
-      isTRUE(pvalue_flag) || isTRUE(pvalue_order)
+      isTRUE(pvalue_flag) || isTRUE(pvalue_order),
+    hash_threads = threads
   )
   # Import performs the shared zero-row check before any destination or
   # staging directory is created.  This keeps empty input a deliberate public
