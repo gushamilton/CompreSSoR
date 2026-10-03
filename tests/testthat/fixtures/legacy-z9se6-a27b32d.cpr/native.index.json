@@ -1,0 +1,158 @@
+{
+  "format": "CompreSSoR-native-index",
+  "version": 3,
+  "position_encoding": "delta_u32_within_block",
+  "rows": 4000,
+  "block_rows": 65536,
+  "key_block_rows": 131072,
+  "value_block_rows": 65536,
+  "blocks": [
+    {
+      "row_start": 0,
+      "row_stop": 4000,
+      "first_position": 100000,
+      "last_position": 249058421
+    }
+  ],
+  "key_blocks": [
+    {
+      "row_start": 0,
+      "row_stop": 4000,
+      "first_position": 100000,
+      "last_position": 249058421
+    }
+  ],
+  "value_blocks": [
+    {
+      "row_start": 0,
+      "row_stop": 4000,
+      "first_position": 100000,
+      "last_position": 249058421
+    }
+  ],
+  "streams": {
+    "position": {
+      "file": "position.pco",
+      "bytes": 48,
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 48,
+          "values": 4000
+        }
+      ],
+      "requested_workers": 1,
+      "effective_workers": 1
+    },
+    "substitution": {
+      "file": "substitution.pco",
+      "bytes": 778,
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 778,
+          "values": 4000
+        }
+      ],
+      "requested_workers": 1,
+      "effective_workers": 1
+    },
+    "z": {
+      "file": "z.pco",
+      "bytes": 4364,
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 4364,
+          "values": 4000
+        }
+      ],
+      "requested_workers": 1,
+      "effective_workers": 1
+    },
+    "eaf": {
+      "file": "eaf.pco",
+      "bytes": 3901,
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 3901,
+          "values": 4000
+        }
+      ],
+      "requested_workers": 1,
+      "effective_workers": 1
+    },
+    "se": {
+      "file": "se.pco",
+      "bytes": 2556,
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 2556,
+          "values": 4000
+        }
+      ],
+      "requested_workers": 1,
+      "effective_workers": 1
+    }
+  },
+  "exceptions": {
+    "file": "exceptions.bin",
+    "bytes": 16694,
+    "codec": "zstd",
+    "record_bytes": 17,
+    "blocks": [
+      {
+        "offset": 0,
+        "length": 16694,
+        "raw_length": 22627,
+        "count": 1331
+      }
+    ],
+    "requested_workers": 1,
+    "effective_workers": 1
+  },
+  "writer": {
+    "requested_workers": 1,
+    "effective_workers": 1,
+    "partition": "deterministic_contiguous_blocks",
+    "max_in_flight": 1,
+    "streams": {
+      "position": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "substitution": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "z": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "eaf": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "se": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      }
+    },
+    "exceptions": {
+      "requested_workers": 1,
+      "effective_workers": 1
+    }
+  }
+}

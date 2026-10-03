@@ -813,7 +813,10 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 2, "z"), z_values, kPcoTypeU16,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
-        if (codes[row] > 511) {
+        // Widest supported semantic Z profile (Z12: 4094 central codes plus
+        // missing and exception). The store's own domain is checked against
+        // its manifest in pcodec_native_validate_code_domains().
+        if (codes[row] > 4095) {
           throw std::runtime_error("native Pcodec Z code is outside its domain");
         }
         INTEGER(z)[row] = static_cast<int>(codes[row]);

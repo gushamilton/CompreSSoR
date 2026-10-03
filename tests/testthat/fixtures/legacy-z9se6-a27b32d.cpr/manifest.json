@@ -1,0 +1,1225 @@
+{
+  "format": "CompreSSoR",
+  "format_version": "0.4.5-pcodec-native",
+  "backend": "pcodec",
+  "profile": "standard",
+  "rows": 4000,
+  "n_rows": 4000,
+  "block_rows": 65536,
+  "key_block_rows": 131072,
+  "value_block_rows": 65536,
+  "writer": {
+    "requested_workers": 1,
+    "effective_workers": 1,
+    "partition": "deterministic_contiguous_blocks",
+    "max_in_flight": 1,
+    "streams": {
+      "position": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "substitution": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "z": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "eaf": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "se": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      }
+    },
+    "exceptions": {
+      "requested_workers": 1,
+      "effective_workers": 1
+    }
+  },
+  "identity": {
+    "encoding": "global_position_plus_directed_ref_alt_substitution",
+    "position_storage": "within-block delta-coded uint32; block first positions are in the index",
+    "external_reference_required": false,
+    "chromosome_lengths": [
+      248956422,
+      242193529,
+      198295559,
+      190214555,
+      181538259,
+      170805979,
+      159345973,
+      145138636,
+      138394717,
+      133797422,
+      135086622,
+      133275309,
+      114364328,
+      107043718,
+      101991189,
+      90338345,
+      83257441,
+      80373285,
+      58617616,
+      64444167,
+      46709983,
+      50818468,
+      156040895,
+      57227415
+    ],
+    "chromosome_offsets": [
+      0,
+      248956422,
+      491149951,
+      689445510,
+      879660065,
+      1061198324,
+      1232004303,
+      1391350276,
+      1536488912,
+      1674883629,
+      1808681051,
+      1943767673,
+      2077042982,
+      2191407310,
+      2298451028,
+      2400442217,
+      2490780562,
+      2574038003,
+      2654411288,
+      2713028904,
+      2777473071,
+      2824183054,
+      2875001522,
+      3031042417
+    ],
+    "effect_allele_is_alt": true,
+    "other_allele_is_ref": true,
+    "schema": "compressor_variant_identity_v1",
+    "position_encoding": "zero_based_global_position",
+    "substitution_encoding": "uint8_4_times_ref_plus_alt",
+    "input_build": "GRCh38",
+    "stored_build": "GRCh38",
+    "genome_build": "GRCh38",
+    "assembly": "GRCh38",
+    "assembly_identifier": "GRCh38",
+    "chromosome_table": {
+      "id": "grch38_primary_1_22_X_Y",
+      "version": 1,
+      "chromosomes": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "X",
+        "Y"
+      ],
+      "lengths": [
+        248956422,
+        242193529,
+        198295559,
+        190214555,
+        181538259,
+        170805979,
+        159345973,
+        145138636,
+        138394717,
+        133797422,
+        135086622,
+        133275309,
+        114364328,
+        107043718,
+        101991189,
+        90338345,
+        83257441,
+        80373285,
+        58617616,
+        64444167,
+        46709983,
+        50818468,
+        156040895,
+        57227415
+      ],
+      "offsets": [
+        0,
+        248956422,
+        491149951,
+        689445510,
+        879660065,
+        1061198324,
+        1232004303,
+        1391350276,
+        1536488912,
+        1674883629,
+        1808681051,
+        1943767673,
+        2077042982,
+        2191407310,
+        2298451028,
+        2400442217,
+        2490780562,
+        2574038003,
+        2654411288,
+        2713028904,
+        2777473071,
+        2824183054,
+        2875001522,
+        3031042417
+      ]
+    },
+    "chromosome_table_id": "grch38_primary_1_22_X_Y",
+    "chromosome_table_version": 1,
+    "supported_chromosomes": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15",
+      "16",
+      "17",
+      "18",
+      "19",
+      "20",
+      "21",
+      "22",
+      "X",
+      "Y"
+    ],
+    "supported_variant_class": "biallelic A/C/G/T SNV",
+    "reference": {
+      "id": "none",
+      "build": "GRCh38",
+      "status": "not_used",
+      "external_reference_required": false
+    },
+    "chain": {
+      "required": false,
+      "status": "not_used"
+    }
+  },
+  "semantic_codec": {
+    "name": "z9/eaf8/se6",
+    "z_bits": 9,
+    "eaf_bits": 8,
+    "se_bits": 6,
+    "z_range": [
+      -3.5,
+      3.5
+    ],
+    "se_count": 62,
+    "se_residual_range": [
+      -1,
+      1
+    ],
+    "se_missing": 62,
+    "se_exception": 63,
+    "se_physical_dtype": "uint8",
+    "se_physical_bits": 8,
+    "se_center_block_rows": 65536,
+    "block_centers_log2_residual": -6.4903640620709577,
+    "exception_rows": 1331,
+    "exception_precision": "float32",
+    "eaf_missing_exception_rows": 25,
+    "eaf_invalid_exception_rows": 0,
+    "eaf_nonrepresentable_exception_rows": 25,
+    "eaf_missing_se_exception_rows": 11,
+    "beta": "derived as z * standard_error",
+    "p_value": "derived as 2 * pnorm(-abs(z))"
+  },
+  "codec": {
+    "name": "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions",
+    "library": "pcodec",
+    "pco_version": "1.0.3",
+    "abi": "standalone",
+    "page_rows": 131072,
+    "compression": "Pcodec standalone streams; 131072-row key frames and 65536-row value frames",
+    "z_bits": 9,
+    "eaf_bits": 8,
+    "se_bits": 6,
+    "se_physical_dtype": "uint8",
+    "se_physical_bits": 8,
+    "se_residual_range": [
+      -1,
+      1
+    ],
+    "p_storage": "omitted; derived from z",
+    "beta_storage": "omitted; derived from z and standard_error",
+    "exception_storage": "zstd level 19, 17-byte float32 records"
+  },
+  "files": {
+    "position": "position.pco",
+    "substitution": "substitution.pco",
+    "z": "z.pco",
+    "eaf": "eaf.pco",
+    "se": "se.pco",
+    "exceptions": "exceptions.bin",
+    "index": "native.index.json",
+    "pvalue_flag": "pvalue_flag.pco",
+    "pvalue_order": "pvalue_order.pco"
+  },
+  "logical_columns": [
+    "z",
+    "standard_error",
+    "effect_allele_frequency"
+  ],
+  "derived_columns": {
+    "beta": "z * standard_error",
+    "p_value": "2 * pnorm(-abs(z))"
+  },
+  "domains": {
+    "pvalue_flag": {
+      "format": "aligned_binary_flag_v1",
+      "name": "pvalue_flag",
+      "dtype": "uint8",
+      "encoding": "one_byte_zero_or_one",
+      "row_alignment": "native.value_blocks",
+      "rows": 4000,
+      "file": "pvalue_flag.pco",
+      "threshold": 4.9999999999999998e-08,
+      "operator": "<=",
+      "source": "supplied",
+      "source_column": "p_value",
+      "source_column_present": true,
+      "supplied_rows": 4000,
+      "derived_rows": 0,
+      "fallback_rows": 0,
+      "missing_rows": 0,
+      "invalid_rows": 0,
+      "unresolved_rows": 0,
+      "hit_rows": 75,
+      "standard_default": true,
+      "writer": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 97,
+          "values": 4000
+        }
+      ]
+    },
+    "pvalue_order": {
+      "format": "aligned_exact_rank_v1",
+      "name": "pvalue_order",
+      "dtype": "uint32",
+      "encoding": "zero_non_candidate_one_based_exact_rank",
+      "row_alignment": "native.value_blocks",
+      "rows": 4000,
+      "file": "pvalue_order.pco",
+      "threshold": 0.050000000000000003,
+      "operator": "<=",
+      "source": "supplied",
+      "fallback_statistic": "exact_prepared_z_before_lossy_encoding",
+      "source_column": "p_value",
+      "source_column_present": true,
+      "source_column_alias": "canonical_p_value",
+      "supplied_rows": 4000,
+      "derived_rows": 0,
+      "fallback_rows": 0,
+      "missing_rows": 0,
+      "invalid_rows": 0,
+      "unresolved_rows": 0,
+      "hit_rows": 775,
+      "ranked_rows": 775,
+      "tie_break": "canonical_variant_key",
+      "standard_default": false,
+      "writer": {
+        "requested_workers": 1,
+        "effective_workers": 1
+      },
+      "blocks": [
+        {
+          "row_start": 0,
+          "row_stop": 4000,
+          "offset": 0,
+          "length": 1337,
+          "values": 4000
+        }
+      ]
+    }
+  },
+  "variant_storage": "self_contained_identity_key",
+  "variant_identity": {
+    "encoding": "global_position_plus_full_ref_alt_code",
+    "position_storage": "within-block delta-coded uint32",
+    "rsid": "not_stored",
+    "external_reference_required": false
+  },
+  "genome_build": "GRCh38",
+  "reference": {
+    "id": "none",
+    "build": "GRCh38",
+    "status": "not_used",
+    "external_reference_required": false
+  },
+  "preparation": {
+    "method": "prepared_input_qc_none",
+    "threads_requested": 1,
+    "row_policy": "report",
+    "strict": false,
+    "qc": "none",
+    "input_build": "GRCh38",
+    "preparation": {
+      "method": "strict_prepared_input",
+      "input_rows": 4000,
+      "rows_after_identity_safety": 4000,
+      "output_rows": 4000,
+      "selected_rows": 4000,
+      "reference_lookup": "not_used",
+      "build_conversion": "not_used",
+      "rsid_resolution": "not_used",
+      "variant_set": {
+        "selection": "full",
+        "tag": "full",
+        "method": "all_variants",
+        "input_rows": 4000,
+        "kept_rows": 4000,
+        "dropped_rows": 0,
+        "source_input_rows": 4000,
+        "identity_safety_dropped_rows": 0
+      },
+      "identity_safety": {
+        "mode": "pre_canonicalization",
+        "input_rows": 4000,
+        "kept_rows": 4000,
+        "dropped_rows": 0,
+        "dropped_unsupported_identity": 0,
+        "counts": {
+          "invalid_primary_chromosome": 0,
+          "nonfinite_coordinate": 0,
+          "noninteger_coordinate": 0,
+          "coordinate_out_of_range": 0,
+          "invalid_allele": 0,
+          "same_alleles": 0
+        },
+        "rejection_counts": {
+          "invalid_primary_chromosome": 0,
+          "nonfinite_coordinate": 0,
+          "noninteger_coordinate": 0,
+          "coordinate_out_of_range": 0,
+          "invalid_allele": 0,
+          "same_alleles": 0
+        }
+      },
+      "qc": {
+        "mode": "none",
+        "structural_qc": "bypassed",
+        "statistic_validation": "bypassed",
+        "row_level_report": false,
+        "duplicate_scan": false
+      },
+      "structural_qc": {
+        "mode": "none",
+        "bypassed": true,
+        "input_rows": 4000
+      },
+      "unsupported_identity_rows": 0,
+      "dropped_unsupported_identity": 0,
+      "unsupported_pcodec_rows": 0,
+      "dropped_unsupported_pcodec": 0,
+      "eaf": {
+        "input": {
+          "rows": 4000,
+          "present": 3975,
+          "missing": 25,
+          "invalid": 0,
+          "coverage": 0.99375000000000002,
+          "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+        },
+        "output": {
+          "rows": 4000,
+          "present": 3975,
+          "missing": 25,
+          "invalid": 0,
+          "coverage": 0.99375000000000002,
+          "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+        },
+        "missing_policy": "stored_EAF_remains_missing; no_source_EAF_imputation",
+        "predictor_imputation": {
+          "value": 0.50307997331906917,
+          "source_seed": 0.5,
+          "eaf_code": 128,
+          "rows": 25,
+          "policy": "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+        }
+      }
+    }
+  },
+  "selection": {
+    "selection": "full",
+    "tag": "full",
+    "method": "all_variants",
+    "input_rows": 4000,
+    "kept_rows": 4000,
+    "dropped_rows": 0,
+    "source_input_rows": 4000,
+    "identity_safety_dropped_rows": 0
+  },
+  "source_columns": [
+    "chromosome",
+    "base_pair_location",
+    "reference_allele",
+    "alternate_allele",
+    "effect_allele",
+    "other_allele",
+    "beta",
+    "standard_error",
+    "effect_allele_frequency",
+    "p_value"
+  ],
+  "source_columns_read": [
+    "chromosome",
+    "base_pair_location",
+    "reference_allele",
+    "alternate_allele",
+    "effect_allele",
+    "other_allele",
+    "beta",
+    "standard_error",
+    "effect_allele_frequency",
+    "p_value"
+  ],
+  "source": {
+    "kind": "data.frame",
+    "rows": 4000,
+    "sha256": "478494b6a9385e2cd6792e93177e75a47fe454f97df8e203f943f3cd83d8b9d2",
+    "columns_before": 10,
+    "columns_read": 10,
+    "projected": true,
+    "projection_elapsed_seconds": 0.00099999999999994538,
+    "read_elapsed_seconds": 0.01799999999999996,
+    "resolution": {
+      "id": "beta_se_primary_v1",
+      "beta": "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
+      "standard_error": "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
+      "z": "explicit_z_checked_against_beta_over_standard_error_or_derived",
+      "odds_ratio": "positive_OR_to_log_OR_only_when_beta_is_absent",
+      "p_value": "finite_supplied_authoritative_for_core_plus_else_derived_from_z;_never_stored",
+      "p_to_se": {
+        "enabled": false,
+        "method": "disabled_in_strict_core",
+        "rows": 0,
+        "example_rows": []
+      },
+      "beta_route": "explicit_beta_canonical",
+      "standard_error_route": "explicit_standard_error_canonical",
+      "z_source": "derived_from_beta_over_standard_error",
+      "p_value_source": "supplied_canonical_p_value"
+    },
+    "p_value": {
+      "column_present": true,
+      "source_alias": "canonical_p_value",
+      "selection_policy": "finite_supplied_authoritative_else_pre_encoding_z_fallback"
+    },
+    "eaf": {
+      "rows": 4000,
+      "present": 3975,
+      "missing": 25,
+      "invalid": 0,
+      "coverage": 0.99375000000000002,
+      "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+    }
+  },
+  "eaf_observability": {
+    "rows": 4000,
+    "present": 3975,
+    "missing": 25,
+    "invalid": 0,
+    "coverage": 0.99375000000000002,
+    "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF",
+    "eaf_missing_exception_rows": 25,
+    "eaf_invalid_exception_rows": 0,
+    "eaf_nonrepresentable_exception_rows": 25,
+    "eaf_missing_se_exception_rows": 11,
+    "eaf_missing_only_exception_rows": 14,
+    "eaf_missing_exception_density": 0.0062500000000000003,
+    "eaf_nonrepresentable_exception_density": 0.0062500000000000003,
+    "predictor_imputation": {
+      "value": 0.50307997331906917,
+      "source_seed": 0.5,
+      "eaf_code": 128,
+      "rows": 25,
+      "policy": "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+    },
+    "missing_policy": "stored_EAF_remains_missing; no_source_EAF_imputation",
+    "log": "Native Pcodec received 25 non-representable EAF value(s); the decoded EAF8 fallback predictor was used for SE quantisation on 25 row(s), while stored EAF remains missing and is not imputed.",
+    "warning": "Native Pcodec received 25 missing or invalid EAF value(s); EAF-missing flag-only exception records are expected and stored EAF is not imputed."
+  },
+  "timings": {
+    "unit": "seconds",
+    "phases": {
+      "read": 0.01799999999999996,
+      "projection": 0.00099999999999994538,
+      "statistic_resolution": 0.0010000000000000009,
+      "normalise": 0.0010000000000000009,
+      "statistic_validation": 0,
+      "identity_safety": 0,
+      "qc": 0,
+      "identity_sort": 0.0010000000000000009,
+      "selection": 0,
+      "quantisation": 0.0020000000000000018,
+      "exceptions": 0.0040000000000000036,
+      "write": 0.015000000000000013,
+      "encode": 0.017000000000000015,
+      "commit": 0.00099999999999994538
+    }
+  },
+  "metadata": {
+    "block_rows": 65536,
+    "genome_build": "GRCh38",
+    "identity": {
+      "schema": "compressor_variant_identity_v1",
+      "encoding": "global_position_plus_directed_ref_alt_substitution",
+      "position_encoding": "zero_based_global_position",
+      "substitution_encoding": "uint8_4_times_ref_plus_alt",
+      "external_reference_required": false,
+      "input_build": "GRCh38",
+      "stored_build": "GRCh38",
+      "genome_build": "GRCh38",
+      "assembly": "GRCh38",
+      "assembly_identifier": "GRCh38",
+      "chromosome_table": {
+        "id": "grch38_primary_1_22_X_Y",
+        "version": 1,
+        "chromosomes": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "20",
+          "21",
+          "22",
+          "X",
+          "Y"
+        ],
+        "lengths": [
+          248956422,
+          242193529,
+          198295559,
+          190214555,
+          181538259,
+          170805979,
+          159345973,
+          145138636,
+          138394717,
+          133797422,
+          135086622,
+          133275309,
+          114364328,
+          107043718,
+          101991189,
+          90338345,
+          83257441,
+          80373285,
+          58617616,
+          64444167,
+          46709983,
+          50818468,
+          156040895,
+          57227415
+        ],
+        "offsets": [
+          0,
+          248956422,
+          491149951,
+          689445510,
+          879660065,
+          1061198324,
+          1232004303,
+          1391350276,
+          1536488912,
+          1674883629,
+          1808681051,
+          1943767673,
+          2077042982,
+          2191407310,
+          2298451028,
+          2400442217,
+          2490780562,
+          2574038003,
+          2654411288,
+          2713028904,
+          2777473071,
+          2824183054,
+          2875001522,
+          3031042417
+        ]
+      },
+      "chromosome_table_id": "grch38_primary_1_22_X_Y",
+      "chromosome_table_version": 1,
+      "chromosome_lengths": [
+        248956422,
+        242193529,
+        198295559,
+        190214555,
+        181538259,
+        170805979,
+        159345973,
+        145138636,
+        138394717,
+        133797422,
+        135086622,
+        133275309,
+        114364328,
+        107043718,
+        101991189,
+        90338345,
+        83257441,
+        80373285,
+        58617616,
+        64444167,
+        46709983,
+        50818468,
+        156040895,
+        57227415
+      ],
+      "chromosome_offsets": [
+        0,
+        248956422,
+        491149951,
+        689445510,
+        879660065,
+        1061198324,
+        1232004303,
+        1391350276,
+        1536488912,
+        1674883629,
+        1808681051,
+        1943767673,
+        2077042982,
+        2191407310,
+        2298451028,
+        2400442217,
+        2490780562,
+        2574038003,
+        2654411288,
+        2713028904,
+        2777473071,
+        2824183054,
+        2875001522,
+        3031042417
+      ],
+      "supported_chromosomes": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "X",
+        "Y"
+      ],
+      "supported_variant_class": "biallelic A/C/G/T SNV",
+      "reference": {
+        "id": "none",
+        "build": "GRCh38",
+        "status": "not_used",
+        "external_reference_required": false
+      },
+      "chain": {
+        "required": false,
+        "status": "not_used"
+      },
+      "effect_allele_is_alt": true,
+      "other_allele_is_ref": true
+    },
+    "reference": {
+      "id": "none",
+      "build": "GRCh38",
+      "status": "not_used",
+      "external_reference_required": false
+    },
+    "preparation": {
+      "method": "prepared_input_qc_none",
+      "threads_requested": 1,
+      "row_policy": "report",
+      "strict": false,
+      "qc": "none",
+      "input_build": "GRCh38",
+      "preparation": {
+        "method": "strict_prepared_input",
+        "input_rows": 4000,
+        "rows_after_identity_safety": 4000,
+        "output_rows": 4000,
+        "selected_rows": 4000,
+        "reference_lookup": "not_used",
+        "build_conversion": "not_used",
+        "rsid_resolution": "not_used",
+        "variant_set": {
+          "selection": "full",
+          "tag": "full",
+          "method": "all_variants",
+          "input_rows": 4000,
+          "kept_rows": 4000,
+          "dropped_rows": 0,
+          "source_input_rows": 4000,
+          "identity_safety_dropped_rows": 0
+        },
+        "identity_safety": {
+          "mode": "pre_canonicalization",
+          "input_rows": 4000,
+          "kept_rows": 4000,
+          "dropped_rows": 0,
+          "dropped_unsupported_identity": 0,
+          "counts": {
+            "invalid_primary_chromosome": 0,
+            "nonfinite_coordinate": 0,
+            "noninteger_coordinate": 0,
+            "coordinate_out_of_range": 0,
+            "invalid_allele": 0,
+            "same_alleles": 0
+          },
+          "rejection_counts": {
+            "invalid_primary_chromosome": 0,
+            "nonfinite_coordinate": 0,
+            "noninteger_coordinate": 0,
+            "coordinate_out_of_range": 0,
+            "invalid_allele": 0,
+            "same_alleles": 0
+          }
+        },
+        "qc": {
+          "mode": "none",
+          "structural_qc": "bypassed",
+          "statistic_validation": "bypassed",
+          "row_level_report": false,
+          "duplicate_scan": false
+        },
+        "structural_qc": {
+          "mode": "none",
+          "bypassed": true,
+          "input_rows": 4000
+        },
+        "unsupported_identity_rows": 0,
+        "dropped_unsupported_identity": 0,
+        "unsupported_pcodec_rows": 0,
+        "dropped_unsupported_pcodec": 0,
+        "eaf": {
+          "input": {
+            "rows": 4000,
+            "present": 3975,
+            "missing": 25,
+            "invalid": 0,
+            "coverage": 0.99375000000000002,
+            "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+          },
+          "output": {
+            "rows": 4000,
+            "present": 3975,
+            "missing": 25,
+            "invalid": 0,
+            "coverage": 0.99375000000000002,
+            "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+          },
+          "missing_policy": "stored_EAF_remains_missing; no_source_EAF_imputation",
+          "predictor_imputation": {
+            "value": 0.50307997331906917,
+            "source_seed": 0.5,
+            "eaf_code": 128,
+            "rows": 25,
+            "policy": "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+          }
+        }
+      }
+    },
+    "source_columns": [
+      "chromosome",
+      "base_pair_location",
+      "reference_allele",
+      "alternate_allele",
+      "effect_allele",
+      "other_allele",
+      "beta",
+      "standard_error",
+      "effect_allele_frequency",
+      "p_value"
+    ],
+    "source_columns_read": [
+      "chromosome",
+      "base_pair_location",
+      "reference_allele",
+      "alternate_allele",
+      "effect_allele",
+      "other_allele",
+      "beta",
+      "standard_error",
+      "effect_allele_frequency",
+      "p_value"
+    ],
+    "source": {
+      "kind": "data.frame",
+      "rows": 4000,
+      "sha256": "478494b6a9385e2cd6792e93177e75a47fe454f97df8e203f943f3cd83d8b9d2",
+      "columns_before": 10,
+      "columns_read": 10,
+      "projected": true,
+      "projection_elapsed_seconds": 0.00099999999999994538,
+      "read_elapsed_seconds": 0.01799999999999996,
+      "resolution": {
+        "id": "beta_se_primary_v1",
+        "beta": "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
+        "standard_error": "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
+        "z": "explicit_z_checked_against_beta_over_standard_error_or_derived",
+        "odds_ratio": "positive_OR_to_log_OR_only_when_beta_is_absent",
+        "p_value": "finite_supplied_authoritative_for_core_plus_else_derived_from_z;_never_stored",
+        "p_to_se": {
+          "enabled": false,
+          "method": "disabled_in_strict_core",
+          "rows": 0,
+          "example_rows": []
+        },
+        "beta_route": "explicit_beta_canonical",
+        "standard_error_route": "explicit_standard_error_canonical",
+        "z_source": "derived_from_beta_over_standard_error",
+        "p_value_source": "supplied_canonical_p_value"
+      },
+      "p_value": {
+        "column_present": true,
+        "source_alias": "canonical_p_value",
+        "selection_policy": "finite_supplied_authoritative_else_pre_encoding_z_fallback"
+      },
+      "eaf": {
+        "rows": 4000,
+        "present": 3975,
+        "missing": 25,
+        "invalid": 0,
+        "coverage": 0.99375000000000002,
+        "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+      }
+    },
+    "pvalue_flag": {
+      "enabled": true,
+      "threshold": 4.9999999999999998e-08,
+      "operator": "<=",
+      "source": "finite_supplied_p_value_or_p_value_from_prepared_z",
+      "source_column_present": true,
+      "standard_default": true
+    },
+    "pvalue_order": {
+      "enabled": true,
+      "threshold": 0.050000000000000003,
+      "operator": "<=",
+      "source": "finite_supplied_p_value_or_p_value_from_exact_prepared_z",
+      "source_column_present": true,
+      "source_column_alias": "canonical_p_value",
+      "tie_break": "canonical_variant_key",
+      "standard_default": false
+    },
+    "selection_metadata": {
+      "selection": "full",
+      "tag": "full",
+      "method": "all_variants",
+      "input_rows": 4000,
+      "kept_rows": 4000,
+      "dropped_rows": 0,
+      "source_input_rows": 4000,
+      "identity_safety_dropped_rows": 0
+    },
+    "qc": "none",
+    "api": {
+      "selection": "full",
+      "store_build": "GRCh38",
+      "input_build": "GRCh38",
+      "threads": 1,
+      "row_policy": "not_applied",
+      "qc": "none"
+    }
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "position.pco": {
+        "bytes": 48,
+        "sha256": "d68d9c3afbb6e408939e25ee4d13d51b13535a2058e479c6d1a40b1d72fd64bf"
+      },
+      "substitution.pco": {
+        "bytes": 778,
+        "sha256": "da9aabbbc27f2152b020855fbdefd3b5a6fe4a1e71dc2bdf5da0eaba4cb92d9b"
+      },
+      "z.pco": {
+        "bytes": 4364,
+        "sha256": "2153b10bf43e149723eaf3a7344d8c8daaa27e3898e7cb3766ca3bfe7410ebf3"
+      },
+      "eaf.pco": {
+        "bytes": 3901,
+        "sha256": "23f1d8042ab9b5a1a329c8da3f08e5575c2a6623cdcfb6fb53468d0b96df207c"
+      },
+      "se.pco": {
+        "bytes": 2556,
+        "sha256": "97ca9611702652ada6c84b1484b378571b51603ad09a611751cd26f669191998"
+      },
+      "exceptions.bin": {
+        "bytes": 16694,
+        "sha256": "4e1497d34e1e5da119a1e520679fa2e283d57b83b7ad4298ba62664703ccf6d5"
+      },
+      "native.index.json": {
+        "bytes": 3188,
+        "sha256": "55a7e45f1be60eda68e42e590388be4657e28e094ba681766a5450128517eb8e"
+      },
+      "pvalue_flag.pco": {
+        "bytes": 97,
+        "sha256": "c5fa10c8fd894e8691c68c547ec5439b93ad756610866e1c58cbce159a6597a8"
+      },
+      "pvalue_order.pco": {
+        "bytes": 1337,
+        "sha256": "00b165e59968289d49bcdffd4280a92c34f7dfc4156e10cb8ee0f210b7b399dd"
+      }
+    },
+    "payload_sha256": "a4c6200e25b01811e7fdf18392b42781d718832889a91ea9e237e6e903a718f2",
+    "payload_definition": "sha256 over sorted relative payload paths, byte counts, and file sha256 values",
+    "canonical_sha256": "f93fc272909071f8970203646b207e9ed18b5905ca6d07f30dcea880ff911218"
+  },
+  "created_utc": "2026-10-03 13:55:49 UTC",
+  "tolerances": {
+    "eaf_abs_max": 0.0040000000000000001,
+    "z_abs_max_central": 0.0068627450980392156,
+    "se_relative_max": 0.045734148222487114,
+    "beta_error_bound": "1.02 * (abs(SE) * z_abs_max_central + abs(Z) * abs(SE) * se_relative_max)",
+    "z_central_range": [
+      -3.5,
+      3.5
+    ],
+    "se_profile": "z9/eaf8/se6",
+    "se_physical_storage": "uint8 container for semantic SE6 codes",
+    "exception_precision": "float32",
+    "exact_values_in_exception_sidecar": false
+  },
+  "input_build": "GRCh38",
+  "stored_build": "GRCh38",
+  "assembly": "GRCh38",
+  "selection_scope": "full",
+  "threads": {
+    "requested": 1,
+    "effective": 1,
+    "compression": 1,
+    "compression_writer_parallel": false
+  },
+  "row_policy": "not_applied",
+  "qc": {
+    "mode": "none",
+    "structural_qc": "bypassed",
+    "statistic_validation": "bypassed",
+    "row_level_report": false,
+    "duplicate_scan": false
+  },
+  "provenance": {
+    "input": {
+      "kind": "data.frame",
+      "rows": 4000,
+      "sha256": "478494b6a9385e2cd6792e93177e75a47fe454f97df8e203f943f3cd83d8b9d2",
+      "columns_before": 10,
+      "columns_read": 10,
+      "projected": true,
+      "projection_elapsed_seconds": 0.00099999999999994538,
+      "read_elapsed_seconds": 0.01799999999999996,
+      "resolution": {
+        "id": "beta_se_primary_v1",
+        "beta": "explicit_beta_alias_or_unambiguous_positive_or_boundary_conversion",
+        "standard_error": "explicit_standard_error_alias_or_explicit_opt_in_p_to_se",
+        "z": "explicit_z_checked_against_beta_over_standard_error_or_derived",
+        "odds_ratio": "positive_OR_to_log_OR_only_when_beta_is_absent",
+        "p_value": "finite_supplied_authoritative_for_core_plus_else_derived_from_z;_never_stored",
+        "p_to_se": {
+          "enabled": false,
+          "method": "disabled_in_strict_core",
+          "rows": 0,
+          "example_rows": []
+        },
+        "beta_route": "explicit_beta_canonical",
+        "standard_error_route": "explicit_standard_error_canonical",
+        "z_source": "derived_from_beta_over_standard_error",
+        "p_value_source": "supplied_canonical_p_value"
+      },
+      "p_value": {
+        "column_present": true,
+        "source_alias": "canonical_p_value",
+        "selection_policy": "finite_supplied_authoritative_else_pre_encoding_z_fallback"
+      },
+      "eaf": {
+        "rows": 4000,
+        "present": 3975,
+        "missing": 25,
+        "invalid": 0,
+        "coverage": 0.99375000000000002,
+        "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+      }
+    },
+    "input_build": "GRCh38",
+    "stored_build": "GRCh38",
+    "reference": {
+      "status": "not_used"
+    },
+    "chain": {
+      "status": "not_used"
+    },
+    "panel": {
+      "selection": "full",
+      "tag": "full",
+      "method": "all_variants",
+      "input_rows": 4000,
+      "kept_rows": 4000,
+      "dropped_rows": 0,
+      "source_input_rows": 4000,
+      "identity_safety_dropped_rows": 0
+    },
+    "preparation": {
+      "method": "strict_prepared_input",
+      "input_rows": 4000,
+      "rows_after_identity_safety": 4000,
+      "output_rows": 4000,
+      "selected_rows": 4000,
+      "reference_lookup": "not_used",
+      "build_conversion": "not_used",
+      "rsid_resolution": "not_used",
+      "variant_set": {
+        "selection": "full",
+        "tag": "full",
+        "method": "all_variants",
+        "input_rows": 4000,
+        "kept_rows": 4000,
+        "dropped_rows": 0,
+        "source_input_rows": 4000,
+        "identity_safety_dropped_rows": 0
+      },
+      "identity_safety": {
+        "mode": "pre_canonicalization",
+        "input_rows": 4000,
+        "kept_rows": 4000,
+        "dropped_rows": 0,
+        "dropped_unsupported_identity": 0,
+        "counts": {
+          "invalid_primary_chromosome": 0,
+          "nonfinite_coordinate": 0,
+          "noninteger_coordinate": 0,
+          "coordinate_out_of_range": 0,
+          "invalid_allele": 0,
+          "same_alleles": 0
+        },
+        "rejection_counts": {
+          "invalid_primary_chromosome": 0,
+          "nonfinite_coordinate": 0,
+          "noninteger_coordinate": 0,
+          "coordinate_out_of_range": 0,
+          "invalid_allele": 0,
+          "same_alleles": 0
+        }
+      },
+      "qc": {
+        "mode": "none",
+        "structural_qc": "bypassed",
+        "statistic_validation": "bypassed",
+        "row_level_report": false,
+        "duplicate_scan": false
+      },
+      "structural_qc": {
+        "mode": "none",
+        "bypassed": true,
+        "input_rows": 4000
+      },
+      "unsupported_identity_rows": 0,
+      "dropped_unsupported_identity": 0,
+      "unsupported_pcodec_rows": 0,
+      "dropped_unsupported_pcodec": 0,
+      "eaf": {
+        "input": {
+          "rows": 4000,
+          "present": 3975,
+          "missing": 25,
+          "invalid": 0,
+          "coverage": 0.99375000000000002,
+          "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+        },
+        "output": {
+          "rows": 4000,
+          "present": 3975,
+          "missing": 25,
+          "invalid": 0,
+          "coverage": 0.99375000000000002,
+          "definition": "present means finite EAF in [0, 1]; missing is non-finite EAF"
+        },
+        "missing_policy": "stored_EAF_remains_missing; no_source_EAF_imputation",
+        "predictor_imputation": {
+          "value": 0.50307997331906917,
+          "source_seed": 0.5,
+          "eaf_code": 128,
+          "rows": 25,
+          "policy": "decode_EAF8_seed_for_internal_SE_quantisation_only; stored_EAF_remains_missing"
+        }
+      }
+    },
+    "build_info": {
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+      "rust_version_required": "1.87.0",
+      "cargo_lock_sha256": "5678899e4f8e682e2fe2a0642bd97b90a8c6fe8567e98f39c194dc128670aad1",
+      "vendored": "true",
+      "target": "aarch64-apple-darwin"
+    }
+  }
+}

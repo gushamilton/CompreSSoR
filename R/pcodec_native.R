@@ -4,15 +4,24 @@
 ## deliberately has a new format version: the upstream C ABI does not expose
 ## the wrapped FileCompressor API used by the older Python-backed stores.
 
-PCODEC_NATIVE_FORMAT <- "0.4.5-pcodec-native"
+# 0.4.6 records the semantic Z/SE profile (bit widths, counts and sentinels)
+# in full; earlier 0.4.x stores are all Z9/EAF8/SE6. The version bump makes
+# releases that only know Z9/SE6 refuse newer stores instead of misreading a
+# wider Z stream.
+PCODEC_NATIVE_FORMAT <- "0.4.6-pcodec-native"
 PCODEC_NATIVE_SUPPORTED_FORMATS <- c("0.4.0-pcodec-native", "0.4.1-pcodec-native",
                                      "0.4.2-pcodec-native", "0.4.3-pcodec-native",
-                                     "0.4.4-pcodec-native", PCODEC_NATIVE_FORMAT)
+                                     "0.4.4-pcodec-native", "0.4.5-pcodec-native",
+                                     PCODEC_NATIVE_FORMAT)
 PCODEC_NATIVE_BLOCK_ROWS <- 65536L
 PCODEC_NATIVE_KEY_BLOCK_ROWS <- 131072L
 PCODEC_NATIVE_SE_CENTER_ROWS <- 65536L
 PCODEC_NATIVE_PAGE_ROWS <- 131072L
 PCODEC_NATIVE_LEVEL <- 8L
+# Legacy Z9/EAF8/SE6 constants. Stores written before semantic profiles became
+# selectable (formats up to 0.4.5, CompreSSoR <= 0.6.0) use these
+# values, and readers fall back to them only when an older manifest omits a
+# field. New stores record every count and range in `semantic_codec`.
 PCODEC_NATIVE_SE_PROFILE <- "z9/eaf8/se6"
 PCODEC_NATIVE_SE_BITS <- 6L
 PCODEC_NATIVE_SE_COUNT <- 62L
@@ -22,6 +31,12 @@ PCODEC_NATIVE_SE_PHYSICAL_DTYPE <- "uint8"
 PCODEC_NATIVE_SE_PHYSICAL_BITS <- 8L
 PCODEC_NATIVE_SE_RESIDUAL_RANGE <- c(-1, 1)
 PCODEC_NATIVE_CODEC_NAME <- "pcodec_native_standalone_z9_eaf8_se6_zstd_exceptions"
+PCODEC_NATIVE_Z_BITS_LEGACY <- 9L
+PCODEC_NATIVE_Z_RANGE <- c(-3.5, 3.5)
+# The profile new stores are written with. Z and SE bit widths are selectable
+# internally (see pcodec_native_profile()); the public API keeps one
+# "standard" profile.
+PCODEC_NATIVE_DEFAULT_PROFILE <- "z10/eaf8/se8+xse"
 PCODEC_NATIVE_EAF_COUNT <- 255L
 PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED <- 0.5
 PCODEC_NATIVE_MISSING_EAF_CODE <- as.integer(round(
@@ -179,7 +194,67 @@ pcodec_native_bin_code <- function(x, lower, step, count) {
   pmin(as.integer(count) - 1L, pmax(0L, as.integer(floor((x - lower) / step))))
 }
 
-pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_ROWS) {
+# Semantic quantisation profile "z<Z>/eaf8/se<S>". Z codes are central bins
+# 0..z_count-1 over z_range, z_count = missing, z_count + 1 = exception (uint16
+# stream); SE codes likewise over the log2 residual range (uint8 stream).
+pcodec_native_profile <- function(name = NULL) {
+  name <- name %||% getOption("CompreSSoR.native_profile", PCODEC_NATIVE_DEFAULT_PROFILE)
+  if (length(name) != 1L || !is.character(name) || is.na(name)) {
+    stop("native Pcodec profile must be one string", call. = FALSE)
+  }
+  parts <- regmatches(name, regexec("^z([0-9]+)/eaf8/se([0-9]+)(\\+xse)?$", name))[[1L]]
+  if (length(parts) != 4L) {
+    stop("unknown native Pcodec profile: ", name, call. = FALSE)
+  }
+  # "+xse": rows that already carry an exact Z exception record (|Z| >= 3.5)
+  # also take SE from that record (flag 2) instead of the SE code. The record
+  # holds float32 log2(SE) for every exception row anyway, so this costs no
+  # extra record; readers of any 0.4.x version honour the flag.
+  exception_se <- if (nzchar(parts[4L])) "exact" else "quantised"
+  z_bits <- as.integer(parts[2L])
+  se_bits <- as.integer(parts[3L])
+  if (z_bits < 9L || z_bits > 12L || se_bits < 6L || se_bits > 8L) {
+    stop("native Pcodec profiles support Z 9-12 bits and SE 6-8 bits", call. = FALSE)
+  }
+  z_count <- as.integer(2^z_bits - 2L)
+  se_count <- as.integer(2^se_bits - 2L)
+  list(
+    name = name, z_bits = z_bits, se_bits = se_bits, eaf_bits = 8L,
+    z_count = z_count, z_missing = z_count, z_exception = z_count + 1L,
+    z_range = PCODEC_NATIVE_Z_RANGE,
+    se_count = se_count, se_missing = se_count, se_exception = se_count + 1L,
+    se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
+    eaf_count = PCODEC_NATIVE_EAF_COUNT, exception_se = exception_se,
+    codec_name = sprintf("pcodec_native_standalone_z%d_eaf8_se%d%s_zstd_exceptions",
+                         z_bits, se_bits,
+                         if (identical(exception_se, "exact")) "_xse" else "")
+  )
+}
+
+# Semantic counts and ranges of an opened store. Every field is read from the
+# manifest; the legacy Z9/SE6 values are used only when an older manifest
+# omits one (those stores were all written with them).
+pcodec_native_semantic_params <- function(semantic) {
+  semantic <- semantic %||% list()
+  z_bits <- as.integer(semantic$z_bits %||% PCODEC_NATIVE_Z_BITS_LEGACY)
+  se_bits <- as.integer(semantic$se_bits %||% PCODEC_NATIVE_SE_BITS)
+  eaf_bits <- as.integer(semantic$eaf_bits %||% 8L)
+  list(
+    z_bits = z_bits, se_bits = se_bits, eaf_bits = eaf_bits,
+    z_count = as.integer(semantic$z_count %||% (2^z_bits - 2L)),
+    se_count = as.integer(semantic$se_count %||%
+                            if (is.null(semantic$se_bits)) PCODEC_NATIVE_SE_COUNT
+                            else 2^se_bits - 2L),
+    eaf_count = as.integer(semantic$eaf_count %||% PCODEC_NATIVE_EAF_COUNT),
+    z_range = as.numeric(unlist(semantic$z_range %||% PCODEC_NATIVE_Z_RANGE)),
+    se_range = as.numeric(unlist(semantic$se_residual_range %||%
+                                   PCODEC_NATIVE_SE_RESIDUAL_RANGE))
+  )
+}
+
+pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_ROWS,
+                                   profile = pcodec_native_profile()) {
+  if (is.character(profile)) profile <- pcodec_native_profile(profile)
   n <- nrow(data)
   z <- as.numeric(data$z)
   se <- as.numeric(data$standard_error)
@@ -202,11 +277,11 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   eaf_predictor <- ifelse(valid_eaf, eaf_decoded,
                           PCODEC_NATIVE_MISSING_EAF_PREDICTOR)
 
-  z_min <- -3.5
-  z_max <- 3.5
-  z_count <- 510L
-  z_missing <- 510L
-  z_exception <- 511L
+  z_min <- profile$z_range[1]
+  z_max <- profile$z_range[2]
+  z_count <- profile$z_count
+  z_missing <- profile$z_missing
+  z_exception <- profile$z_exception
   z_step <- (z_max - z_min) / z_count
   z_valid <- is.finite(z)
   z_central <- z_valid & z >= z_min & z < z_max
@@ -215,7 +290,8 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   # (z - z_min) / z_step can round to exactly z_count in double precision:
   # nextafter(3.5, 0) = 3.4999999999999996, which is what 0.0875 / 0.025
   # evaluates to, gives 510. Unclamped, that is the missing sentinel, no
-  # exception record is made and the value is lost. Keep it in bin 509.
+  # exception record is made and the value is lost. Keep it in the last
+  # central bin (509 for Z9).
   z_codes[z_central] <- pcodec_native_bin_code(z[z_central], z_min, z_step, z_count)
   z_codes[!z_central & z_valid] <- z_exception
 
@@ -226,14 +302,13 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   residual[residual_ready] <- log2(se[residual_ready]) +
     0.5 * log2(2 * safe_eaf_for_se[residual_ready] *
                  (1 - safe_eaf_for_se[residual_ready]))
-  # The stream is physically uint8, but the public semantic domain is SE6:
-  # 62 central bins plus missing and exact-exception sentinels. The byte
-  # container is intentional and must not be described as an SE8 profile.
-  se_count <- PCODEC_NATIVE_SE_COUNT
-  se_missing <- PCODEC_NATIVE_SE_MISSING_CODE
-  se_exception <- PCODEC_NATIVE_SE_EXCEPTION_CODE
-  se_min <- PCODEC_NATIVE_SE_RESIDUAL_RANGE[1]
-  se_max <- PCODEC_NATIVE_SE_RESIDUAL_RANGE[2]
+  # The stream is physically uint8; the semantic domain is SE<se_bits>:
+  # 2^se_bits - 2 central bins plus missing and exact-exception sentinels.
+  se_count <- profile$se_count
+  se_missing <- profile$se_missing
+  se_exception <- profile$se_exception
+  se_min <- profile$se_residual_range[1]
+  se_max <- profile$se_residual_range[2]
   se_step <- (se_max - se_min) / se_count
   se_codes <- rep.int(se_missing, n)
   centres <- numeric(if (n) ceiling(n / block_rows) else 0L)
@@ -258,6 +333,9 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
   }
 
   z_exception_mask <- !z_central & z_valid
+  if (identical(profile$exception_se, "exact")) {
+    se_codes[z_exception_mask & valid_se] <- se_exception
+  }
   se_exception_mask <- se_codes == se_exception
   exception_mask <- z_exception_mask | se_exception_mask | !valid_eaf
   rows <- which(exception_mask) - 1L
@@ -668,7 +746,8 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   identity_seconds <- phase_seconds(identity_started)
   encode_started <- phase_clock()
   quantisation_started <- phase_clock()
-  values <- pcodec_native_quantise(ordered)
+  profile <- pcodec_native_profile(metadata$semantic_profile)
+  values <- pcodec_native_quantise(ordered, profile = profile)
   quantisation_seconds <- phase_seconds(quantisation_started)
   n <- nrow(ordered)
   exceptions_started <- phase_clock()
@@ -926,12 +1005,16 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
     writer = writer_metadata,
     identity = identity,
     semantic_codec = list(
-      name = PCODEC_NATIVE_SE_PROFILE, z_bits = 9L, eaf_bits = 8L,
-      se_bits = PCODEC_NATIVE_SE_BITS, z_range = c(-3.5, 3.5),
-      se_count = PCODEC_NATIVE_SE_COUNT,
-      se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
-      se_missing = PCODEC_NATIVE_SE_MISSING_CODE,
-      se_exception = PCODEC_NATIVE_SE_EXCEPTION_CODE,
+      name = profile$name, z_bits = profile$z_bits, eaf_bits = profile$eaf_bits,
+      se_bits = profile$se_bits, z_range = profile$z_range,
+      z_count = profile$z_count, z_missing = profile$z_missing,
+      z_exception = profile$z_exception,
+      eaf_count = profile$eaf_count,
+      exception_se = profile$exception_se,
+      se_count = profile$se_count,
+      se_residual_range = profile$se_residual_range,
+      se_missing = profile$se_missing,
+      se_exception = profile$se_exception,
       se_physical_dtype = PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
       se_physical_bits = PCODEC_NATIVE_SE_PHYSICAL_BITS,
       se_center_block_rows = PCODEC_NATIVE_SE_CENTER_ROWS,
@@ -946,15 +1029,15 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
       p_value = "derived as 2 * pnorm(-abs(z))"
     ),
     codec = list(
-      name = PCODEC_NATIVE_CODEC_NAME,
+      name = profile$codec_name,
       library = "pcodec", pco_version = "1.0.3", abi = "standalone",
       page_rows = PCODEC_NATIVE_PAGE_ROWS,
       compression = paste0("Pcodec standalone streams; ", key_block_rows,
                            "-row key frames and ", block_rows, "-row value frames"),
-      z_bits = 9L, eaf_bits = 8L, se_bits = PCODEC_NATIVE_SE_BITS,
+      z_bits = profile$z_bits, eaf_bits = profile$eaf_bits, se_bits = profile$se_bits,
       se_physical_dtype = PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
       se_physical_bits = PCODEC_NATIVE_SE_PHYSICAL_BITS,
-      se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
+      se_residual_range = profile$se_residual_range,
       p_storage = "omitted; derived from z",
       beta_storage = "omitted; derived from z and standard_error",
       exception_storage = "zstd level 19, 17-byte float32 records"
@@ -997,13 +1080,15 @@ pcodec_native_write_store <- function(data, output, metadata = list()) {
   )
   manifest$created_utc <- now_utc()
 manifest$tolerances <- list(
-    eaf_abs_max = 0.004, z_abs_max_central = 7 / (2 * (2^9 - 2)),
-    se_relative_max = 2^(4 / PCODEC_NATIVE_SE_COUNT) - 1,
+    eaf_abs_max = 0.004,
+    z_abs_max_central = diff(profile$z_range) / (2 * profile$z_count),
+    se_relative_max = 2^(diff(profile$se_residual_range) * 2 / profile$se_count) - 1,
     beta_error_bound = "1.02 * (abs(SE) * z_abs_max_central + abs(Z) * abs(SE) * se_relative_max)",
-    z_central_range = c(-3.5, 3.5),
-    se_profile = PCODEC_NATIVE_SE_PROFILE,
+    z_central_range = profile$z_range,
+    se_profile = profile$name,
     se_physical_storage = paste0(PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
-                                  " container for semantic SE6 codes"),
+                                  " container for semantic SE", profile$se_bits,
+                                  " codes"),
     exception_precision = "float32", exact_values_in_exception_sidecar = FALSE
   )
   write_manifest(manifest, file.path(output, "manifest.json"))
@@ -1549,7 +1634,8 @@ pcodec_native_block_matrix <- function(blocks, stream_blocks = blocks,
 
 pcodec_native_validate_code_domains <- function(codes, streams, semantic,
                                                 identity = list()) {
-  z_count <- as.integer(semantic$z_count %||% 510L)
+  params <- pcodec_native_semantic_params(semantic)
+  z_count <- params$z_count
   se_count <- as.integer(semantic$se_count %||%
                            (2^as.integer(semantic$se_bits %||% 8L) - 2L))
   eaf_count <- as.integer(semantic$eaf_count %||%
@@ -1680,14 +1766,15 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   threads <- pcodec_validate_threads(threads)
   n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
   semantic <- store$manifest$semantic_codec %||% list()
-  z_count <- as.integer(semantic$z_count %||% 510L)
-  se_count <- as.integer(semantic$se_count %||% PCODEC_NATIVE_SE_COUNT)
-  eaf_count <- as.integer(semantic$eaf_count %||% 255L)
-  z_bits <- as.integer(semantic$z_bits %||% 9L)
-  se_bits <- as.integer(semantic$se_bits %||% PCODEC_NATIVE_SE_BITS)
-  eaf_bits <- as.integer(semantic$eaf_bits %||% 8L)
-  z_range <- as.numeric(unlist(semantic$z_range %||% c(-3.5, 3.5)))
-  se_range <- as.numeric(unlist(semantic$se_residual_range %||% c(-1, 1)))
+  params <- pcodec_native_semantic_params(semantic)
+  z_count <- params$z_count
+  se_count <- params$se_count
+  eaf_count <- params$eaf_count
+  z_bits <- params$z_bits
+  se_bits <- params$se_bits
+  eaf_bits <- params$eaf_bits
+  z_range <- params$z_range
+  se_range <- params$se_range
   needed <- unique(c(if (need_z) "z", if (need_se) "se", if (need_eaf) "eaf"))
   if (need_se) needed <- unique(c(needed, "eaf"))
   streams <- unique(c(needed, if (need_identity) c("position", "substitution")))
@@ -1864,17 +1951,19 @@ pcodec_native_decode_values <- function(codes, exceptions, centre_id, centres,
                                          row_start, n, needed,
                                          semantic_codec = list()) {
   output <- list()
-  z_count <- as.integer(semantic_codec$z_count %||% 510L)
-  eaf_count <- as.integer(semantic_codec$eaf_count %||% 255L)
-  se_count <- as.integer(semantic_codec$se_count %||% PCODEC_NATIVE_SE_COUNT)
-  se_range <- as.numeric(unlist(semantic_codec$se_residual_range %||% c(-1, 1)))
+  params <- pcodec_native_semantic_params(semantic_codec)
+  z_count <- params$z_count
+  eaf_count <- params$eaf_count
+  se_count <- params$se_count
+  se_range <- params$se_range
+  z_range <- params$z_range
   if (length(se_range) != 2L || !all(is.finite(se_range)) || se_range[2] <= se_range[1]) {
     stop("invalid native semantic SE residual range", call. = FALSE)
   }
   if ("z" %in% needed) {
     z <- rep(NA_real_, n)
     ok <- codes$z >= 0L & codes$z < z_count
-    z[ok] <- -3.5 + (codes$z[ok] + 0.5) * (7 / z_count)
+    z[ok] <- z_range[1] + (codes$z[ok] + 0.5) * (diff(z_range) / z_count)
     output$z <- z
   }
   if ("eaf" %in% needed || "se" %in% needed) {

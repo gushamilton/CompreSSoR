@@ -169,7 +169,7 @@ write_selection_regions <- function(output, selection) {
 #'   SNPs for `selection = "pvalue_regions"` or `selection = "core_plus"`.
 #'   The default is 10,000 bp; the threshold and window are recorded in the
 #'   manifest and larger windows remain available by setting this explicitly.
-#' @param profile `"standard"` uses semantic Z9/EAF8/SE6 streams with sparse
+#' @param profile `"standard"` uses semantic Z10/EAF8/SE8 streams with sparse
 #'   float32 exceptions; `"exact"` is available with the Parquet backend. P and
 #'   beta are derived rather than stored.
 #' @param backend Storage backend. The default, `"pcodec"`, is the compact

@@ -112,6 +112,10 @@ ingest_expected <- data.frame(
 ingest_store_hashes <- function(data, qc) {
   path <- tempfile("ingest-fastpath-", fileext = ".cpr")
   on.exit(unlink(path, recursive = TRUE), add = TRUE)
+  # The pinned payload hashes were recorded with the Z9/SE6 profile; the
+  # ingest paths under test are independent of the quantisation profile.
+  old <- options(CompreSSoR.native_profile = "z9/eaf8/se6")
+  on.exit(options(old), add = TRUE)
   store <- suppressWarnings(compress_sumstats(data, path, qc = qc, overwrite = TRUE, pvalue_order = FALSE,
                                               threads = 2L))
   list(rows = store$manifest$n_rows,

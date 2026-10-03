@@ -13,14 +13,18 @@ source of truth rather than resurrecting archived experiments.
 
 ## Current implementation
 
-- The current writer is native Pcodec format `0.4.5-pcodec-native`.
+- The current writer is native Pcodec format `0.4.6-pcodec-native`.
 - The store is self-contained: its identity is the GRCh38 global position plus
   directed REF→ALT substitution code. It does not depend on a shared spine or
   external reference when being read.
-- The standard streams are position, substitution, semantic Z9, arcsine EAF8,
-  semantic SE6, and Zstandard-compressed exceptions. SE6 is carried in a
-  physical `uint8` stream; the physical byte container is not an SE8 semantic
-  profile. `beta` and `p` are
+- The standard streams are position, substitution, semantic Z10, arcsine EAF8,
+  semantic SE8, and Zstandard-compressed exceptions (default profile
+  `z10/eaf8/se8+xse`; `+xse` means rows with a Z exception record, |Z| >= 3.5,
+  also take SE from that record). Z and SE bit widths are recorded in the manifest and every
+  reader takes them from there; stores written before 0.4.6 are Z9/EAF8/SE6
+  and decode unchanged (see `tests/testthat/test-legacy-store.R`). The internal
+  option `CompreSSoR.native_profile` (e.g. `"z9/eaf8/se6"`) selects another
+  profile for benchmarking or legacy-compatible writes. `beta` and `p` are
   reconstructed on demand.
 - The normal ingestion path is import/QC/harmonisation/liftover to GRCh38,
   followed by compression. The current identity path supports biallelic A/C/G/T

@@ -48,24 +48,60 @@ test_that("the Pcodec quantiser keeps every finite Z at the boundary", {
          next_down(-3.5), 0.0875 / 0.025, 0.0574 / 0.0164)
   data <- data.frame(z = z, standard_error = rep(0.02, length(z)),
                      effect_allele_frequency = rep(0.3, length(z)))
-  q <- CompreSSoR:::pcodec_native_quantise(data)
-  expect_false(any(q$z == 510L))
-  expect_identical(q$z, c(511L, 509L, 511L, 0L, 0L, 511L, 509L, 509L))
+  for (name in c("z9/eaf8/se6", "z10/eaf8/se8", "z12/eaf8/se7")) {
+    profile <- CompreSSoR:::pcodec_native_profile(name)
+    last <- profile$z_count - 1L
+    exc <- profile$z_exception
+    q <- CompreSSoR:::pcodec_native_quantise(data, profile = profile)
+    expect_false(any(q$z == profile$z_missing))
+    expect_identical(q$z, c(exc, last, exc, 0L, 0L, exc, last, last))
+    expect_identical(q$exceptions$row, c(0L, 2L, 5L))
+    expect_identical(q$exceptions$flags, c(1L, 1L, 1L))
+  }
+  # "+xse" also flags SE on those rows, so SE comes from the exact record.
+  q <- CompreSSoR:::pcodec_native_quantise(data, profile = "z10/eaf8/se8+xse")
   expect_identical(q$exceptions$row, c(0L, 2L, 5L))
-  expect_identical(q$exceptions$flags, c(1L, 1L, 1L))
+  expect_identical(q$exceptions$flags, c(3L, 3L, 3L))
+  expect_identical(q$se[c(1L, 3L, 6L)], rep(255L, 3L))
+  # The legacy profile keeps its historical codes.
+  q <- CompreSSoR:::pcodec_native_quantise(data, profile = "z9/eaf8/se6")
+  expect_identical(q$z, c(511L, 509L, 511L, 0L, 0L, 511L, 509L, 509L))
 })
 
+# SE residual delta of the third row in the one-block quantiser input below,
+# computed exactly as pcodec_native_quantise() does (EAF 0.5 is decoded
+# through its EAF8 code before it enters the residual).
+se_boundary_delta <- function(se) {
+  count <- CompreSSoR:::PCODEC_NATIVE_EAF_COUNT
+  code <- as.integer(round(count * (2 / pi) * asin(sqrt(0.5))))
+  eaf <- sin(pi * code / (2 * count))^2
+  eaf <- pmin(1 - 1e-12, pmax(1e-12, eaf))
+  residual <- log2(se) + 0.5 * log2(2 * eaf * (1 - eaf))
+  residual[3L] - stats::median(residual)
+}
+
 test_that("the Pcodec quantiser keeps SE residuals at the bin boundary", {
-  # One SE-centre block whose median residual is the middle row. With these
-  # values the third row's residual delta is the double just below +1, the
-  # upper end of the SE range, and the unclamped bin formula gives 62: the SE
-  # missing sentinel.
-  se <- c(0.7071 / 4, 0.7071, 1.4142)
+  # One SE-centre block whose median residual is the middle row. The third
+  # row is chosen so that its residual delta is a double just below +1, the
+  # upper end of the SE range, where the unclamped bin formula can give the
+  # SE missing sentinel. Which SE gives that delta depends on the platform's
+  # log2(), so it is searched for rather than hard-coded.
+  base <- c(0.7071 / 4, 0.7071, 1.4142)
+  candidates <- base[3L] * (1 + seq(-64, 64) * .Machine$double.eps)
+  deltas <- vapply(candidates, function(x) se_boundary_delta(c(base[1:2], x)),
+                   numeric(1))
+  near <- which(deltas < 1 & deltas >= 1 - 4 * .Machine$double.eps)
+  skip_if(!length(near), "no SE within 64 ulp gives a residual just below 1")
+  se <- c(base[1:2], candidates[near[length(near)]])
   data <- data.frame(z = c(0, 0, 0), standard_error = se,
                      effect_allele_frequency = rep(0.5, 3L))
-  q <- CompreSSoR:::pcodec_native_quantise(data)
-  expect_false(any(q$se == CompreSSoR:::PCODEC_NATIVE_SE_MISSING_CODE))
-  expect_identical(q$se[3L], CompreSSoR:::PCODEC_NATIVE_SE_COUNT - 1L)
+  for (name in c("z9/eaf8/se6", "z9/eaf8/se7", "z10/eaf8/se8")) {
+    profile <- CompreSSoR:::pcodec_native_profile(name)
+    q <- CompreSSoR:::pcodec_native_quantise(data, profile = profile)
+    expect_false(any(q$se == profile$se_missing))
+    expect_identical(q$se[3L], profile$se_count - 1L)
+    expect_false(2L %in% q$exceptions$row)
+  }
 
   skip_if_not(CompreSSoR:::pcodec_native_available(),
               "native Pcodec backend is not built")

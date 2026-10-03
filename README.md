@@ -34,7 +34,11 @@ The locked storage contract is documented in
 | Parquet q9 | 69.48 MB | 1.410 s |
 | TSV.gz | 135.39 MB | 4.955 s |
 
-The Pcodec store is 3.56× smaller than TSV.gz. The authoritative records and
+The Pcodec store is 3.56× smaller than TSV.gz. That row was measured with
+the earlier Z9/EAF8/SE6 profile; the current default (`z10/eaf8/se8+xse`,
+format 0.4.6) makes the same 10M-row store 9.2% larger (42.65 MB vs
+39.06 MB with the p-value domains, same machine and settings), with an
+unchanged read time. The authoritative records and
 the archive policy are in [`benchmarks/`](benchmarks/README.md); older plots
 and benchmark families are under
 [`inst/benchmarks/archive/legacy-20260804/`](inst/benchmarks/archive/legacy-20260804/).
@@ -302,11 +306,14 @@ Recommendation: exact clumping uses `strategy = "exact_order"` with
 approximation; for thresholds other than the stored ones use the regional or
 full-read workflow.
 
-Measured quantisation error of the standard Z9/EAF8/SE6 profile (2M-row
-synthetic check): SE relative error max 1.12%; central-bin Z absolute error
-<= 0.0069 (rows with |Z| >= 3.5 are exact float32); EAF absolute error
-<= 0.0031. Downstream MR effect (fastMR benchmark): median 0.005 SE, max
-0.033 SE. Steiger r2 is derived from EAF and so is least reliable for rare
+Measured quantisation error of the standard Z10/EAF8/SE8 profile
+(`z10/eaf8/se8+xse`, FinnGen 10M rows and two simulated traits): SE relative
+error max 0.27%; central-bin Z absolute error <= 0.0034; rows with
+|Z| >= 3.5 have exact float32 Z and SE; EAF absolute error <= 0.0031.
+Downstream MR effect (fastMR, 10 exposures x 10 outcomes, `.cpr` vs exact
+TSV): IVW median 0.0015 SE, max 0.009 SE. Stores written before format 0.4.6
+use Z9/EAF8/SE6 (SE error max 1.12%, Z error <= 0.0069) and remain readable.
+Steiger r2 is derived from EAF and so is least reliable for rare
 variants (about 8% relative EAF error at the rare end); use source data when
 Steiger filtering depends on rare variants.
 
