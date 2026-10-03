@@ -19,7 +19,10 @@ read_sumstats(store, region = NULL, variants = NULL, columns = NULL,
   reader performs indexed stream scans and block decompression in C++; the
   regional, canonical-key and fallback paths use Unix worker processes. Set
   \code{threads} explicitly, or use \code{options(CompreSSoR.pcodec.threads = n)}
-  for the non-native paths. Windows remains serial.}
+  for the non-native paths. When \code{threads} is \code{NULL}, whole-store
+  reads use four threads, canonical-key and row-ID reads use one thread per
+  key block they touch (at most four, and one when at most two blocks are
+  touched), and region reads use one thread. Windows remains serial.}
 }
 \value{A data frame with ordinary summary-statistics columns.}
 \examples{

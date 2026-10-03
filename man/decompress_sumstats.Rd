@@ -14,8 +14,10 @@ decompress_sumstats(store, region = NULL, variants = NULL, columns = NULL,
   \item{columns}{Optional output columns to return.}
   \item{use_cache}{Use an existing q8 cache for a regional read when available.}
   \item{threads}{Number of Unix worker processes for independent Pcodec
-  stream/block reads. \code{NULL} selects four workers for whole-store reads
-  and one worker for regional or canonical-key reads. Set \code{threads}
+  stream/block reads. \code{NULL} selects four workers for whole-store reads,
+  one thread per touched key block (at most four, and one when at most two
+  blocks are touched) for canonical-key and row-ID reads, and one worker for
+  regional reads. Set \code{threads}
   explicitly, or use \code{options(CompreSSoR.pcodec.threads = n)}. Windows
   remains serial.}
 }
