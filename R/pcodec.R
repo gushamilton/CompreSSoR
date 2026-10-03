@@ -44,6 +44,54 @@ pcodec_canonical_manifest_sha256 <- function(manifest) {
   digest::digest(payload, algo = "sha256", serialize = FALSE)
 }
 
+# The form a manifest takes after write_manifest() and read_manifest(), as far
+# as serialization is concerned: jsonlite pretty-prints an atomic vector of
+# length other than one on a single line but the list it reads back one
+# element per line, so atomic vectors become unnamed lists of scalars. Length-
+# one values and lists of scalars serialize the same either way. Anything
+# else (data frames, factors, classed or dimensioned values, vectors holding
+# NA/NaN/Inf) takes a real JSON round trip, so write_manifest() of the result
+# produces exactly the bytes of the former write/read_json/re-write sequence.
+manifest_json_normalise <- function(x) {
+  if (is.null(x)) return(x)
+  attribute_names <- names(attributes(x))
+  plain <- !length(setdiff(attribute_names, "names"))
+  if (is.list(x)) {
+    if (!plain) return(manifest_json_round_trip(x))
+    return(lapply(x, manifest_json_normalise))
+  }
+  if (is.atomic(x) && plain) {
+    if (length(x) == 1L) return(x)
+    if (anyNA(x) || (is.double(x) && any(is.infinite(x)))) {
+      return(manifest_json_round_trip(x))
+    }
+    return(as.list(unname(x)))
+  }
+  manifest_json_round_trip(x)
+}
+
+manifest_json_round_trip <- function(x) {
+  jsonlite::parse_json(jsonlite::toJSON(x, auto_unbox = TRUE, null = "null", digits = 17),
+                       simplifyVector = FALSE)
+}
+
+# The sealing step of seal_pcodec_manifest() on an in-memory manifest.
+pcodec_seal_manifest_value <- function(manifest) {
+  if (!is.null(manifest$integrity$files) &&
+      !is.null(manifest$integrity$payload_sha256)) {
+    manifest$integrity$canonical_sha256 <- pcodec_canonical_manifest_sha256(manifest)
+  }
+  manifest
+}
+
+# Write an already-sealed manifest and its manifest.sha256 record.
+write_pcodec_manifest <- function(manifest, path) {
+  write_manifest(manifest, path)
+  checksum <- digest::digest(path, algo = "sha256", file = TRUE)
+  writeLines(checksum, pcodec_manifest_checksum_path(path), useBytes = TRUE)
+  invisible(checksum)
+}
+
 seal_pcodec_manifest <- function(path) {
   manifest <- read_manifest(path)
   if (!is.null(manifest$integrity$files) &&
@@ -83,7 +131,8 @@ pcodec_open_store_cached <- function(store) {
   open_compressor(store)
 }
 
-pcodec_write_store <- function(data, output, metadata = list()) {
+pcodec_write_store <- function(data, output, metadata = list(), eaf_coverage = NULL,
+                               finalize = TRUE) {
   required <- c("chromosome", "base_pair_location", "effect_allele",
                 "other_allele", "beta", "standard_error",
                 "effect_allele_frequency", "z")
@@ -97,7 +146,8 @@ pcodec_write_store <- function(data, output, metadata = list()) {
     stop("CompreSSoR requires its native Pcodec backend; install Rust/Cargo and reinstall the package",
          call. = FALSE)
   }
-  pcodec_native_write_store(data, output, metadata = metadata)
+  pcodec_native_write_store(data, output, metadata = metadata,
+                            eaf_coverage = eaf_coverage, finalize = finalize)
 }
 
 pcodec_native_projection <- function(out, columns = NULL) {

@@ -411,3 +411,318 @@ extern "C" SEXP compressor_unique_strings(SEXP x) {
   UNPROTECT(3);
   return out;
 }
+
+// TRUE when `a` and `b` are character vectors of the same length holding the
+// same CHARSXP at every position.  CHARSXPs are cached, so equal pointers mean
+// the same bytes and the same encoding mark.
+extern "C" SEXP compressor_same_strings(SEXP a, SEXP b) {
+  if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || XLENGTH(a) != XLENGTH(b)) {
+    return Rf_ScalarLogical(FALSE);
+  }
+  const R_xlen_t n = XLENGTH(a);
+  const SEXP* pa = STRING_PTR_RO(a);
+  const SEXP* pb = STRING_PTR_RO(b);
+  for (R_xlen_t i = 0; i < n; ++i) {
+    if (pa[i] != pb[i]) return Rf_ScalarLogical(FALSE);
+  }
+  return Rf_ScalarLogical(TRUE);
+}
+
+// ------------------------------------------------- column content hashing
+// compressor_column_xxh64(columns, threads): one XXH64 (seed 0) digest per
+// column of a list of atomic vectors, computed over a platform-independent
+// byte stream (little-endian):
+//   logical/integer  int32 per element (NA = INT_MIN)
+//   double           IEEE-754 binary64 bits per element, with R's NA as
+//                    0x7FF00000000007A2 and every other NaN as
+//                    0x7FF8000000000000
+//   character        per element uint32 byte length then the bytes of the
+//                    CHARSXP; NA is the length 0xFFFFFFFF with no bytes
+// Columns are hashed in parallel on up to `threads` threads; each digest is
+// independent of the thread count.  Data pointers are taken on the calling
+// thread (materialising any ALTREP column) before workers start, and workers
+// only read memory.
+namespace {
+
+const std::uint64_t kXxhP1 = 11400714785074694791ULL;
+const std::uint64_t kXxhP2 = 14029467366897019727ULL;
+const std::uint64_t kXxhP3 = 1609587929392839161ULL;
+const std::uint64_t kXxhP4 = 9650029242287828579ULL;
+const std::uint64_t kXxhP5 = 2870177450012600261ULL;
+
+inline std::uint64_t rotl64(std::uint64_t x, int r) { return (x << r) | (x >> (64 - r)); }
+
+inline std::uint64_t read_le64(const unsigned char* p) {
+  std::uint64_t v = 0;
+  for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
+  return v;
+}
+
+inline std::uint32_t read_le32(const unsigned char* p) {
+  return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+    (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+}
+
+inline std::uint64_t xxh_round(std::uint64_t acc, std::uint64_t input) {
+  acc += input * kXxhP2;
+  acc = rotl64(acc, 31);
+  return acc * kXxhP1;
+}
+
+inline std::uint64_t xxh_merge(std::uint64_t acc, std::uint64_t val) {
+  acc ^= xxh_round(0, val);
+  return acc * kXxhP1 + kXxhP4;
+}
+
+struct Xxh64 {
+  std::uint64_t v1, v2, v3, v4;
+  std::uint64_t total;
+  unsigned char buffer[32];
+  std::size_t used;
+};
+
+void xxh64_init(Xxh64* s) {
+  s->v1 = kXxhP1 + kXxhP2;
+  s->v2 = kXxhP2;
+  s->v3 = 0;
+  s->v4 = 0 - kXxhP1;
+  s->total = 0;
+  s->used = 0;
+}
+
+inline void xxh64_stripe(Xxh64* s, const unsigned char* p) {
+  s->v1 = xxh_round(s->v1, read_le64(p));
+  s->v2 = xxh_round(s->v2, read_le64(p + 8));
+  s->v3 = xxh_round(s->v3, read_le64(p + 16));
+  s->v4 = xxh_round(s->v4, read_le64(p + 24));
+}
+
+void xxh64_update(Xxh64* s, const unsigned char* p, std::size_t n) {
+  s->total += n;
+  if (s->used + n < 32) {
+    std::memcpy(s->buffer + s->used, p, n);
+    s->used += n;
+    return;
+  }
+  if (s->used) {
+    const std::size_t take = 32 - s->used;
+    std::memcpy(s->buffer + s->used, p, take);
+    xxh64_stripe(s, s->buffer);
+    p += take;
+    n -= take;
+    s->used = 0;
+  }
+  while (n >= 32) {
+    xxh64_stripe(s, p);
+    p += 32;
+    n -= 32;
+  }
+  if (n) {
+    std::memcpy(s->buffer, p, n);
+    s->used = n;
+  }
+}
+
+std::uint64_t xxh64_digest(const Xxh64* s) {
+  std::uint64_t h;
+  if (s->total >= 32) {
+    h = rotl64(s->v1, 1) + rotl64(s->v2, 7) + rotl64(s->v3, 12) + rotl64(s->v4, 18);
+    h = xxh_merge(h, s->v1);
+    h = xxh_merge(h, s->v2);
+    h = xxh_merge(h, s->v3);
+    h = xxh_merge(h, s->v4);
+  } else {
+    h = s->v3 + kXxhP5;
+  }
+  h += s->total;
+  const unsigned char* p = s->buffer;
+  std::size_t n = s->used;
+  while (n >= 8) {
+    h ^= xxh_round(0, read_le64(p));
+    h = rotl64(h, 27) * kXxhP1 + kXxhP4;
+    p += 8;
+    n -= 8;
+  }
+  if (n >= 4) {
+    h ^= static_cast<std::uint64_t>(read_le32(p)) * kXxhP1;
+    h = rotl64(h, 23) * kXxhP2 + kXxhP3;
+    p += 4;
+    n -= 4;
+  }
+  while (n) {
+    h ^= static_cast<std::uint64_t>(*p) * kXxhP5;
+    h = rotl64(h, 11) * kXxhP1;
+    ++p;
+    --n;
+  }
+  h ^= h >> 33;
+  h *= kXxhP2;
+  h ^= h >> 29;
+  h *= kXxhP3;
+  h ^= h >> 32;
+  return h;
+}
+
+// Little-endian staging buffer so elements are fed to XXH64 in large runs.
+struct LeWriter {
+  Xxh64* state;
+  unsigned char buf[1 << 16];
+  std::size_t used = 0;
+  explicit LeWriter(Xxh64* s) : state(s) {}
+  inline void room(std::size_t n) {
+    if (used + n > sizeof(buf)) flush();
+  }
+  inline void u32(std::uint32_t v) {
+    room(4);
+    buf[used] = static_cast<unsigned char>(v);
+    buf[used + 1] = static_cast<unsigned char>(v >> 8);
+    buf[used + 2] = static_cast<unsigned char>(v >> 16);
+    buf[used + 3] = static_cast<unsigned char>(v >> 24);
+    used += 4;
+  }
+  inline void u64(std::uint64_t v) {
+    room(8);
+    for (int i = 0; i < 8; ++i) buf[used + i] = static_cast<unsigned char>(v >> (8 * i));
+    used += 8;
+  }
+  inline void bytes(const char* p, std::size_t n) {
+    if (n > sizeof(buf) / 2) {
+      flush();
+      xxh64_update(state, reinterpret_cast<const unsigned char*>(p), n);
+      return;
+    }
+    room(n);
+    std::memcpy(buf + used, p, n);
+    used += n;
+  }
+  void flush() {
+    if (used) xxh64_update(state, buf, used);
+    used = 0;
+  }
+};
+
+struct ColumnJob {
+  int kind = 0;  // 1 int32, 2 double, 3 string
+  R_xlen_t n = 0;
+  const int* ints = NULL;
+  const double* reals = NULL;
+  const SEXP* strings = NULL;
+  SEXP na_string = NULL;
+  std::uint64_t digest = 0;
+};
+
+void hash_column(ColumnJob* job) {
+  Xxh64 state;
+  xxh64_init(&state);
+  LeWriter out(&state);
+  const R_xlen_t n = job->n;
+  if (job->kind == 1) {
+    for (R_xlen_t i = 0; i < n; ++i) out.u32(static_cast<std::uint32_t>(job->ints[i]));
+  } else if (job->kind == 2) {
+    const std::uint64_t na_bits = 0x7FF00000000007A2ULL;
+    const std::uint64_t nan_bits = 0x7FF8000000000000ULL;
+    for (R_xlen_t i = 0; i < n; ++i) {
+      const double v = job->reals[i];
+      std::uint64_t bits;
+      if (v != v) {
+        std::uint64_t raw;
+        std::memcpy(&raw, &v, sizeof(raw));
+        // R_IsNA: a NaN whose low 32-bit word is 1954.
+        bits = (static_cast<std::uint32_t>(raw & 0xFFFFFFFFu) == 1954u) ? na_bits : nan_bits;
+      } else {
+        std::memcpy(&bits, &v, sizeof(bits));
+      }
+      out.u64(bits);
+    }
+  } else if (job->kind == 3) {
+    for (R_xlen_t i = 0; i < n; ++i) {
+      const SEXP s = job->strings[i];
+      if (s == job->na_string) {
+        out.u32(0xFFFFFFFFu);
+        continue;
+      }
+      const R_len_t len = LENGTH(s);
+      out.u32(static_cast<std::uint32_t>(len));
+      out.bytes(CHAR(s), static_cast<std::size_t>(len));
+    }
+  }
+  out.flush();
+  job->digest = xxh64_digest(&state);
+}
+
+}  // namespace
+
+extern "C" SEXP compressor_column_xxh64(SEXP columns, SEXP threads) {
+  if (TYPEOF(columns) != VECSXP) Rf_error("columns must be a list");
+  const R_xlen_t k = XLENGTH(columns);
+  std::vector<ColumnJob> jobs(static_cast<std::size_t>(k));
+  for (R_xlen_t j = 0; j < k; ++j) {
+    SEXP column = VECTOR_ELT(columns, j);
+    ColumnJob& job = jobs[static_cast<std::size_t>(j)];
+    job.n = XLENGTH(column);
+    switch (TYPEOF(column)) {
+      case LGLSXP: job.kind = 1; job.ints = LOGICAL_RO(column); break;
+      case INTSXP: job.kind = 1; job.ints = INTEGER_RO(column); break;
+      case REALSXP: job.kind = 2; job.reals = REAL_RO(column); break;
+      case STRSXP: job.kind = 3; job.strings = STRING_PTR_RO(column); job.na_string = NA_STRING; break;
+      default: Rf_error("column %d has an unsupported type for content hashing", (int) j + 1);
+    }
+  }
+  int workers = Rf_asInteger(threads);
+  if (workers == NA_INTEGER || workers < 1) workers = 1;
+  if (static_cast<R_xlen_t>(workers) > k) workers = static_cast<int>(k > 0 ? k : 1);
+  bool threaded = false;
+  if (workers > 1) {
+    std::vector<std::thread> pool;
+    std::size_t next = 0;
+    std::mutex mutex;
+    try {
+      for (int w = 0; w < workers; ++w) {
+        pool.emplace_back([&] {
+          while (true) {
+            std::size_t at;
+            {
+              std::lock_guard<std::mutex> lock(mutex);
+              if (next >= jobs.size()) return;
+              at = next++;
+            }
+            hash_column(&jobs[at]);
+          }
+        });
+      }
+      threaded = true;
+    } catch (...) {
+      threaded = false;
+    }
+    for (std::thread& t : pool) if (t.joinable()) t.join();
+    if (!threaded) {
+      // Thread creation failed part way: hash every column on this thread.
+      for (ColumnJob& job : jobs) job.digest = 0;
+    }
+  }
+  if (!threaded) {
+    for (ColumnJob& job : jobs) hash_column(&job);
+  }
+  SEXP out = PROTECT(Rf_allocVector(STRSXP, k));
+  static const char hex[] = "0123456789abcdef";
+  for (R_xlen_t j = 0; j < k; ++j) {
+    char text[17];
+    const std::uint64_t d = jobs[static_cast<std::size_t>(j)].digest;
+    for (int i = 0; i < 16; ++i) text[i] = hex[(d >> (60 - 4 * i)) & 0xFu];
+    text[16] = '\0';
+    SET_STRING_ELT(out, j, Rf_mkChar(text));
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+// SHA-256 hex digest of a raw vector (used to combine column digests).
+extern "C" SEXP compressor_sha256_raw(SEXP bytes) {
+  if (TYPEOF(bytes) != RAWSXP) Rf_error("bytes must be a raw vector");
+  Sha256 sha;
+  sha256_init(&sha);
+  sha256_update(&sha, RAW(bytes), static_cast<std::size_t>(XLENGTH(bytes)));
+  char hex[65];
+  sha256_hex(&sha, hex);
+  return Rf_mkString(hex);
+}

@@ -130,6 +130,15 @@ sumstats_projection_indices <- function(source_columns, core_only = FALSE,
   indices
 }
 
+# Projection indices plus any explicitly named extra columns, in source order.
+# Without extra columns the indices are returned unchanged.
+projection_with_extra <- function(indices, source_columns, extra_columns = NULL) {
+  if (!length(extra_columns)) return(indices)
+  extra <- which(source_columns %in% extra_columns)
+  if (!length(extra)) return(indices)
+  sort(unique(c(indices, extra)))
+}
+
 sumstats_primary_chromosomes <- function() {
   c(as.character(seq_len(22L)), "X", "Y")
 }
@@ -262,7 +271,9 @@ parse_numeric_column <- function(x, name, invalid = c("error", "report")) {
   # text path below so their labels, rather than level codes, are parsed.
   if (is.numeric(x) && !is.factor(x)) {
     out <- as.numeric(x)
-    out[is.na(out)] <- NA_real_
+    # Only a missing value can change here (NaN and non-standard NA payloads
+    # become NA_real_), so skip the full-length mask when there is none.
+    if (anyNA(out)) out[is.na(out)] <- NA_real_
     return(out)
   }
   text <- trimws(as.character(x))
@@ -305,6 +316,10 @@ eaf_coverage_metadata <- function(values) {
 
 parse_integer_column <- function(x, name, invalid = c("error", "report")) {
   invalid <- match.arg(invalid)
+  # A plain integer vector is already the result: every non-missing value is a
+  # whole 32-bit integer, so the double round trip below would only rebuild
+  # the same values.
+  if (is.integer(x) && is.null(attributes(x))) return(x)
   value <- parse_numeric_column(x, name, invalid = invalid)
   parse_failures <- attr(value, "parse_failures") %||% integer()
   bad <- !is.na(value) & (!is.finite(value) | value != trunc(value) |
@@ -348,10 +363,23 @@ map_unique_character <- function(x, f) {
     # One native hashing pass over the cached CHARSXPs: `f` sees each distinct
     # string exactly once and the result is indexed back to every element.
     distinct <- .Call("compressor_unique_strings", x, PACKAGE = "CompreSSoR")
-    return(f(distinct[[1L]])[distinct[[2L]]])
+    return(map_unique_result(x, f(distinct[[1L]]), distinct))
   }
   u <- unique(x)
   f(as.character(u))[match(x, u)]
+}
+
+# mapped[distinct[[2L]]], or `x` itself when `f` left every distinct string
+# unchanged (the same cached CHARSXP), which is then the identical result
+# without allocating and filling a new full-length vector.
+map_unique_result <- function(x, mapped, distinct) {
+  if (is.null(attributes(x)) && is.character(mapped) && is.null(attributes(mapped)) &&
+      is.loaded("compressor_same_strings", PACKAGE = "CompreSSoR") &&
+      isTRUE(.Call("compressor_same_strings", mapped, distinct[[1L]],
+                   PACKAGE = "CompreSSoR"))) {
+    return(x)
+  }
+  mapped[distinct[[2L]]]
 }
 
 # Elementwise transform of an atomic vector of any type, evaluated once per
@@ -363,10 +391,21 @@ map_unique_values <- function(x, f) {
   if (is.character(x) && is.null(attributes(x)) &&
       is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
     distinct <- .Call("compressor_unique_strings", x, PACKAGE = "CompreSSoR")
-    return(f(distinct[[1L]])[distinct[[2L]]])
+    return(map_unique_result(x, f(distinct[[1L]]), distinct))
   }
   u <- unique(x)
   f(u)[match(x, u)]
+}
+
+# match(x, table) for a long character vector with few distinct values: the
+# lookup runs once per distinct string and is indexed back to every element.
+match_unique <- function(x, table) {
+  if (length(x) >= 64L && is.character(x) &&
+      is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
+    distinct <- .Call("compressor_unique_strings", x, PACKAGE = "CompreSSoR")
+    return(match(distinct[[1L]], table)[distinct[[2L]]])
+  }
+  match(x, table)
 }
 
 # Logical mask of length n that is TRUE at the whole-number row indices in
@@ -640,7 +679,8 @@ looks_like_vcf <- function(input) {
 read_sumstats_input <- function(input, parse_policy = c("error", "report"),
                                 project_columns = FALSE, core_only = FALSE,
                                 allow_p_to_se = FALSE,
-                                include_p_value = FALSE) {
+                                include_p_value = FALSE,
+                                extra_columns = NULL) {
   parse_policy <- match.arg(parse_policy)
   if (length(project_columns) != 1L || !is.logical(project_columns) || is.na(project_columns) ||
       length(core_only) != 1L || !is.logical(core_only) || is.na(core_only)) {
@@ -655,9 +695,11 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
     projection_started <- phase_clock()
     source_columns <- names(data)
     selected <- if (isTRUE(project_columns)) {
-      sumstats_projection_indices(source_columns, core_only = core_only,
-                                  allow_p_to_se = allow_p_to_se,
-                                  include_p_value = include_p_value)
+      projection_with_extra(sumstats_projection_indices(
+        source_columns, core_only = core_only,
+        allow_p_to_se = allow_p_to_se,
+        include_p_value = include_p_value
+      ), source_columns, extra_columns)
     } else {
       seq_along(source_columns)
     }
@@ -698,9 +740,11 @@ read_sumstats_input <- function(input, parse_policy = c("error", "report"),
   source_columns <- names(header)
   projection_started <- phase_clock()
   selected <- if (isTRUE(project_columns)) {
-    sumstats_projection_indices(source_columns, core_only = core_only,
-                                allow_p_to_se = allow_p_to_se,
-                                include_p_value = include_p_value)
+    projection_with_extra(sumstats_projection_indices(
+      source_columns, core_only = core_only,
+      allow_p_to_se = allow_p_to_se,
+      include_p_value = include_p_value
+    ), source_columns, extra_columns)
   } else {
     seq_along(source_columns)
   }
@@ -804,19 +848,35 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
   data$alternate_allele <- normalise_allele_missing(data$alternate_allele)
   data$effect_allele <- normalise_allele_missing(data$effect_allele)
   data$other_allele <- normalise_allele_missing(data$other_allele)
-  if (!"beta" %in% names(data)) data$beta <- NA_real_
-  if (!"standard_error" %in% names(data)) data$standard_error <- NA_real_
-  if (!"z" %in% names(data)) data$z <- NA_real_
-  if (!"odds_ratio" %in% names(data)) data$odds_ratio <- NA_real_
-  assign_parsed("beta", parse_numeric_column(data$beta, "beta", invalid = parse_policy))
-  assign_parsed("standard_error", parse_numeric_column(data$standard_error, "standard_error",
-                                                         invalid = parse_policy))
-  assign_parsed("z", parse_numeric_column(data$z, "z", invalid = parse_policy))
-  assign_parsed("odds_ratio", parse_numeric_column(data$odds_ratio, "odds_ratio",
-                                                     invalid = parse_policy))
-  bad_or <- !is.na(data$odds_ratio) & (!is.finite(data$odds_ratio) | data$odds_ratio <= 0)
-  if (any(bad_or) && identical(parse_policy, "error")) {
-    stop("odds_ratio must be finite and positive when supplied", call. = FALSE)
+  # A numeric column created here as all-NA_real_ is already its own parse
+  # result, so it is not parsed again (parse_numeric_column() would return the
+  # same all-missing double vector).
+  created_numeric <- character()
+  create_numeric <- function(target) {
+    if (!target %in% names(data)) {
+      data[[target]] <<- NA_real_
+      created_numeric <<- c(created_numeric, target)
+    }
+  }
+  parse_numeric_target <- function(target) {
+    if (target %in% created_numeric) return(invisible(NULL))
+    assign_parsed(target, parse_numeric_column(data[[target]], target,
+                                               invalid = parse_policy))
+  }
+  create_numeric("beta")
+  create_numeric("standard_error")
+  create_numeric("z")
+  create_numeric("odds_ratio")
+  parse_numeric_target("beta")
+  parse_numeric_target("standard_error")
+  parse_numeric_target("z")
+  parse_numeric_target("odds_ratio")
+  # An absent odds_ratio column is all missing, so it cannot be invalid.
+  if (odds_ratio_source_present) {
+    bad_or <- !is.na(data$odds_ratio) & (!is.finite(data$odds_ratio) | data$odds_ratio <= 0)
+    if (any(bad_or) && identical(parse_policy, "error")) {
+      stop("odds_ratio must be finite and positive when supplied", call. = FALSE)
+    }
   }
   if (beta_source_present && odds_ratio_source_present) {
     comparable <- is.finite(data$beta) & is.finite(data$odds_ratio) &
@@ -839,12 +899,10 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
                             data$odds_ratio > 0)
     if (length(beta_from_or)) data$beta[beta_from_or] <- log(data$odds_ratio[beta_from_or])
   }
-  if (!"effect_allele_frequency" %in% names(data)) data$effect_allele_frequency <- NA_real_
-  assign_parsed("effect_allele_frequency",
-                parse_numeric_column(data$effect_allele_frequency,
-                                     "effect_allele_frequency", invalid = parse_policy))
-  if (!"p_value" %in% names(data)) data$p_value <- NA_real_
-  assign_parsed("p_value", parse_numeric_column(data$p_value, "p_value", invalid = parse_policy))
+  create_numeric("effect_allele_frequency")
+  parse_numeric_target("effect_allele_frequency")
+  create_numeric("p_value")
+  parse_numeric_target("p_value")
   if ("minus_log10_p" %in% names(data)) {
     lp <- parse_numeric_column(data$minus_log10_p, "minus_log10_p", invalid = parse_policy)
     lp_failures <- attr(lp, "parse_failures") %||% integer()
@@ -886,10 +944,19 @@ normalise_sumstats_columns <- function(data, parse_policy = c("error", "report")
            paste(resolved_missing, collapse = ", "), call. = FALSE)
     }
   }
-  z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
-  data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
-  consistent <- z_source_present & is.finite(data$beta) & is.finite(data$z) &
-    is.finite(data$standard_error) & data$standard_error > 0
+  # The first pass above already filled every row whose beta and standard
+  # error allowed it (finite / positive finite is never NA). Only a p-to-SE
+  # conversion can make further rows derivable.
+  if (length(p_to_se_rows)) {
+    z_missing <- is.na(data$z) & is.finite(data$beta) & is.finite(data$standard_error) & data$standard_error > 0
+    data$z[z_missing] <- data$beta[z_missing] / data$standard_error[z_missing]
+  }
+  consistent <- if (z_source_present) {
+    is.finite(data$beta) & is.finite(data$z) &
+      is.finite(data$standard_error) & data$standard_error > 0
+  } else {
+    FALSE
+  }
   if (any(consistent)) {
     beta_from_z <- data$z[consistent] * data$standard_error[consistent]
     supplied_beta <- data$beta[consistent]
@@ -1100,27 +1167,22 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     return(report)
   }
 
+  # Every reason is recorded, in a fixed order, as the sorted row numbers it
+  # rejects. A reason is evaluated as a full-length mask only when a cheap
+  # aggregate test cannot prove that no row triggers it; the counts, the
+  # bounded examples and the rejected-row set are the same either way.
   reasons <- if (identical(detail, "full")) list() else NULL
   rejection_counts <- integer()
   examples <- list()
-  invalid <- rep(FALSE, n)
-  reason_count <- integer(n)
-  add_reason <- function(name, mask) {
-    mask <- as.logical(mask)
-    if (anyNA(mask)) mask[is.na(mask)] <- FALSE
-    if (length(mask) != n) stop("structural QC mask has the wrong number of rows",
-                                call. = FALSE)
-    if (identical(detail, "full")) reasons[[name]] <<- mask
-    count <- sum(mask)
-    rejection_counts[name] <<- as.integer(count)
-    examples[[name]] <<- utils::head(which(mask), max(0L, as.integer(max_examples)))
-    # An all-FALSE mask leaves the running invalid/reason_count state
-    # unchanged, so skip the two full-length passes for reasons that no row
-    # triggers (the common case).
-    if (count) {
-      invalid <<- invalid | mask
-      reason_count <<- reason_count + as.integer(mask)
-    }
+  hit_rows <- list()
+  example_limit <- max(0L, as.integer(max_examples))
+  # `rows`: strictly increasing row numbers (1..n) that trigger the reason.
+  add_reason_rows <- function(name, rows) {
+    rows <- as.integer(rows)
+    if (identical(detail, "full")) reasons[[name]] <<- row_index_mask(n, rows)
+    rejection_counts[name] <<- length(rows)
+    examples[[name]] <<- utils::head(rows, example_limit)
+    if (length(rows)) hit_rows[[length(hit_rows) + 1L]] <<- rows
   }
   values <- function(name, default = NA_real_) {
     if (name %in% names(data)) return(data[[name]])
@@ -1134,50 +1196,9 @@ structural_qc_report <- function(data, input_build = "GRCh38",
       if (upper) toupper(out) else out
     })
   }
-
-  chromosome <- normalise_chromosome(values("chromosome", NA_character_))
-  position <- suppressWarnings(as.numeric(values("base_pair_location", NA_real_)))
-  reference <- text_values("reference_allele", upper = TRUE)
-  alternate <- text_values("alternate_allele", upper = TRUE)
-  effect <- text_values("effect_allele", upper = TRUE)
-  other <- text_values("other_allele", upper = TRUE)
-  rsid <- text_values("rsid")
-  variant_id <- text_values("variant_id")
-  alias_available <- (!is.na(rsid) & nzchar(rsid)) |
-    map_unique_values(variant_id, function(value) {
-      grepl("^rs", value, ignore.case = TRUE) |
-        grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y):[0-9]+:[ACGT]:[ACGT]$",
-              value, ignore.case = TRUE)
-    })
-  lengths <- sumstats_chromosome_lengths(input_build)
-  primary <- sumstats_primary_chromosomes()
-  # lengths[chromosome] without materialising a names attribute per row.
-  chromosome_length <- unname(lengths)[match(chromosome, names(lengths))]
-
-  add_reason("missing_chromosome",
-             (is.na(chromosome) | !nzchar(chromosome)) & !alias_available)
-  add_reason("unsupported_contig", !is.na(chromosome) & nzchar(chromosome) &
-               !(chromosome %in% primary))
-  add_reason("missing_coordinate", is.na(position) & !alias_available)
-  parse_failures <- attr(data, "parse_failures") %||% list()
-  add_reason("malformed_coordinate",
-             is.na(position) &
-               row_index_mask(n, parse_failures$base_pair_location %||% integer()) &
-               !alias_available)
-  add_reason("nonpositive_coordinate", !is.na(position) & is.finite(position) & position < 1)
-  add_reason("noninteger_coordinate", !is.na(position) & is.finite(position) &
-               position != trunc(position))
-  known_chromosome <- !is.na(chromosome) & chromosome %in% names(lengths)
-  add_reason("coordinate_out_of_range", known_chromosome & is.finite(position) &
-               position >= 1 & position > chromosome_length)
-
-  add_reason("missing_reference_allele", is.na(reference) | !nzchar(reference))
-  add_reason("missing_alternate_allele", is.na(alternate) | !nzchar(alternate))
-  add_reason("missing_effect_allele", is.na(effect) | !nzchar(effect))
-  add_reason("missing_other_allele", is.na(other) | !nzchar(other))
-  # Each allele predicate is elementwise, so evaluate it once per distinct
-  # allele string and index the result back to the rows.
-  allele_values <- lapply(list(reference, alternate, effect, other), function(value) {
+  # Distinct strings of a character vector plus the index of every element,
+  # so an elementwise predicate is evaluated once per distinct value.
+  distinct_values <- function(value) {
     if (n >= 64L && is.character(value) && is.null(attributes(value)) &&
         is.loaded("compressor_unique_strings", PACKAGE = "CompreSSoR")) {
       distinct <- .Call("compressor_unique_strings", value, PACKAGE = "CompreSSoR")
@@ -1185,86 +1206,273 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     } else {
       list(value = value, index = NULL)
     }
-  })
-  any_allele <- function(predicate) {
-    Reduce(`|`, Map(function(allele) {
-      present <- !is.na(allele$value)
-      hit <- present & predicate(allele$value)
-      if (is.null(allele$index)) hit else hit[allele$index]
-    }, allele_values), init = rep(FALSE, n))
   }
-  add_reason("multiallelic", any_allele(function(value) grepl(",", value, fixed = TRUE)))
-  add_reason("symbolic_allele", any_allele(function(value) grepl("^<|^\\*", value)))
-  add_reason("indel", any_allele(function(value) nchar(value) != 1L))
-  add_reason("invalid_allele", any_allele(function(value) !grepl("^[ACGT]$", value)))
-  add_reason("same_alleles", (
-    !is.na(reference) & !is.na(alternate) & reference == alternate
-  ) | (
-    !is.na(effect) & !is.na(other) & effect == other
+  # Rows at which the elementwise predicate `predicate` (no NA) holds.
+  distinct_rows <- function(info, predicate) {
+    hit <- predicate(info$value)
+    if (!any(hit)) return(integer())
+    if (is.null(info$index)) which(hit) else which(hit[info$index])
+  }
+  union_rows <- function(...) {
+    rows <- unlist(list(...), use.names = FALSE)
+    if (!length(rows)) return(integer())
+    sort(unique(as.integer(rows)))
+  }
+  # TRUE only when no element of the double vector x is NA, NaN or +-Inf.
+  # A finite sum rules out infinities (an Inf would make it +-Inf or NaN);
+  # an overflowing sum merely takes the exact path.
+  all_finite <- function(x) !anyNA(x) && is.finite(sum(x))
+  # min()/range() over the non-missing values (Inf/-Inf included).
+  value_min <- function(x) suppressWarnings(min(x, na.rm = TRUE))
+  value_range <- function(x) suppressWarnings(range(x, na.rm = TRUE))
+  # Rows with a finite value below `lower` or above `upper`; none when the
+  # range of the non-missing values (infinities included) lies inside.
+  finite_outside <- function(x, lower, upper) {
+    r <- value_range(x)
+    if (r[1L] >= lower && r[2L] <= upper) return(integer())
+    which(!is.na(x) & is.finite(x) & (x < lower | x > upper))
+  }
+
+  chromosome <- normalise_chromosome(values("chromosome", NA_character_))
+  position_source <- values("base_pair_location", NA_real_)
+  position <- suppressWarnings(as.numeric(position_source))
+  reference <- text_values("reference_allele", upper = TRUE)
+  alternate <- text_values("alternate_allele", upper = TRUE)
+  effect <- text_values("effect_allele", upper = TRUE)
+  other <- text_values("other_allele", upper = TRUE)
+  # An absent rsid and variant_id are all missing, so no row has an alias.
+  alias_available <- if (any(c("rsid", "variant_id") %in% names(data))) {
+    rsid <- text_values("rsid")
+    variant_id <- text_values("variant_id")
+    (!is.na(rsid) & nzchar(rsid)) |
+      map_unique_values(variant_id, function(value) {
+        grepl("^rs", value, ignore.case = TRUE) |
+          grepl("^(?:[1-9]|1[0-9]|2[0-2]|X|Y):[0-9]+:[ACGT]:[ACGT]$",
+                value, ignore.case = TRUE)
+      })
+  } else {
+    NULL
+  }
+  without_alias <- function(rows) {
+    if (is.null(alias_available) || !length(rows)) rows else rows[!alias_available[rows]]
+  }
+  lengths <- sumstats_chromosome_lengths(input_build)
+  primary <- sumstats_primary_chromosomes()
+  chromosome_info <- distinct_values(chromosome)
+
+  add_reason_rows("missing_chromosome", without_alias(distinct_rows(
+    chromosome_info, function(value) is.na(value) | !nzchar(value)
+  )))
+  add_reason_rows("unsupported_contig", distinct_rows(
+    chromosome_info,
+    function(value) !is.na(value) & nzchar(value) & !(value %in% primary)
   ))
-  orientation_defined <- !is.na(reference) & !is.na(alternate) &
-    !is.na(effect) & !is.na(other)
-  add_reason("orientation_mismatch", orientation_defined &
-               (effect != alternate | other != reference))
+  position_missing <- if (anyNA(position)) which(is.na(position)) else integer()
+  add_reason_rows("missing_coordinate", without_alias(position_missing))
+  parse_failures <- attr(data, "parse_failures") %||% list()
+  failure_rows <- function(rows) {
+    rows <- rows %||% integer()
+    if (!length(rows)) return(integer())
+    which(row_index_mask(n, rows))
+  }
+  coordinate_failures <- failure_rows(parse_failures$base_pair_location)
+  add_reason_rows("malformed_coordinate", without_alias(
+    intersect(position_missing, coordinate_failures)
+  ))
+  position_finite <- all_finite(position)
+  position_below_one <- if (value_min(position) < 1) {
+    which(!is.na(position) & is.finite(position) & position < 1)
+  } else {
+    integer()
+  }
+  add_reason_rows("nonpositive_coordinate", position_below_one)
+  # Integer coordinates are whole numbers by construction.
+  position_fraction <- if (is.integer(position_source) && !is.factor(position_source)) {
+    integer()
+  } else {
+    which(!is.na(position) & is.finite(position) & position != trunc(position))
+  }
+  add_reason_rows("noninteger_coordinate", position_fraction)
+  known_rows_bad <- distinct_rows(chromosome_info, function(value) {
+    is.na(value) | !(value %in% names(lengths))
+  })
+  # lengths[chromosome] without materialising a names attribute per row.
+  chromosome_length_distinct <- unname(lengths)[match(chromosome_info$value, names(lengths))]
+  chromosome_length <- if (is.null(chromosome_info$index)) {
+    chromosome_length_distinct
+  } else {
+    chromosome_length_distinct[chromosome_info$index]
+  }
+  # NA where the chromosome is unknown or the position is missing; those rows
+  # are excluded below exactly as the known/finite guards exclude them.
+  beyond <- which(position > chromosome_length)
+  if (length(beyond)) {
+    beyond <- beyond[!is.na(chromosome[beyond]) &
+                       chromosome[beyond] %in% names(lengths) &
+                       is.finite(position[beyond]) & position[beyond] >= 1]
+  }
+  add_reason_rows("coordinate_out_of_range", beyond)
+
+  allele_values <- lapply(list(reference, alternate, effect, other), distinct_values)
+  names(allele_values) <- c("reference", "alternate", "effect", "other")
+  missing_allele <- function(value) is.na(value) | !nzchar(value)
+  add_reason_rows("missing_reference_allele",
+                  distinct_rows(allele_values$reference, missing_allele))
+  add_reason_rows("missing_alternate_allele",
+                  distinct_rows(allele_values$alternate, missing_allele))
+  add_reason_rows("missing_effect_allele",
+                  distinct_rows(allele_values$effect, missing_allele))
+  add_reason_rows("missing_other_allele",
+                  distinct_rows(allele_values$other, missing_allele))
+  # Each allele predicate is elementwise, so evaluate it once per distinct
+  # allele string and take the union of the rows over the four alleles.
+  any_allele <- function(predicate) {
+    union_rows(lapply(allele_values, function(allele) {
+      distinct_rows(allele, function(value) !is.na(value) & predicate(value))
+    }))
+  }
+  add_reason_rows("multiallelic", any_allele(function(value) grepl(",", value, fixed = TRUE)))
+  add_reason_rows("symbolic_allele", any_allele(function(value) grepl("^<|^\\*", value)))
+  add_reason_rows("indel", any_allele(function(value) nchar(value) != 1L))
+  add_reason_rows("invalid_allele", any_allele(function(value) !grepl("^[ACGT]$", value)))
+  # x == y is NA when either side is missing, and which() drops NA, so this is
+  # (!is.na(x) & !is.na(y) & x == y).
+  same_rows <- function(x, y) which(x == y)
+  add_reason_rows("same_alleles", union_rows(same_rows(reference, alternate),
+                                             same_rows(effect, other)))
+  # identical() of the same vector is a pointer check; equal vectors cannot
+  # disagree at any row where both are present.
+  differ_rows <- function(x, y) if (identical(x, y)) integer() else which(x != y)
+  orientation <- union_rows(differ_rows(effect, alternate),
+                            differ_rows(other, reference))
+  if (length(orientation)) {
+    orientation <- orientation[!is.na(reference[orientation]) &
+                                 !is.na(alternate[orientation]) &
+                                 !is.na(effect[orientation]) &
+                                 !is.na(other[orientation])]
+  }
+  add_reason_rows("orientation_mismatch", orientation)
 
   numeric_fields <- c("beta", "standard_error", "z", "effect_allele_frequency",
                       "p_value", "odds_ratio", "sample_size", "info")
+  numeric_values <- list()
   for (field in numeric_fields) {
-    value <- suppressWarnings(as.numeric(values(field, NA_real_)))
-    malformed <- row_index_mask(n, parse_failures[[field]] %||% integer())
-    add_reason(paste0("malformed_", field), malformed)
-    add_reason(paste0("nonfinite_", field), !is.na(value) & !is.finite(value))
+    present <- field %in% names(data)
+    value <- if (present) suppressWarnings(as.numeric(data[[field]])) else NULL
+    numeric_values[field] <- list(value)
+    add_reason_rows(paste0("malformed_", field), failure_rows(parse_failures[[field]]))
+    # !is.na(x) & !is.finite(x) is is.infinite(x) for a double vector.
+    add_reason_rows(paste0("nonfinite_", field), if (!present ||
+                                                    is.finite(sum(value, na.rm = TRUE))) {
+      integer()
+    } else {
+      which(is.infinite(value))
+    })
   }
-  beta <- suppressWarnings(as.numeric(values("beta", NA_real_)))
-  se <- suppressWarnings(as.numeric(values("standard_error", NA_real_)))
-  z <- suppressWarnings(as.numeric(values("z", NA_real_)))
-  eaf <- suppressWarnings(as.numeric(values("effect_allele_frequency", NA_real_)))
-  p_value <- suppressWarnings(as.numeric(values("p_value", NA_real_)))
-  odds_ratio <- suppressWarnings(as.numeric(values("odds_ratio", NA_real_)))
-  sample_size <- suppressWarnings(as.numeric(values("sample_size", NA_real_)))
-  info <- suppressWarnings(as.numeric(values("info", NA_real_)))
-  add_reason("invalid_standard_error", !is.na(se) & is.finite(se) & se <= 0)
-  add_reason("invalid_effect_allele_frequency", !is.na(eaf) & is.finite(eaf) &
-               (eaf < 0 | eaf > 1))
-  add_reason("invalid_p_value", !is.na(p_value) & is.finite(p_value) &
-               (p_value < 0 | p_value > 1))
-  add_reason("invalid_odds_ratio", !is.na(odds_ratio) & is.finite(odds_ratio) & odds_ratio <= 0)
-  add_reason("invalid_sample_size", !is.na(sample_size) & is.finite(sample_size) & sample_size <= 0)
-  add_reason("invalid_info", !is.na(info) & is.finite(info) & (info < 0 | info > 1))
+  field_value <- function(field) numeric_values[[field]]
+  beta <- field_value("beta")
+  se <- field_value("standard_error")
+  z <- field_value("z")
+  # Positive lower bound: a finite value <= 0 is rejected.
+  finite_nonpositive <- function(x) {
+    if (is.null(x) || value_min(x) > 0) return(integer())
+    which(!is.na(x) & is.finite(x) & x <= 0)
+  }
+  unit_interval <- function(x) if (is.null(x)) integer() else finite_outside(x, 0, 1)
+  add_reason_rows("invalid_standard_error", finite_nonpositive(se))
+  add_reason_rows("invalid_effect_allele_frequency",
+                  unit_interval(field_value("effect_allele_frequency")))
+  add_reason_rows("invalid_p_value", unit_interval(field_value("p_value")))
+  add_reason_rows("invalid_odds_ratio", finite_nonpositive(field_value("odds_ratio")))
+  add_reason_rows("invalid_sample_size", finite_nonpositive(field_value("sample_size")))
+  add_reason_rows("invalid_info", unit_interval(field_value("info")))
   if ("minus_log10_p" %in% names(data)) {
     lp <- suppressWarnings(as.numeric(data$minus_log10_p))
-    add_reason("invalid_minus_log10_p", !is.na(lp) & is.finite(lp) & lp < 0)
-    add_reason("nonfinite_minus_log10_p", !is.na(lp) & !is.finite(lp))
+    add_reason_rows("invalid_minus_log10_p", if (value_min(lp) < 0) {
+      which(!is.na(lp) & is.finite(lp) & lp < 0)
+    } else {
+      integer()
+    })
+    add_reason_rows("nonfinite_minus_log10_p", if (is.finite(sum(lp, na.rm = TRUE))) {
+      integer()
+    } else {
+      which(is.infinite(lp))
+    })
   }
   if (isTRUE(require_statistics)) {
-    add_reason("missing_statistics", !is.finite(beta) | !is.finite(z) |
-                 !is.finite(se) | se <= 0)
+    # An absent statistic is all missing, hence non-finite on every row.
+    statistics_ok <- !is.null(beta) && !is.null(z) && !is.null(se) &&
+      all_finite(beta) && all_finite(z) && all_finite(se) && value_min(se) > 0
+    add_reason_rows("missing_statistics", if (statistics_ok) {
+      integer()
+    } else {
+      beta_all <- beta %||% rep(NA_real_, n)
+      z_all <- z %||% rep(NA_real_, n)
+      se_all <- se %||% rep(NA_real_, n)
+      which(!is.finite(beta_all) | !is.finite(z_all) | !is.finite(se_all) | se_all <= 0)
+    })
   }
 
-  valid_key <- known_chromosome & is.finite(position) & position >= 1 &
-    position == floor(position) & position <= chromosome_length &
-    !is.na(other) & !is.na(effect) & other %in% c("A", "C", "G", "T") &
-    effect %in% c("A", "C", "G", "T") & other != effect
-  key <- rep(NA_real_, n)
-  if (any(valid_key)) {
+  # Rows whose canonical key is undefined: the complement of the key
+  # conditions (known chromosome, finite whole position in [1, length],
+  # other/effect in A/C/G/T and distinct). Every component below is a row set
+  # computed without a full-length mask when it is empty.
+  acgt <- c("A", "C", "G", "T")
+  not_acgt <- function(value) is.na(value) | !(value %in% acgt)
+  invalid_key_rows <- union_rows(
+    known_rows_bad,
+    if (position_finite) integer() else which(!is.finite(position)),
+    position_below_one,
+    position_fraction,
+    beyond,
+    distinct_rows(allele_values$other, not_acgt),
+    distinct_rows(allele_values$effect, not_acgt),
+    same_rows(other, effect)
+  )
+  all_valid_key <- !length(invalid_key_rows)
+  valid_key <- if (all_valid_key) NULL else !row_index_mask(n, invalid_key_rows)
+  key <- NULL
+  identity <- NULL
+  if (all_valid_key) {
     identity <- compressor_encode_variant_identity(
-      chromosome[valid_key], position[valid_key], other[valid_key], effect[valid_key],
-      build = input_build
+      chromosome, position, other, effect, build = input_build, validated = TRUE
     )
-    key[valid_key] <- compressor_identity_code(identity$global_position,
-                                               identity$substitution)
+    key <- compressor_identity_code(identity$global_position, identity$substitution)
+  } else {
+    key <- rep(NA_real_, n)
+    if (any(valid_key)) {
+      identity <- compressor_encode_variant_identity(
+        chromosome[valid_key], position[valid_key], other[valid_key], effect[valid_key],
+        build = input_build, validated = TRUE
+      )
+      key[valid_key] <- compressor_identity_code(identity$global_position,
+                                                 identity$substitution)
+    }
   }
-  # Rows whose key occurs more than once: equal to
-  # duplicated(key) | duplicated(key, fromLast = TRUE) with one hashing pass.
-  repeated <- duplicated(key)
-  duplicate <- !is.na(key) & (repeated | key %in% key[repeated])
-  add_reason("duplicate_variant", duplicate)
+  # Rows whose key occurs more than once: equal keys are adjacent once the
+  # keys are in order (NA keys never match). Input already in canonical
+  # order, the common case, needs no sort.
+  key_sorted <- !anyNA(key) && !is.unsorted(key)
+  key_order <- if (key_sorted) NULL else order(key, method = "radix")
+  ordered_key <- if (key_sorted) key else key[key_order]
+  equal_next <- if (n > 1L) which(ordered_key[-1L] == ordered_key[-n]) else integer()
+  duplicate_rows <- if (length(equal_next)) {
+    positions <- unique(c(equal_next, equal_next + 1L))
+    sort(if (key_sorted) positions else key_order[positions])
+  } else {
+    integer()
+  }
+  invalid_before_duplicate <- union_rows(hit_rows)
+  add_reason_rows("duplicate_variant", duplicate_rows)
+  invalid_rows <- union_rows(invalid_before_duplicate, duplicate_rows)
   report$rejection_counts <- sort(rejection_counts, decreasing = TRUE)
   report$counts <- report$rejection_counts
   report$rejections <- report$rejection_counts[report$rejection_counts > 0L]
   report$examples <- examples
-  report$rejected_rows <- as.integer(sum(invalid))
-  report$valid <- !any(invalid)
+  report$rejected_rows <- as.integer(length(invalid_rows))
+  report$valid <- !length(invalid_rows)
+  invalid <- row_index_mask(n, invalid_rows)
+  duplicate <- row_index_mask(n, duplicate_rows)
   if (identical(detail, "full")) {
     reason_names <- names(reasons)
     reason_text <- rep("", n)
@@ -1277,17 +1485,26 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     report$row_status$structurally_valid <- !invalid
     report$row_status$reasons <- reason_text
     report$canonical_key <- key
-    report$invalid_rows <- which(invalid)
-    report$duplicate_rows <- which(duplicate)
+    report$invalid_rows <- invalid_rows
+    report$duplicate_rows <- duplicate_rows
     report$structurally_valid_rows <- which(!invalid)
   } else {
     # Private, short-lived state consumed by apply_structural_qc(). It is
     # removed before the compact report is attached to a store or returned.
     report$internal <- list(
       invalid = invalid,
+      invalid_rows = invalid_rows,
       duplicate = duplicate,
+      duplicate_rows = duplicate_rows,
+      # A duplicate row's only reason is duplicate_variant exactly when no
+      # earlier reason rejected it.
+      invalid_before_duplicate = row_index_mask(n, invalid_before_duplicate),
       canonical_key = key,
-      reason_count = reason_count
+      valid_key = valid_key,
+      identity = if (is.null(identity)) NULL else list(
+        global_position = identity$global_position,
+        substitution = identity$substitution
+      )
     )
   }
   report
@@ -1327,7 +1544,8 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   if (identical(detail, "compact")) {
     internal <- report$internal %||% list(
       invalid = logical(nrow(data)), duplicate = logical(nrow(data)),
-      canonical_key = character(nrow(data)), reason_count = integer(nrow(data))
+      canonical_key = character(nrow(data)),
+      invalid_before_duplicate = logical(nrow(data))
     )
   } else {
     internal <- list(
@@ -1341,22 +1559,22 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   }
   invalid_mask <- internal$invalid
   duplicate_mask <- internal$duplicate
-  invalid <- which(invalid_mask)
+  invalid <- internal$invalid_rows %||% which(invalid_mask)
   if (!isTRUE(check_duplicates)) {
-    invalid <- setdiff(invalid, which(duplicate_mask))
+    invalid <- setdiff(invalid, internal$duplicate_rows %||% which(duplicate_mask))
   }
   keep <- rep(TRUE, nrow(data))
   if (length(invalid)) {
     keep[invalid] <- FALSE
     # In report mode keep the first copy of an otherwise valid duplicate and
     # reject later copies. Strict/error mode still rejects every duplicate row.
-    duplicate <- which(duplicate_mask)
+    duplicate <- internal$duplicate_rows %||% which(duplicate_mask)
     if (isTRUE(drop_duplicates) && identical(row_policy, "report") && length(duplicate)) {
       duplicate_key <- internal$canonical_key[duplicate]
       first <- !duplicated(duplicate_key)
       duplicate_first <- duplicate[first]
       only_duplicate_reason <- if (identical(detail, "compact")) {
-        internal$reason_count[duplicate_first] == 1L
+        !internal$invalid_before_duplicate[duplicate_first]
       } else {
         report$row_status$reasons[duplicate_first] == "duplicate_variant"
       }
@@ -1388,6 +1606,23 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
   report$rejected_rows <- as.integer(length(invalid))
   report$dropped_rows <- as.integer(sum(!keep))
   report$valid <- !length(invalid)
+  # The canonical identity codes QC encoded, for exactly the kept rows, when
+  # every kept row has a canonical key (so canonicalize_core_identity() need
+  # not encode them again). Rows without a key keep the full encoder path.
+  identity <- NULL
+  if (identical(detail, "compact") && !is.null(internal$identity)) {
+    all_kept <- all(keep)
+    valid_key <- internal$valid_key
+    if (is.null(valid_key)) {
+      identity <- if (all_kept) internal$identity else {
+        kept <- which(keep)
+        lapply(internal$identity, function(values) values[kept])
+      }
+    } else if (all(valid_key[keep])) {
+      at <- cumsum(valid_key)[keep]
+      identity <- lapply(internal$identity, function(values) values[at])
+    }
+  }
   report$internal <- NULL
   # Keeping every row of a plain data.frame is the identity subset: reuse the
   # columns instead of copying them (only the row.names representation of
@@ -1409,7 +1644,9 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
     })
   }
   attr(out, "structural_qc_report") <- report
-  list(data = out, report = report)
+  result <- list(data = out, report = report)
+  if (!is.null(identity)) result$identity <- identity
+  result
 }
 
 compact_structural_qc_report <- function(report) {
