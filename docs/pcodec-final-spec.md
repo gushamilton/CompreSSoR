@@ -3,7 +3,7 @@
 Status: current write format for CompreSSoR, locked after the five-run
 BluePebble comparison on 10 million FinnGen SNP rows.
 
-The writer emits `0.4.5-pcodec-native`. Older `0.4.x-pcodec-native` stores are
+The writer emits `0.4.6-pcodec-native`. Older `0.4.x-pcodec-native` stores are
 read-only compatibility inputs; they are not current benchmark targets and
 must not be used to make new performance or storage claims.
 
@@ -94,12 +94,23 @@ core streams or native format version. `read_pvalue_order()` fails safely when
 the exact domain/threshold is unavailable unless reconstructed-p fallback is
 requested explicitly.
 
-The canonical public numerical profile is `Z9/EAF8/SE6`: Z has 9 semantic bits,
-EAF has 8 semantic bits, and SE has 6 semantic bits. The SE semantic codes are
-carried in a physical `uint8` stream; this byte container must not be confused
-with the historical SE8 semantic experiment. Current manifests identify this
-distinction with `se_bits = 6`, `se_count = 62`, `se_missing = 62`,
-`se_exception = 63`, and `se_physical_dtype = "uint8"`.
+The canonical public numerical profile is `Z10/EAF8/SE8` with exact SE on
+Z-exception rows (profile name `z10/eaf8/se8+xse`, format 0.4.6): Z has 10
+semantic bits, EAF has 8 semantic bits, and SE has 8 semantic bits. A row with
+|Z| >= 3.5 already has a float32 exception record carrying Z, log2(SE) and
+EAF; under `+xse` its SE code is the SE exception code and its record has flag
+2 set, so the reader takes SE from the record as well (manifest field
+`exception_se = "exact"`). This costs no additional records and makes
+instrument rows (|Z| > 5.45) exact to float32 in both Z and SE.
+Stores of formats 0.4.0-0.4.5 use `Z9/EAF8/SE6` and remain readable unchanged.
+Manifests record the profile in full: `z_bits`, `z_count`, `z_missing`,
+`z_exception`, `se_bits`, `se_count`, `se_missing`, `se_exception`,
+`eaf_count`, `z_range` and `se_residual_range` (for `Z10/EAF8/SE8`:
+`z_count = 1022`, `se_count = 254`, `se_missing = 254`, `se_exception = 255`,
+`se_physical_dtype = "uint8"`). Readers take every count and range from the
+manifest and fall back to the Z9/SE6 values only for older manifests that omit
+a field. The profile was widened from Z9/SE6 because outcome SE error enters
+inverse-variance weights squared; see NEWS for the measured trade-off.
 
 The input statistics remain independent: a supplied finite standard error is
 the authoritative SE value and is never replaced by a value derived from EAF.
@@ -168,9 +179,9 @@ Pcodec 1.0.3, level 8:
 |---|---|---|
 | Position | `position.pco` | within-key-block delta `uint32` |
 | REF→ALT | `substitution.pco` | directed four-bit code in `uint8` |
-| Z | `z.pco` | 9-bit semantic code, physically `uint16` |
+| Z | `z.pco` | 10-bit semantic code (9-bit before 0.4.6), physically `uint16` |
 | EAF | `eaf.pco` | 8-bit arcsine code, physically `uint8` |
-| SE | `se.pco` | 6-bit semantic block-centred log2 residual (62 bins plus two sentinels), physically `uint8` |
+| SE | `se.pco` | 8-bit semantic block-centred log2 residual (254 bins plus two sentinels; 6-bit/62 bins before 0.4.6), physically `uint8` |
 | Exceptions | `exceptions.bin` | block-local Zstandard level 19 sidecar |
 
 Optional aligned domains are separate from the core numerical streams. The
@@ -182,7 +193,7 @@ The opt-in `pvalue_order` domain uses the same partition with physical
 Key frames contain 131,072 rows. Numerical value frames contain 65,536
 rows. Pcodec pages use 131,072 rows.
 
-Z uses 510 central bins over `[-3.5, 3.5)`, with reserved missing and exact
+Z uses 1022 central bins (510 before 0.4.6) over `[-3.5, 3.5)`, with reserved missing and exact
 exception codes. EAF uses the arcsine transform
 `(2/pi) * asin(sqrt(EAF))` over 255 levels. SE uses the residual
 
@@ -191,8 +202,8 @@ log2(SE) + 0.5 * log2(2 * EAF * (1 - EAF))
 ```
 
 centred by the median of each 65,536-row block. Its standard public residual
-range is `[-1, 1)` with 62 central bins plus missing and exception codes. The
-former SE8 experiment is historical and is not the public profile.
+range is `[-1, 1)` with 254 central bins (62 before 0.4.6) plus missing and
+exception codes.
 
 Exceptions are stored per value block as 17-byte records before Zstandard:
 `row:uint32`, `z:float32`, `log2se:float32`, `eaf:float32`, and `flags:uint8`.

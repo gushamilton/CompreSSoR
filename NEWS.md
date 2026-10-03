@@ -1,5 +1,34 @@
 # CompreSSoR (development)
 
+- Less aggressive default quantisation. New stores (native format
+  `0.4.6-pcodec-native`) use the semantic profile `z10/eaf8/se8+xse`: Z has
+  1022 central bins over [-3.5, 3.5) (was 510), the SE log2 residual has 254
+  bins (was 62), and rows with |Z| >= 3.5, which already carry a float32
+  exception record, take SE from that record as well. The central Z error
+  halves (max 0.0034, was 0.0069), relative SE error falls from 1.12% to
+  0.27%, and instrument rows are exact to float32 in both Z and SE. Measured
+  on BluePebble (FinnGen 10M-row GWAS and two simulated 9M-row traits):
+  stores are 9.2-9.5% larger (4.27 bytes per variant, was 3.91); write and
+  full-read times are unchanged within run-to-run noise; membership flips at
+  reconstructed p <= 0.01 drop from 1.2-1.3% to 0.1% of rows (none at 5e-8
+  or 1e-5 either way). In the 10 x 10 fastMR study, MR estimates from `.cpr`
+  vs the exact TSV values moved by a median of 0.0015 SE for IVW (was 0.0062;
+  max 0.009, was 0.120), 0.0019 for MR-Egger (was 0.0166), 0.0032 for the
+  weighted median (was 0.0211) and 0.0040 for the weighted mode (was 0.0156).
+  The trade-off grid is in the pull request.
+- Z and SE bit widths are recorded in full in the manifest (`z_count`,
+  `z_missing`, `z_exception`, `se_count`, ..., `exception_se`) and every
+  reader (full, selective, candidates, p-value reconstruction, code-domain
+  validation) takes them from there. Stores written by earlier releases are
+  Z9/EAF8/SE6 and decode exactly as before; a fixture store written by
+  a27b32d is checked in `tests/testthat/test-legacy-store.R`. Releases that
+  only know Z9/SE6 refuse 0.4.6 stores rather than misread them. The internal
+  option `CompreSSoR.native_profile` (for example `"z9/eaf8/se6"`) writes
+  another profile, e.g. for byte-compatible legacy stores; the public API is
+  unchanged.
+- The SE bin-boundary test no longer hard-codes an SE value whose residual is
+  just below the range top on one platform's `log2()`; it searches for one,
+  which fixes the failure at `test-quantisation-boundaries.R:68` on Linux.
 - Faster store writes with a lower memory peak; the stores are byte-for-byte
   unchanged. On the 10M-row FinnGen table on BluePebble (8 threads, default
   settings including the p-value order domain), `compress_sumstats()` takes

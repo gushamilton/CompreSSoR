@@ -28,7 +28,7 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
   \item{input}{A data frame or delimited summary-statistics file.}
   \item{output}{Destination directory for the store.}
   \item{profile}{\code{"standard"} uses the semantic bounded-lossy
-    Z9/EAF8/SE6 profile. \code{"exact"} is available with the Parquet backend.}
+    Z10/EAF8/SE8 profile. \code{"exact"} is available with the Parquet backend.}
   \item{overwrite}{Whether an existing destination may be replaced.}
   \item{cache}{Whether to build the optional Parquet regional cache. Native
     Pcodec stores are already independently block-framed.}

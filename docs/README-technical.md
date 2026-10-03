@@ -245,13 +245,13 @@ ABI uses caller-allocated buffers and standalone Pcodec streams, which keeps
 the package independent of the incomplete upstream wrapped C API while
 retaining Pcodec's numerical codec.
 
-The native format is `0.4.5-pcodec-native`. Identity streams use 131,072-row
+The native format is `0.4.6-pcodec-native`. Identity streams use 131,072-row
 frames, Pcodec pages use 131,072 rows, and numeric streams use 65,536-row
 frames by default (`block_rows` changes the numeric frame size). The five streams are `uint32` global position,
 `uint8` substitution code, `uint16` Z code, `uint8` EAF code, and a physical
-`uint8` SE code. The public profile is semantic `Z9/EAF8/SE6`: SE centres are
-shared across 65,536 rows, with 62 central bins plus missing and exact-exception
-sentinels. Exceptions are a small Zstandard-compressed float32 sidecar with
+`uint8` SE code. The public profile is semantic `Z10/EAF8/SE8` (stores before
+0.4.6: `Z9/EAF8/SE6`): SE centres are shared across 65,536 rows, with 254
+central bins plus missing and exact-exception sentinels. Exceptions are a small Zstandard-compressed float32 sidecar with
 row, Z, log2(SE), EAF, and flags. The index records the byte offset and row
 count of every block, so regional and sparse reads do not decode the complete
 file.

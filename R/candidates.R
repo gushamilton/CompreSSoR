@@ -7,19 +7,7 @@
 # different cost; see read_candidates().
 
 candidates_semantic <- function(store) {
-  semantic <- store$manifest$semantic_codec %||% list()
-  z_range <- as.numeric(unlist(semantic$z_range %||% c(-3.5, 3.5)))
-  se_range <- as.numeric(unlist(semantic$se_residual_range %||% c(-1, 1)))
-  list(
-    z_range = z_range,
-    z_count = as.integer(semantic$z_count %||% 510L),
-    se_count = as.integer(semantic$se_count %||% PCODEC_NATIVE_SE_COUNT),
-    eaf_count = as.integer(semantic$eaf_count %||% 255L),
-    z_bits = as.integer(semantic$z_bits %||% 9L),
-    se_bits = as.integer(semantic$se_bits %||% PCODEC_NATIVE_SE_BITS),
-    eaf_bits = as.integer(semantic$eaf_bits %||% 8L),
-    se_range = se_range
-  )
+  pcodec_native_semantic_params(store$manifest$semantic_codec)
 }
 
 # p-values via the native decoder's own erfc code path, so that membership
