@@ -840,27 +840,33 @@ compress_sumstats <- function(input, output,
 #' @export
 open_compressor <- function(path) {
   path <- normalizePath(path, mustWork = FALSE)
-  if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)
   manifest_path <- file.path(path, "manifest.json")
-  stamp <- NULL
-  recorded <- observed <- NULL
-  if (file.exists(manifest_path)) {
-    checksum_path <- pcodec_manifest_checksum_path(manifest_path)
-    recorded <- if (file.exists(checksum_path)) {
-      readLines(checksum_path, warn = FALSE, n = 1L)
-    } else NULL
-    if (length(recorded) == 1L) {
-      # Hashed once; a cache miss reuses it for checksum verification below.
-      observed <- digest::digest(manifest_path, algo = "sha256", file = TRUE)
-      stamp <- paste(observed, trimws(recorded), sep = "|")
-      hit <- .compressor_open_cache[[path]]
-      if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
-    }
+  # The manifest is read once: hashed in memory for the checksum (and the
+  # open cache) and parsed from the same bytes.
+  size <- file.info(manifest_path, extra_cols = FALSE)$size
+  if (is.na(size)) {
+    if (!dir.exists(path)) stop("store directory does not exist: ", path, call. = FALSE)
+    stop("Missing CompreSSoR manifest: ", manifest_path, call. = FALSE)
   }
-  manifest <- read_manifest(manifest_path)
+  checksum_path <- pcodec_manifest_checksum_path(manifest_path)
+  recorded <- if (file.exists(checksum_path)) {
+    readLines(checksum_path, warn = FALSE, n = 1L)
+  } else NULL
+  bytes <- readBin(manifest_path, raw(), n = size)
+  stamp <- observed <- NULL
+  if (length(recorded) == 1L) {
+    observed <- if (is.loaded("compressor_sha256_raw", PACKAGE = "CompreSSoR")) {
+      .Call("compressor_sha256_raw", bytes, PACKAGE = "CompreSSoR")
+    } else digest::digest(bytes, algo = "sha256", serialize = FALSE)
+    stamp <- paste(observed, trimws(recorded), sep = "|")
+    hit <- .compressor_open_cache[[path]]
+    if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$store)
+  }
+  manifest <- jsonlite::parse_json(rawToChar(bytes), simplifyVector = FALSE)
   if (!identical(manifest$format, "CompreSSoR")) stop("not a CompreSSoR store", call. = FALSE)
   if (identical(manifest$backend, "pcodec")) {
-    verify_pcodec_manifest(manifest_path, expected = recorded, observed = observed)
+    verify_pcodec_manifest(manifest_path, expected = recorded,
+                           observed = observed %||% "")
   }
   if (identical(manifest$backend, "pcodec") &&
       !isTRUE(manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS)) {
@@ -1073,10 +1079,12 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #'   [read_sumstats()] without a selection), which for large stores is
 #'   expensive; pass keys, row IDs or a region for an extraction.
 #' @param region Optional region string (as in [read_sumstats()]), shared by
-#'   every store or one per store in a list. Stores that share the same
-#'   variant panel (identical position and substitution streams) resolve keys,
-#'   row IDs and regions to rows once, then decode values only; a store with a
-#'   panel of its own is read in one pass.
+#'   every store or one per store in a list. Each store is read in one pass
+#'   (keys, row IDs or region to rows to values in one native call), stores
+#'   in parallel. With `options(CompreSSoR.batch_share_panels = TRUE)`, stores
+#'   that share the same variant panel (identical position and substitution
+#'   streams, each verified against its own manifest) resolve keys, row IDs
+#'   and regions to rows once, then decode values only.
 #' @param columns Output columns requested from every store.
 #' @param threads Number of threads. One store is read with all of them;
 #'   several stores are read in parallel on Unix-like systems, up to `threads`

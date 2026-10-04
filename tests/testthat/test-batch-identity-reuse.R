@@ -64,9 +64,10 @@ test_that("batched reads reuse identity resolution per panel group", {
   check(v = c(1L, 7L, 900L), columns = c("beta", "standard_error"), groups = 0L,
         threads = 2L, share = FALSE)
   check(v = mixed_keys, columns = c("z", "p_value"), groups = 5L, threads = 8L, share = FALSE)
-  # Default strategy: panel sharing whatever the thread count.
-  check(v = mixed_keys, groups = 2L, threads = 1L, share = NULL)
-  check(v = mixed_keys, groups = 2L, threads = 2L, share = NULL)
+  # Default strategy (since 0.7.2): one pass per store whatever the thread
+  # count; panel sharing is opt-in.
+  check(v = mixed_keys, groups = 5L, threads = 1L, share = NULL)
+  check(v = mixed_keys, groups = 5L, threads = 2L, share = NULL)
   # A single store is a plain read with all threads.
   one <- read_sumstats_batch(paths[1], mixed_keys, columns = cols, threads = 2L)
   expect_identical(one[[1]], read_sumstats(paths[[1]], variants = mixed_keys, columns = cols))

@@ -15,12 +15,11 @@ test_that("a Z9/SE6 store written by a27b32d decodes identically", {
   expect_identical(names(got), names(expected))
   # The reference reads were made by a27b32d on macOS/arm64. Identity
   # columns, row sets and the p-value domains must match exactly; decoded
-  # doubles may differ in the last ulp across platforms (the decoder's
-  # tables are built with the platform's libm and FMA contraction), so they
-  # are compared to 1e-13 here. Same-platform old-vs-new reads are
-  # byte-identical (checked outside the suite, see NEWS).
-  same_platform <- identical(Sys.info()[["sysname"]], "Darwin") &&
-    identical(R.version$arch, "aarch64")
+  # doubles may differ in the last ulp (the decoder's tables use the
+  # platform's libm, and since 0.7.2 every reader shares one native decoder
+  # compiled without FMA contraction, whereas a27b32d decoded selective reads
+  # in R and full reads with clang's default contraction), so they are
+  # compared to 1e-13 here.
   for (name in names(expected)) {
     e <- expected[[name]]
     g <- got[[name]]
@@ -42,11 +41,6 @@ test_that("a Z9/SE6 store written by a27b32d decodes identically", {
     } else {
       expect_identical(g, e, label = name)
     }
-    if (same_platform) {
-      expect_identical(serialize(g, NULL, version = 3L),
-                       serialize(e, NULL, version = 3L),
-                       label = paste(name, "serialized bytes"))
-    }
   }
 })
 
@@ -60,14 +54,23 @@ test_that("the legacy Z9/SE6 profile can still be written and is byte-stable", {
                     pvalue_order_threshold = 0.05, overwrite = TRUE)
   source_dir <- test_path("fixtures", "legacy-z9se6-a27b32d.cpr")
   for (stream in c("position.pco", "substitution.pco", "z.pco", "eaf.pco",
-                   "se.pco", "exceptions.bin", "pvalue_flag.pco",
-                   "pvalue_order.pco")) {
+                   "se.pco", "pvalue_flag.pco", "pvalue_order.pco")) {
     expect_identical(
       unname(tools::md5sum(file.path(path, stream))),
       unname(tools::md5sum(file.path(source_dir, stream))),
       label = stream
     )
   }
+  # Since 0.7.2 an exception record that exists only for a missing EAF
+  # (flags = 4) stores zero in its unread Z and log2(SE) fields; every other
+  # record, and every field a reader uses, is unchanged.
+  new_exc <- CompreSSoR:::pcodec_native_read_all_exceptions(open_compressor(path))
+  old_exc <- CompreSSoR:::pcodec_native_read_all_exceptions(open_compressor(source_dir))
+  expect_identical(new_exc[c("row", "eaf", "flags")], old_exc[c("row", "eaf", "flags")])
+  eaf_only <- old_exc$flags == 4L
+  expect_true(any(eaf_only))
+  expect_identical(new_exc[!eaf_only, ], old_exc[!eaf_only, ])
+  expect_true(all(new_exc$z[eaf_only] == 0 & new_exc$log2se[eaf_only] == 0))
   # Same streams as the fixture, so the same decoded values on this platform.
   expect_identical(legacy_store_reads(path)$full,
                    legacy_store_reads(source_dir)$full)

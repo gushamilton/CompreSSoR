@@ -30,10 +30,12 @@ at a time, each with \code{threads \%/\% length(stores)} (at least one) decoder
 threads. The default is one. Windows uses serial reads for portability.}
 
 \item{region}{Optional region string (as in \code{\link[=read_sumstats]{read_sumstats()}}), shared by
-every store or one per store in a list. Stores that share the same
-variant panel (identical position and substitution streams) resolve keys,
-row IDs and regions to rows once, then decode values only; a store with a
-panel of its own is read in one pass.}
+every store or one per store in a list. Each store is read in one pass
+(keys, row IDs or region to rows to values in one native call), stores in
+parallel. With \code{options(CompreSSoR.batch_share_panels = TRUE)}, stores
+that share the same variant panel (identical position and substitution
+streams, each verified against its own manifest) resolve keys, row IDs and
+regions to rows once, then decode values only.}
 }
 \value{
 A list of decoded data frames in the same order as \code{stores}.

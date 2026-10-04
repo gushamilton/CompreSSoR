@@ -221,9 +221,23 @@ if ! rm -rf -- "$target_dir"; then
   exit 1
 fi
 
+# Decoded values must not depend on the compiler fusing a * b + c into one
+# rounding (FMA; clang does so by default on arm64): keep floating-point
+# contraction off where the C++ compiler accepts the flag, so every platform
+# and reader decodes a row to the same bits.
+fp_contract_flag=""
+r_cxx="$(R CMD config CXX17 2>/dev/null || true)"
+[ -n "$r_cxx" ] || r_cxx="$(R CMD config CXX 2>/dev/null || true)"
+if [ -n "$r_cxx" ] &&
+   printf 'int main(void) { return 0; }\n' |
+   $r_cxx -ffp-contract=off -Werror -x c++ -fsyntax-only - >/dev/null 2>&1; then
+  fp_contract_flag="-ffp-contract=off"
+fi
+
 if ! printf '%s\n' \
   'CXX_STD = CXX17' \
   'PKG_CPPFLAGS = -DCOMPRESSOR_NATIVE_PCODEC' \
+  "PKG_CXXFLAGS = $fp_contract_flag" \
   'PKG_LIBS = libcompressor_pcodec_native.a -lm -ldl -lpthread' > "$makevars"; then
   printf '%s\n' 'CompreSSoR could not write src/Makevars.' >&2
   cleanup_partial_build

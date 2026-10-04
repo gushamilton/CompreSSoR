@@ -129,7 +129,7 @@ q_decode <- function(main, exceptions, metadata, include_beta = TRUE, include_p 
                  as.integer(native_exceptions$flags),
                  isTRUE(include_beta), isTRUE(include_p),
                  as.numeric(metadata$se_residual_min %||% -1),
-                 as.numeric(metadata$se_residual_max %||% 1),
+                 as.numeric(metadata$se_residual_max %||% 1), NULL,
                  PACKAGE = "CompreSSoR"))
   }
 

@@ -115,6 +115,23 @@ What is verified, and when:
   manifest (cached per path, size and mtime), so a corrupt or half-copied
   store fails instead of silently reading another store's keys.
 
+Every reader decodes values with one compiled decoder (table lookups, the
+per-block SE centre factor, exception overrides, `beta = z * se`, and `p`
+from the Z table or `erfc` of an exception Z), so a row decodes to the same
+bits whether it comes from a full, row-ID, key, region, candidate or batched
+read. The package is compiled with `-ffp-contract=off` (when the compiler
+accepts it) so that the result does not depend on FMA contraction; values
+can still differ in the last ulp between platforms whose `libm` (`exp2`,
+`erfc`, `sin`, `log2`) rounds differently.
+
+Readers use compact per-store block matrices (offsets, lengths, row ranges
+and position anchors), cached for every store; the parsed index is cached
+for the most recently used stores only. A proposed follow-up, which needs a
+format change and is therefore not made here: move the per-block tables of
+the `pvalue_flag` and `pvalue_order` domains from `manifest.json` (most of
+its ~90 KB for a 10M-row store) into `native.index.json`, so that opening a
+store hashes and parses a few KB.
+
 Ordinary reads do not hash the value and identity streams. Proposed
 follow-up (needs a format bump): an XXH64 checksum per stream block in the
 index, verified on every block decode, plus the Zstandard frame checksum for
