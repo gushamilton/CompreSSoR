@@ -1,5 +1,44 @@
 # CompreSSoR (development)
 
+Integrity hardening (adversarial review findings 2-5, 10, 12, 13, 16):
+
+- `compress_sumstats(qc = "none")` no longer writes rows whose effect allele
+  is REF with their beta attached to ALT (a silent sign error). Such rows,
+  and any row whose `effect_allele`/`other_allele` are not ALT/REF, are now
+  dropped and counted (`identity_safety$counts$orientation_mismatch`),
+  matching compact QC in report mode. Neither mode flips beta or EAF.
+- Rows past the end of their chromosome are dropped with a warning in every
+  QC mode, counted in a new top-level `manifest$dropped_rows` summary, and
+  stop the write above 1% of the input (usually a build mismatch;
+  `options(CompreSSoR.max_out_of_range_fraction = )` overrides).
+- `validate_compressor(full = TRUE)` now verifies every payload file's byte
+  count and SHA-256 and the aggregate `payload_sha256`, as documented; the
+  native index is checked against its recorded SHA-256 whenever it is parsed.
+- Batched reads that share decoded identity between stores verify each
+  member's position/substitution streams against its own manifest first
+  (cached per path, size and mtime); a corrupt or half-copied store now
+  errors instead of being served another store's keys.
+- Every forked read (`pcodec_parallel_lapply()`) checks its results
+  centrally: worker errors are re-raised with the store they came from, and a
+  worker that died (NULL result) is an error. Region candidate reads could
+  previously lose rows silently when a key-decode worker died.
+- Native code no longer calls `Rf_error()` from inside C++ catch handlers or
+  with C++ objects alive (leaked memory on every failure); errors are raised
+  after the C++ state is destroyed.
+- The commit-timing manifest update after the atomic commit is written to a
+  temporary file and renamed; `overwrite = FALSE` is re-checked at commit.
+- Thread counts are no longer written to `native.index.json` and are ignored
+  by `canonical_sha256`: payload and canonical hashes no longer depend on
+  `threads`. Payload streams are unchanged, but new stores' index bytes and
+  `payload_sha256` differ from earlier versions; earlier stores still
+  validate.
+- Regions without a `chr` prefix (`"1:100-200"`) and `c(chr, start, end)`
+  character vectors are accepted (the old pattern required `"ch"`);
+  non-integer row IDs are an error instead of being truncated; the unused
+  native `compressor_read_pcodec_bridge` reader is removed.
+  `read_sumstats_batch()` documents that a store with neither variants nor a
+  region is read in full.
+
 - Fix silent candidate loss in `read_candidates_batch()` (0.7.0). When a batch
   mixed variant sets and an identity group (stores with the same variant
   panel) had no candidate rows, stage 2 assigned `shared[[i]] <- NULL`, which

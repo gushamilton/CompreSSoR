@@ -16,7 +16,10 @@
 #undef length
 #endif
 
+#include <array>
+#include <atomic>
 #include <climits>
+#include <cstdio>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +28,7 @@
 #include <exception>
 #include <mutex>
 #include <new>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -655,6 +659,14 @@ void hash_column(ColumnJob* job) {
 extern "C" SEXP compressor_column_xxh64(SEXP columns, SEXP threads) {
   if (TYPEOF(columns) != VECSXP) Rf_error("columns must be a list");
   const R_xlen_t k = XLENGTH(columns);
+  // Validate before any C++ object exists: Rf_error() must not skip a
+  // destructor.
+  for (R_xlen_t j = 0; j < k; ++j) {
+    const int type = TYPEOF(VECTOR_ELT(columns, j));
+    if (type != LGLSXP && type != INTSXP && type != REALSXP && type != STRSXP) {
+      Rf_error("column %d has an unsupported type for content hashing", (int) j + 1);
+    }
+  }
   std::vector<ColumnJob> jobs(static_cast<std::size_t>(k));
   for (R_xlen_t j = 0; j < k; ++j) {
     SEXP column = VECTOR_ELT(columns, j);
@@ -665,7 +677,7 @@ extern "C" SEXP compressor_column_xxh64(SEXP columns, SEXP threads) {
       case INTSXP: job.kind = 1; job.ints = INTEGER_RO(column); break;
       case REALSXP: job.kind = 2; job.reals = REAL_RO(column); break;
       case STRSXP: job.kind = 3; job.strings = STRING_PTR_RO(column); job.na_string = NA_STRING; break;
-      default: Rf_error("column %d has an unsupported type for content hashing", (int) j + 1);
+      default: break;  // rejected above
     }
   }
   int workers = Rf_asInteger(threads);
@@ -725,4 +737,147 @@ extern "C" SEXP compressor_sha256_raw(SEXP bytes) {
   char hex[65];
   sha256_hex(&sha, hex);
   return Rf_mkString(hex);
+}
+
+// SHA-256 hex digests of whole files, `threads` files at a time.  Equal to
+// digest::digest(path, algo = "sha256", file = TRUE).  A file that cannot be
+// opened or read yields NA.  The workers use only C stdio and plain buffers,
+// never the R API.
+namespace {
+bool sha256_file(const char* path, char* out /* 65 bytes */) {
+  std::FILE* file = std::fopen(path, "rb");
+  if (!file) return false;
+  Sha256 sha;
+  sha256_init(&sha);
+  std::vector<unsigned char> buffer(1u << 20);
+  bool ok = true;
+  while (true) {
+    const std::size_t got = std::fread(buffer.data(), 1, buffer.size(), file);
+    if (got) sha256_update(&sha, buffer.data(), got);
+    if (got < buffer.size()) {
+      ok = !std::ferror(file);
+      break;
+    }
+  }
+  std::fclose(file);
+  if (ok) sha256_hex(&sha, out);
+  return ok;
+}
+}  // namespace
+
+extern "C" SEXP compressor_sha256_files(SEXP paths, SEXP threads) {
+  if (TYPEOF(paths) != STRSXP) Rf_error("paths must be a character vector");
+  const R_xlen_t k = XLENGTH(paths);
+  std::vector<std::string> names(static_cast<std::size_t>(k));
+  std::vector<int> present(static_cast<std::size_t>(k), 0);
+  for (R_xlen_t i = 0; i < k; ++i) {
+    SEXP s = STRING_ELT(paths, i);
+    if (s == NA_STRING) continue;
+    names[static_cast<std::size_t>(i)] = R_ExpandFileName(Rf_translateChar(s));
+    present[static_cast<std::size_t>(i)] = 1;
+  }
+  std::vector<std::array<char, 65>> digests(static_cast<std::size_t>(k));
+  std::vector<int> ok(static_cast<std::size_t>(k), 0);
+  int workers = Rf_asInteger(threads);
+  if (workers == NA_INTEGER || workers < 1) workers = 1;
+  if (static_cast<R_xlen_t>(workers) > k) workers = static_cast<int>(k > 0 ? k : 1);
+  std::atomic<std::size_t> next(0);
+  auto work = [&]() {
+    while (true) {
+      const std::size_t at = next.fetch_add(1);
+      if (at >= names.size()) return;
+      if (present[at]) ok[at] = sha256_file(names[at].c_str(), digests[at].data()) ? 1 : 0;
+    }
+  };
+  bool threaded = false;
+  if (workers > 1) {
+    std::vector<std::thread> pool;
+    try {
+      for (int w = 0; w < workers; ++w) pool.emplace_back(work);
+      threaded = true;
+    } catch (...) {
+      threaded = false;
+    }
+    for (std::thread& t : pool) if (t.joinable()) t.join();
+  }
+  // Serial path, or the remaining files if thread creation failed part way.
+  if (!threaded) work();
+  SEXP out = PROTECT(Rf_allocVector(STRSXP, k));
+  for (R_xlen_t i = 0; i < k; ++i) {
+    const std::size_t at = static_cast<std::size_t>(i);
+    SET_STRING_ELT(out, i, ok[at] ? Rf_mkChar(digests[at].data()) : NA_STRING);
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+// TRUE where file a[i] and file b[i] have identical bytes (FALSE when either
+// cannot be read or the sizes differ), compared `threads` pairs at a time in
+// 1 MiB chunks. Workers use only C stdio and plain buffers.
+namespace {
+bool files_equal(const char* a, const char* b) {
+  std::FILE* fa = std::fopen(a, "rb");
+  if (!fa) return false;
+  std::FILE* fb = std::fopen(b, "rb");
+  if (!fb) {
+    std::fclose(fa);
+    return false;
+  }
+  std::vector<unsigned char> ba(1u << 20), bb(1u << 20);
+  bool equal = true;
+  while (equal) {
+    const std::size_t na = std::fread(ba.data(), 1, ba.size(), fa);
+    const std::size_t nb = std::fread(bb.data(), 1, bb.size(), fb);
+    if (na != nb || (na && std::memcmp(ba.data(), bb.data(), na) != 0)) equal = false;
+    if (na < ba.size()) {
+      if (std::ferror(fa) || std::ferror(fb)) equal = false;
+      break;
+    }
+  }
+  std::fclose(fa);
+  std::fclose(fb);
+  return equal;
+}
+}  // namespace
+
+extern "C" SEXP compressor_files_equal(SEXP a, SEXP b, SEXP threads) {
+  if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || XLENGTH(a) != XLENGTH(b)) {
+    Rf_error("files_equal needs two character vectors of equal length");
+  }
+  const R_xlen_t k = XLENGTH(a);
+  std::vector<std::string> pa(static_cast<std::size_t>(k)), pb(static_cast<std::size_t>(k));
+  std::vector<int> ok(static_cast<std::size_t>(k), 0);
+  for (R_xlen_t i = 0; i < k; ++i) {
+    if (STRING_ELT(a, i) == NA_STRING || STRING_ELT(b, i) == NA_STRING) continue;
+    pa[static_cast<std::size_t>(i)] = R_ExpandFileName(Rf_translateChar(STRING_ELT(a, i)));
+    pb[static_cast<std::size_t>(i)] = R_ExpandFileName(Rf_translateChar(STRING_ELT(b, i)));
+    ok[static_cast<std::size_t>(i)] = -1;  // to compare
+  }
+  int workers = Rf_asInteger(threads);
+  if (workers == NA_INTEGER || workers < 1) workers = 1;
+  if (static_cast<R_xlen_t>(workers) > k) workers = static_cast<int>(k > 0 ? k : 1);
+  std::atomic<std::size_t> next(0);
+  auto work = [&]() {
+    while (true) {
+      const std::size_t at = next.fetch_add(1);
+      if (at >= pa.size()) return;
+      if (ok[at] == -1) ok[at] = files_equal(pa[at].c_str(), pb[at].c_str()) ? 1 : 0;
+    }
+  };
+  bool threaded = false;
+  if (workers > 1) {
+    std::vector<std::thread> pool;
+    try {
+      for (int w = 0; w < workers; ++w) pool.emplace_back(work);
+      threaded = true;
+    } catch (...) {
+      threaded = false;
+    }
+    for (std::thread& t : pool) if (t.joinable()) t.join();
+  }
+  if (!threaded) work();
+  SEXP out = PROTECT(Rf_allocVector(LGLSXP, k));
+  for (R_xlen_t i = 0; i < k; ++i) LOGICAL(out)[i] = ok[static_cast<std::size_t>(i)] == 1;
+  UNPROTECT(1);
+  return out;
 }

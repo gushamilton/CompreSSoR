@@ -41,7 +41,14 @@ compress_sumstats(input, output, profile = c("standard", "exact"),
     row-level reports, alias resolution, and temporary variant-ID creation.
     A pre-canonicalization native-identity safety filter drops unsupported
     primary chromosomes, coordinates, or REF/ALT pairs and records their
-    counts in preparation metadata. Malformed canonical statistics remain
+    counts in preparation metadata. Rows whose \code{effect_allele} and
+    \code{other_allele} are not ALT and REF (for example effect = REF) are
+    dropped and counted as \code{orientation_mismatch}, as compact QC drops
+    them in report mode; neither mode flips beta or EAF. In every mode, rows
+    past the end of their chromosome are dropped with a warning, counted in
+    \code{manifest$dropped_rows}, and stop the write when they exceed 1\% of
+    the input (set \code{options(CompreSSoR.max_out_of_range_fraction = )}
+    to change the limit). Malformed canonical statistics remain
     fail-closed; native duplicate checks still apply. Use it only for a
     table that is already validated upstream: canonical column names,
     primary chromosomes, whole positive coordinates, distinct single-base

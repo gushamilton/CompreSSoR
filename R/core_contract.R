@@ -83,8 +83,20 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
     !is.na(match(alternate, c("A", "C", "G", "T")))
   invalid_allele <- !valid_alleles
   same_alleles <- valid_alleles & reference == alternate
+  # The store encodes effect = ALT, other = REF and canonicalize_core_identity()
+  # overwrites effect/other from REF/ALT. A row whose effect allele is not ALT
+  # (for example effect = REF with the beta for REF) would otherwise be
+  # written with its beta sign silently attached to the wrong allele. Compact
+  # QC rejects such rows as `orientation_mismatch`; qc='none' drops and counts
+  # them the same way (it never flips beta or EAF).
+  oriented <- pcodec_allele_matches(data$effect_allele, alternate,
+                                    data$alternate_allele) &
+    pcodec_allele_matches(data$other_allele, reference, data$reference_allele)
+  orientation_mismatch <- valid_alleles & !same_alleles & !oriented
+  orientation_mismatch[is.na(orientation_mismatch)] <- FALSE
   unsupported <- invalid_primary_chromosome | nonfinite_coordinate |
-    noninteger_coordinate | coordinate_out_of_range | invalid_allele | same_alleles
+    noninteger_coordinate | coordinate_out_of_range | invalid_allele | same_alleles |
+    orientation_mismatch
   unsupported[is.na(unsupported)] <- TRUE
 
   counts <- c(
@@ -93,7 +105,8 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
     noninteger_coordinate = sum(noninteger_coordinate),
     coordinate_out_of_range = sum(coordinate_out_of_range),
     invalid_allele = sum(invalid_allele),
-    same_alleles = sum(same_alleles)
+    same_alleles = sum(same_alleles),
+    orientation_mismatch = sum(orientation_mismatch)
   )
   report <- list(
     mode = "pre_canonicalization",
@@ -110,6 +123,27 @@ filter_pcodec_identity_safety <- function(data, build = "GRCh38") {
     data[!unsupported, , drop = FALSE]
   }
   list(data = kept, keep = !unsupported, report = report)
+}
+
+# TRUE where the allele `x` equals the normalised allele `target` (whose raw
+# source column is `target_raw`). Rows equal as raw strings are accepted
+# without normalising; only the remaining rows are trimmed and upper-cased.
+# Missing alleles never match.
+pcodec_allele_matches <- function(x, target, target_raw) {
+  n <- length(target)
+  if (is.null(x)) return(logical(n))
+  if (is.factor(x)) x <- as.character(x)
+  if (is.factor(target_raw)) target_raw <- as.character(target_raw)
+  if (identical(x, target_raw)) return(!is.na(target))
+  ok <- x == target_raw
+  ok[is.na(ok)] <- FALSE
+  rest <- which(!ok)
+  if (length(rest)) {
+    normalised <- normalise_allele_vector(x[rest])
+    ok[rest] <- !is.na(normalised) & !is.na(target[rest]) &
+      normalised == target[rest]
+  }
+  ok & !is.na(target)
 }
 
 # Optional statistic checker for callers that want a cheap canonical-value

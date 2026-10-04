@@ -117,9 +117,17 @@ test_that("none mode drops unsupported identity rows before canonicalization", {
   input$reference_allele[6L] <- input$alternate_allele[6L]
   input$other_allele[6L] <- input$reference_allele[6L]
 
-  store <- compress_sumstats(input, tempfile("none-identity-filter-"),
-                             qc = "none", overwrite = TRUE)
+  # One row (1/7) past the end of chr15 exceeds the default 1% stop limit for
+  # out-of-range rows; raise the limit and expect the drop warning instead.
+  old <- options(CompreSSoR.max_out_of_range_fraction = 0.5)
+  on.exit(options(old), add = TRUE)
+  expect_warning(
+    store <- compress_sumstats(input, tempfile("none-identity-filter-"),
+                               qc = "none", overwrite = TRUE),
+    "1 of 7 input rows .* past the end of their chromosome")
   expect_equal(store$manifest$n_rows, 1L)
+  expect_equal(store$manifest$dropped_rows$past_chromosome_end, 1L)
+  expect_equal(store$manifest$dropped_rows$input_rows, 7L)
 
   preparation <- store$manifest$preparation$preparation
   safety <- preparation$identity_safety

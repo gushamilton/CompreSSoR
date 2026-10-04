@@ -1,13 +1,13 @@
 compressor_manifest_contract <- function(path, build, selection, profile,
                                          backend, threads, row_policy, source,
                                          preparation = NULL, panel = NULL,
-                                         qc = "compact") {
+                                         qc = "compact", dropped_rows = NULL) {
   manifest_path <- file.path(path, "manifest.json")
   manifest <- compressor_manifest_contract_apply(
     read_manifest(manifest_path), build = build, selection = selection,
     profile = profile, backend = backend, threads = threads,
     row_policy = row_policy, source = source, preparation = preparation,
-    panel = panel, qc = qc
+    panel = panel, qc = qc, dropped_rows = dropped_rows
   )
   write_manifest(manifest, manifest_path)
   if (identical(backend, "pcodec")) seal_pcodec_manifest(manifest_path)
@@ -18,7 +18,7 @@ compressor_manifest_contract <- function(path, build, selection, profile,
 compressor_manifest_contract_apply <- function(manifest, build, selection, profile,
                                                backend, threads, row_policy, source,
                                                preparation = NULL, panel = NULL,
-                                               qc = "compact") {
+                                               qc = "compact", dropped_rows = NULL) {
   manifest$genome_build <- build
   manifest$input_build <- build
   manifest$stored_build <- build
@@ -64,14 +64,68 @@ compressor_manifest_contract_apply <- function(manifest, build, selection, profi
                     input_build = build, threads = as.integer(threads),
                     row_policy = manifest$row_policy, qc = qc))
   )
+  if (!is.null(dropped_rows)) manifest$dropped_rows <- dropped_rows
   manifest
 }
 
+# Top-level summary of the input rows that QC (compact) or identity safety
+# (qc = 'none') did not store, by reason. Selection (core/hm3/core_plus)
+# subsets are recorded separately under `selection`.
+compressor_dropped_rows_summary <- function(input_rows, counts) {
+  counts <- unlist(counts %||% list())
+  counts <- counts[!is.na(counts) & counts > 0]
+  get_count <- function(name) {
+    if (name %in% names(counts)) as.integer(counts[[name]]) else 0L
+  }
+  list(
+    input_rows = as.integer(input_rows),
+    past_chromosome_end = get_count("coordinate_out_of_range"),
+    reasons = stats::setNames(as.list(as.integer(counts)), names(counts))
+  )
+}
+
+# Rows whose position is past the end of their chromosome in the declared
+# build are dropped in every QC mode. A few such rows are tolerable, but many
+# usually mean the input is on another build, so warn with the count and
+# stop above getOption("CompreSSoR.max_out_of_range_fraction", 0.01).
+compressor_check_out_of_range <- function(count, input_rows, build) {
+  count <- as.numeric(count %||% 0)
+  if (!length(count) || is.na(count) || count <= 0 || !input_rows) {
+    return(invisible(0))
+  }
+  fraction <- count / input_rows
+  limit <- getOption("CompreSSoR.max_out_of_range_fraction", 0.01)
+  if (length(limit) != 1L || !is.numeric(limit) || is.na(limit) || limit < 0) {
+    stop("option CompreSSoR.max_out_of_range_fraction must be one number >= 0",
+         call. = FALSE)
+  }
+  detail <- sprintf("%s of %s input rows (%.3g%%) have a position past the end of their chromosome in %s",
+                    format(count, big.mark = ",", scientific = FALSE),
+                    format(input_rows, big.mark = ",", scientific = FALSE),
+                    100 * fraction, build)
+  if (fraction > limit) {
+    stop(detail, "; this usually means the input is on another genome build. ",
+         "Refusing to drop more than ", 100 * limit, "% of rows; set ",
+         "options(CompreSSoR.max_out_of_range_fraction = ...) to override",
+         call. = FALSE)
+  }
+  warning(detail, "; these rows were dropped (see manifest$dropped_rows)",
+          call. = FALSE)
+  invisible(count)
+}
+
+# Runs after the atomic commit, so the manifest is replaced atomically
+# (temporary file + rename) rather than rewritten in place: a crash here
+# leaves the complete committed manifest, never a truncated one.
 record_commit_timing <- function(path, seconds) {
   manifest_path <- file.path(path, "manifest.json")
   manifest <- manifest_with_commit_timing(read_manifest(manifest_path), seconds)
-  write_manifest(manifest, manifest_path)
-  if (identical(manifest$backend, "pcodec")) seal_pcodec_manifest(manifest_path)
+  if (identical(manifest$backend, "pcodec")) {
+    write_pcodec_manifest(pcodec_seal_manifest_value(manifest), manifest_path,
+                          atomic = TRUE)
+  } else {
+    atomic_write_file(manifest_path, function(tmp) write_manifest(manifest, tmp))
+  }
   invisible(manifest)
 }
 
@@ -160,7 +214,15 @@ write_selection_regions <- function(output, selection) {
 #'   REF/ALT with `effect_allele` = ALT, no duplicate variants, finite beta,
 #'   positive finite SE, and EAF/p in \[0, 1\]. Rows the native identity cannot
 #'   represent are still dropped (and counted in the manifest), but beta, SE,
-#'   Z, EAF and p are not checked and duplicates stop the write. On such a
+#'   Z, EAF and p are not checked and duplicates stop the write. Rows whose
+#'   `effect_allele`/`other_allele` are not ALT/REF (for example effect =
+#'   REF) are dropped and counted as `orientation_mismatch`, exactly as
+#'   compact QC drops them in report mode; neither mode ever flips beta or
+#'   EAF. In every mode, rows past the end of their chromosome are dropped
+#'   with a warning, counted in `manifest$dropped_rows`, and stop the write
+#'   when they exceed 1% of the input (usually a genome-build mismatch; set
+#'   `options(CompreSSoR.max_out_of_range_fraction = )` to change the
+#'   limit). On such a
 #'   table the payload is identical to the `compact` result (FinnGen, 10M rows:
 #'   about 26 s instead of 41 s at 8 threads).
 #' @param allele_columns Optional mapping for inputs without explicit REF/ALT
@@ -429,6 +491,19 @@ compress_sumstats <- function(input, output,
       stop(failure, call. = FALSE)
     }
   }
+  drop_counts <- if (identical(qc, "none")) {
+    identity_safety$report$counts
+  } else {
+    as.list(structural$report$rejection_counts)
+  }
+  input_rows_before_qc <- if (identical(qc, "none")) {
+    input_rows_before_identity_safety
+  } else {
+    structural$report$input_rows %||% input_rows_before_identity_safety
+  }
+  dropped_rows <- compressor_dropped_rows_summary(input_rows_before_qc, drop_counts)
+  compressor_check_out_of_range(dropped_rows$past_chromosome_end,
+                                input_rows_before_qc, store_build)
   identity_started <- phase_clock()
   raw <- canonicalize_core_identity(
     raw, build = store_build, include_variant_id = identical(backend, "parquet"),
@@ -595,7 +670,7 @@ compress_sumstats <- function(input, output,
       source = attr(raw, "source_provenance") %||% NULL,
       preparation = preparation,
       panel = preparation$variant_set %||% NULL,
-      qc = qc
+      qc = qc, dropped_rows = dropped_rows
     )
     manifest <- pcodec_seal_manifest_value(manifest_json_normalise(manifest))
     write_pcodec_manifest(manifest, file.path(output, "manifest.json"))
@@ -604,7 +679,8 @@ compress_sumstats <- function(input, output,
     commit_seconds <- phase_seconds(commit_started)
     completed <- TRUE
     write_pcodec_manifest(manifest_with_commit_timing(manifest, commit_seconds),
-                          file.path(transaction$target, "manifest.json"))
+                          file.path(transaction$target, "manifest.json"),
+                          atomic = TRUE)
     return(open_compressor(transaction$target))
   }
 
@@ -740,7 +816,7 @@ compress_sumstats <- function(input, output,
     source = attr(raw, "source_provenance") %||% NULL,
     preparation = preparation,
     panel = preparation$variant_set %||% NULL,
-    qc = qc
+    qc = qc, dropped_rows = dropped_rows
   )
   store <- open_compressor(output)
   if (isTRUE(cache)) build_cache(store, overwrite = TRUE, block_rows = block_rows)
@@ -815,11 +891,19 @@ print.compressor_store <- function(x, ...) {
 read_region_bounds <- function(region) {
   if (is.null(region)) return(NULL)
   if (length(region) == 1L && is.character(region)) {
-    parts <- regexec("^chr?([^:]+):([0-9]+)-([0-9]+)$", region, ignore.case = TRUE)
-    hit <- regmatches(region, parts)[[1L]]
+    # An optional "chr" prefix: "chr1:100-200" and "1:100-200" (the former
+    # "^chr?" pattern required "ch" and so rejected unprefixed regions).
+    parts <- regexec("^(?:chr)?([^:]+):([0-9]+)-([0-9]+)$", trimws(region),
+                     ignore.case = TRUE, perl = TRUE)
+    hit <- regmatches(trimws(region), parts)[[1L]]
     if (length(hit) != 4L) stop("region must look like chr1:100-200", call. = FALSE)
-    return(list(chromosome = sub("^chr", "", hit[2L], ignore.case = TRUE),
+    return(list(chromosome = hit[2L],
                 start = as.numeric(hit[3L]), end = as.numeric(hit[4L])))
+  }
+  if (is.character(region) && length(region) == 3L && !anyNA(region)) {
+    return(list(chromosome = sub("^chr", "", region[1L], ignore.case = TRUE),
+                start = suppressWarnings(as.numeric(region[2L])),
+                end = suppressWarnings(as.numeric(region[3L]))))
   }
   if (is.numeric(region) && length(region) == 3L) return(list(chromosome = as.character(region[1L]), start = region[2L], end = region[3L]))
   stop("region must be a string such as chr1:100-200 or c(chr, start, end)", call. = FALSE)
@@ -984,7 +1068,10 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #' @param stores A non-empty list or character vector of Pcodec stores.
 #' @param variants A canonical `chromosome:position:REF:ALT` vector or a
 #'   zero-based row-ID vector shared by every store, or one such vector per
-#'   store in a list. May be `NULL` when `region` is given.
+#'   store in a list. May be `NULL` when `region` is given. A store with
+#'   neither `variants` nor `region` is read in full (every row, as
+#'   [read_sumstats()] without a selection), which for large stores is
+#'   expensive; pass keys, row IDs or a region for an extraction.
 #' @param region Optional region string (as in [read_sumstats()]), shared by
 #'   every store or one per store in a list. Stores that share the same
 #'   variant panel (identical position and substitution streams) resolve keys,
@@ -1055,8 +1142,14 @@ decompress_sumstats <- function(store, region = NULL, variants = NULL, columns =
 #' Validate a CompreSSoR store
 #'
 #' @param store A store object or path.
-#' @param full For Pcodec stores, decode and semantically check every frame in
-#'   addition to verifying every file, frame, index, and manifest checksum.
+#' @param full For Pcodec stores, verify every payload file against the byte
+#'   count and SHA-256 recorded in the manifest, check the aggregate
+#'   `payload_sha256` against that record, and decode and semantically check
+#'   every frame. Without `full`, only the manifest checksum (on open), the
+#'   native index checksum (whenever the index is parsed) and the structural
+#'   metadata are checked; a corrupted byte inside a value or identity stream
+#'   is then not detected (see the technical README for the per-block
+#'   checksum proposal).
 #' @return A list with `valid`, `errors`, `rows` and `profile`.
 #' @examples
 #' \dontrun{

@@ -6,8 +6,13 @@ optionally, every decoded frame.}
 \usage{validate_compressor(store, full = FALSE)}
 \arguments{
 \item{store}{A \code{compressor_store} object or store directory path.}
-\item{full}{For Pcodec stores, decode and semantically check every frame in
-addition to verifying every file, frame, index, and manifest checksum.}
+\item{full}{For Pcodec stores, verify every payload file against the byte
+count and SHA-256 recorded in the manifest, check the aggregate
+\code{payload_sha256} against that record, and decode and semantically check
+every frame. Without \code{full}, only the manifest checksum (on open), the
+native index checksum (whenever the index is parsed) and the structural
+metadata are checked; a corrupted byte inside a value or identity stream is
+then not detected.}
 }
 \value{A list with \code{valid}, \code{errors}, \code{rows}, and \code{profile}.}
 \examples{

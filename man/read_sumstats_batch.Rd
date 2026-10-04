@@ -18,7 +18,9 @@ read_sumstats_batch(
 
 \item{variants}{A canonical \code{chromosome:position:REF:ALT} vector or a
 zero-based row-ID vector shared by every store, or one such vector per
-store in a list. May be \code{NULL} when \code{region} is given.}
+store in a list. May be \code{NULL} when \code{region} is given. A store
+with neither \code{variants} nor \code{region} is read in full (every row),
+which for large stores is expensive.}
 
 \item{columns}{Output columns requested from every store.}
 

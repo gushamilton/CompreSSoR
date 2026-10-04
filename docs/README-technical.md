@@ -91,6 +91,39 @@ volatile `created_utc` field removed. The detached `manifest.sha256` remains a
 byte-integrity check for the actual manifest and may therefore differ between
 runs; a whole-directory byte hash is not promised.
 
+Neither hash depends on the writer thread count. Stores written from 0.7.2
+on keep thread counts out of `native.index.json` (the index is a payload file,
+so it is covered by `payload_sha256`) and `canonical_sha256` ignores the
+observational `threads`, `writer`, `requested_workers` and `effective_workers`
+manifest fields. The `.pco` and exception streams are unchanged, but the index
+bytes, and therefore `payload_sha256`, of a new store differ from those of the
+same input written by an earlier version; earlier stores still open, read and
+validate unchanged.
+
+What is verified, and when:
+
+- opening a store checks `manifest.json` against `manifest.sha256`;
+- parsing the native index (once per store and session, then cached) checks
+  `native.index.json` against its recorded SHA-256, so a shifted block anchor
+  or offset is never used;
+- `validate_compressor(full = TRUE)` hashes every payload file and checks its
+  byte count and SHA-256, and the aggregate `payload_sha256`, before decoding
+  every frame;
+- batched reads that share decoded identity between stores
+  (`read_sumstats_batch()`, `read_candidates_batch()`) first hash each
+  member's position and substitution streams against that store's own
+  manifest (cached per path, size and mtime), so a corrupt or half-copied
+  store fails instead of silently reading another store's keys.
+
+Ordinary reads do not hash the value and identity streams. Proposed
+follow-up (needs a format bump): an XXH64 checksum per stream block in the
+index, verified on every block decode, plus the Zstandard frame checksum for
+the exception frames. XXH64 costs 8 bytes per block (about 1.5 KB for the
+~180 blocks of a 10M-row store, under 0.01% of its ~38 MB) and hashes at
+roughly 10 GB/s, i.e. well under 1 ms per 10M-row full read and
+microseconds per selective read; the zstd frame checksum adds 4 bytes per
+exception frame and a similarly negligible cost.
+
 The current Pcodec identity scope is biallelic A/C/G/T SNVs on chromosomes
 1–22, X, and Y. Indels, unsupported alleles, unresolved reference matches, and
 ambiguous rows are handled by the ingestion/QC contract and are not silently

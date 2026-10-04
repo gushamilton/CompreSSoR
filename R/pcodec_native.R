@@ -910,6 +910,14 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
     exceptions = list(requested_workers = exception_stream$requested_workers,
                       effective_workers = exception_stream$effective_workers)
   )
+  # The index is part of the payload hash, so it holds no thread counts
+  # (those stay in the manifest's observational `writer` record): the same
+  # input gives the same index bytes at any `threads`.
+  strip_workers <- function(x) {
+    x$requested_workers <- NULL
+    x$effective_workers <- NULL
+    x
+  }
   index <- list(
     format = "CompreSSoR-native-index", version = 3L,
     position_encoding = "delta_u32_within_block",
@@ -917,7 +925,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
     key_block_rows = key_block_rows, value_block_rows = block_rows,
     blocks = block_template, key_blocks = key_block_template,
     value_blocks = block_template,
-    streams = streams, exceptions = exception_stream, writer = writer_metadata
+    streams = lapply(streams, strip_workers),
+    exceptions = strip_workers(exception_stream)
   )
   jsonlite::write_json(index, file.path(output, "native.index.json"),
                        auto_unbox = TRUE, pretty = TRUE, digits = 17)
@@ -1186,7 +1195,25 @@ pcodec_native_read_index <- function(store) {
   key <- paste0("index:", index_path)
   hit <- .pcodec_native_cache[[key]]
   if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
-  index <- jsonlite::fromJSON(index_path, simplifyVector = FALSE)
+  # The index (block offsets, lengths and position anchors) is read once,
+  # checked against the manifest's sha256 for it, and parsed from the same
+  # bytes; a corrupt index would otherwise silently shift or misread blocks.
+  size <- file.info(index_path, extra_cols = FALSE)$size
+  if (is.na(size)) stop("native Pcodec index is missing: ", index_path, call. = FALSE)
+  bytes <- readBin(index_path, raw(), n = size)
+  if (length(bytes) != size) stop("native Pcodec index is truncated", call. = FALSE)
+  recorded <- store$manifest$integrity$files[[store$manifest$files$index]]$sha256
+  if (!is.null(recorded)) {
+    observed <- if (is.loaded("compressor_sha256_raw", PACKAGE = "CompreSSoR")) {
+      .Call("compressor_sha256_raw", bytes, PACKAGE = "CompreSSoR")
+    } else digest::digest(bytes, algo = "sha256", serialize = FALSE)
+    if (!identical(tolower(as.character(recorded)), observed)) {
+      stop("native Pcodec index checksum mismatch in store '", store$path,
+           "': native.index.json does not match the manifest (corrupt or ",
+           "modified store)", call. = FALSE)
+    }
+  }
+  index <- jsonlite::parse_json(rawToChar(bytes), simplifyVector = FALSE)
   if (!identical(index$format, "CompreSSoR-native-index") ||
       !as.integer(index$version) %in% c(1L, 2L, 3L)) {
     stop("invalid native Pcodec index", call. = FALSE)
@@ -1359,7 +1386,8 @@ pcodec_native_read_pvalue_flag <- function(store, name = "pvalue_flag",
     as.integer(values)
   }
   flags <- if (length(blocks)) {
-    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads),
+    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads,
+                                  labels = store$path, what = "domain read"),
            use.names = FALSE)
   } else {
     integer()
@@ -1489,7 +1517,8 @@ pcodec_native_read_pvalue_order <- function(store, name = "pvalue_order",
     ))
   }
   ranks <- if (length(blocks)) {
-    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads),
+    unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads,
+                                  labels = store$path, what = "domain read"),
            use.names = FALSE)
   } else {
     numeric()
@@ -2122,8 +2151,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         key_targets <- pcodec_native_target_keys(variants, build = build, trim = TRUE)
       }
     } else {
-      row_targets <- unique(as.integer(variants))
-      if (anyNA(row_targets) || any(row_targets < 0L | row_targets >= n)) {
+      row_targets <- unique(pcodec_row_ids(variants))
+      if (any(row_targets < 0L | row_targets >= n)) {
         stop("variants must be valid zero-based row IDs", call. = FALSE)
       }
     }
@@ -2221,7 +2250,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       list(part = part, source_bytes = bytes)
     }
     key_results <- pcodec_parallel_lapply(key_candidates, read_key_candidate,
-                                          threads = threads)
+                                          threads = threads, labels = store$path,
+                                          what = "key block decode")
     source_bytes <- source_bytes + sum(vapply(key_results,
                                               function(result) result$source_bytes,
                                               numeric(1)))
@@ -2308,7 +2338,8 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
-                                          threads = threads)
+                                          threads = threads, labels = store$path,
+                                          what = "value block decode")
   source_bytes <- source_bytes + sum(vapply(block_results,
                                             function(result) result$source_bytes,
                                             numeric(1)))
@@ -2462,7 +2493,14 @@ pcodec_native_validate_store <- function(store, full = FALSE) {
           any(starts[-1] != stops[-length(stops)])) {
         errors <- c(errors, "native blocks do not cover rows contiguously")
       }
-            }
+    }
+    if (isTRUE(full)) {
+      # Every payload file against its recorded byte count and sha256, and
+      # the aggregate payload_sha256 against the per-file record. A decode
+      # alone cannot catch a flipped byte that still decodes.
+      errors <- c(errors, pcodec_integrity_problems(
+        s, threads = pcodec_native_default_threads()))
+    }
             if (isTRUE(full) && !length(errors)) {
                 pcodec_native_read_store(s, columns = c(
                   "chromosome", "base_pair_location", "effect_allele",
