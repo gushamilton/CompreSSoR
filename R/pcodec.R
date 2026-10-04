@@ -558,36 +558,37 @@ pcodec_identity_signature <- function(store) {
   hs <- if (!is.null(sub)) files[[sub]]$sha256 else NULL
   if (is.null(hp) || is.null(hs)) return(paste0("unique:", normalizePath(store$path)))
   # Positions are delta-coded within key blocks, so the stream bytes alone do
-  # not fix the identity: the block anchors (first_position, row ranges) live
-  # in the native index and must match too.
-  index <- pcodec_native_read_index(store)
-  anchors <- lapply(pcodec_native_index_blocks(index, "key"), function(b) {
-    list(b$row_start, b$row_stop, b$first_position, b$last_position)
-  })
+  # not fix the identity: the block anchors (row ranges, first and last
+  # positions) and the position encoding, from the index, must match too.
+  # They are taken from the cached block matrices (no parsed index needed).
+  mats <- pcodec_native_select_matrices(store)
+  anchors <- unname(mats$position[, 4:7, drop = FALSE])
   paste(hp, hs, as.character(m$n_rows %||% m$rows),
         as.character(m$genome_build %||% "GRCh38"),
-        as.character(index$position_encoding %||% ""),
+        if (isTRUE(mats$delta)) "delta_u32_within_block" else "",
         digest::digest(anchors, algo = "sha1"), sep = "|")
 }
 
 # Batched reads. Two strategies, both returning what read_sumstats() returns
 # for each store:
-# * panel sharing (the default for several stores): stores with the same
-#   variant panel (equal identity signature) resolve keys, row IDs and regions
-#   to rows once, then decode values only, stores in parallel with
-#   threads %/% length(stores) decoder threads each; stores alone in their
-#   group are read in one pass each, in parallel.
-# * one pass per store (always for a single store, which gets all threads):
-#   keys -> rows -> values in one native call per store, stores in parallel.
-#   A shared key list is normalised and parsed once.
-# Measured on 2-20 shared-panel stores (1k and 100k keys, 1-8 threads),
-# sharing is faster in every cell except 2 stores x 100k keys at >= 2 threads
-# (about 10% slower than one pass per store), so it stays the default.
-# options(CompreSSoR.batch_share_panels = TRUE/FALSE) forces a strategy.
+# * one pass per store (the default): each forked worker opens its store and
+#   reads keys -> rows -> values in one native call; a shared key list is
+#   normalised once and parsed once per genome build per worker.
+# * panel sharing (opt-in, options(CompreSSoR.batch_share_panels = TRUE)):
+#   stores with the same variant panel (equal identity signature) resolve
+#   keys, row IDs and regions to rows once, then decode values only, stores
+#   in parallel with threads %/% length(stores) decoder threads each; stores
+#   alone in their group are read in one pass each. Members are verified
+#   against their own manifests first (pcodec_verify_identity_files()).
+# Sharing was the default while selective reads decoded keys in R. With the
+# native selective reader a per-store key resolution costs milliseconds, and
+# sharing needs a parent-side grouping pass plus identity verification: on
+# BluePebble (8 threads) one pass per store was as fast on 20 shared-panel
+# simulated stores (1k keys) and faster on 300 UKB-PPP stores (6k keys).
 pcodec_batch_share_panels <- function(k, threads) {
   forced <- getOption("CompreSSoR.batch_share_panels", NULL)
   if (!is.null(forced)) return(k > 1L && isTRUE(forced))
-  k > 1L
+  FALSE
 }
 
 pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
@@ -605,14 +606,8 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   }
   columns <- unique(as.character(columns))
   threads <- pcodec_validate_threads(threads)
-  stores <- lapply(stores, pcodec_open_store_cached)
-  store_labels <- vapply(stores, function(store) store$path, character(1))
-  if (any(!vapply(stores, function(store) {
-    store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS
-  }, logical(1)))) {
-    stop("this CompreSSoR build reads native 0.4 stores only; the historical Python-backed store is archived",
-         call. = FALSE)
-  }
+  share <- pcodec_batch_share_panels(k, threads)
+  store_names <- names(stores)
   normalise <- function(keys) {
     if (is.null(keys)) return(NULL)
     if (is.character(keys)) {
@@ -651,6 +646,51 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     is.null(variants[[i]]) && is.null(region[[i]])
   }, logical(1))
 
+  if (!share) {
+    # One pass per store, in parallel: each worker opens its store and reads
+    # keys -> rows -> values in one native call (one fork round, no parent
+    # work per store). A shared key list is parsed once per genome build per
+    # worker process.
+    resolutions <- sum(!rows_only & !full)
+    .pcodec_batch_trace$identity_resolutions <-
+      .pcodec_batch_trace$identity_resolutions + resolutions
+    .pcodec_batch_trace$groups <- .pcodec_batch_trace$groups + resolutions
+    labels <- vapply(seq_len(k), function(i) {
+      candidates_store_label(stores[[i]], store_names[i])
+    }, character(1))
+    parse_cache <- new.env(parent = emptyenv())
+    inner <- max(1L, threads %/% k)
+    decoded <- pcodec_parallel_lapply(seq_len(k), function(i) {
+      store <- pcodec_open_store_cached(stores[[i]])
+      if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
+        stop("this CompreSSoR build reads native 0.4 stores only; the historical ",
+             "Python-backed store is archived", call. = FALSE)
+      }
+      targets <- NULL
+      if (is.character(variants[[i]])) {
+        build <- compressor_normalize_build(store$manifest$genome_build %||% "GRCh38")
+        ck <- paste(slot[i], build)
+        targets <- parse_cache[[ck]]
+        if (is.null(targets)) {
+          targets <- pcodec_native_target_keys(variants[[i]], build = build, trim = TRUE)
+          parse_cache[[ck]] <- targets
+        }
+      }
+      pcodec_native_projection(
+        pcodec_native_read_store(store, region = region[[i]], variants = variants[[i]],
+                                 columns = columns, threads = inner,
+                                 key_targets = targets),
+        columns = columns)
+    }, threads = threads, labels = labels, what = "batched read")
+    pcodec_batch_check_workers(decoded, k, labels)
+    names(decoded) <- store_names
+    return(decoded)
+  }
+
+  opened <- pcodec_batch_open(stores, threads, signatures = TRUE)
+  stores <- opened$stores
+  store_labels <- vapply(stores, function(store) store$path, character(1))
+
   # One pass per store for the stores in `idx`, in parallel; a shared key list
   # is parsed once per genome build. Worker errors are re-raised.
   parsed <- list()
@@ -680,17 +720,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     pcodec_batch_check_workers(out, length(idx), store_labels[idx])
   }
 
-  if (!pcodec_batch_share_panels(k, threads)) {
-    resolutions <- sum(!rows_only & !full)
-    .pcodec_batch_trace$identity_resolutions <-
-      .pcodec_batch_trace$identity_resolutions + resolutions
-    .pcodec_batch_trace$groups <- .pcodec_batch_trace$groups + resolutions
-    decoded <- one_pass(seq_len(k))
-    names(decoded) <- names(stores)
-    return(decoded)
-  }
-
-  signature <- vapply(stores, pcodec_identity_signature, character(1))
+  signature <- opened$signature
   # Resolve each distinct (identity group, request) once. Pure value reads
   # of an explicit row-id request need no identity work at all. Each distinct
   # request is hashed once.
@@ -770,9 +800,42 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   }, threads = threads, labels = store_labels[need], what = "batched read")
   # Shared-panel workers must not hand back anything but a store's data.
   pcodec_batch_check_workers(decoded, k, store_labels)
-  names(decoded) <- names(stores)
+  names(decoded) <- store_names
   decoded
 }
+
+# Open the stores of a batch (and load their cached block matrices, plus the
+# identity signature when panels are shared). With several stores and
+# threads this runs in forked workers, which parses manifests and indexes in
+# parallel; the parent then keeps each store's compact block matrices in its
+# cache (never the parsed index), so later stages and forks reuse them.
+pcodec_batch_open <- function(stores, threads, signatures = FALSE) {
+  labels <- vapply(seq_along(stores), function(i) {
+    candidates_store_label(stores[[i]], names(stores)[i])
+  }, character(1))
+  open_one <- function(x) {
+    store <- pcodec_open_store_cached(x)
+    if (!store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS) {
+      stop("this CompreSSoR build reads native 0.4 stores only; the historical ",
+           "Python-backed store is archived", call. = FALSE)
+    }
+    mats <- pcodec_native_select_matrices(store)
+    list(store = store, mats = mats,
+         signature = if (signatures) pcodec_identity_signature(store) else NA_character_)
+  }
+  parallel <- length(stores) >= PCODEC_BATCH_PARALLEL_OPEN && threads > 1L
+  out <- pcodec_parallel_lapply(stores, open_one,
+                                threads = if (parallel) threads else 1L,
+                                labels = labels, what = "store open")
+  if (parallel) {
+    for (item in out) pcodec_native_register_matrices(item$store, item$mats)
+  }
+  list(stores = lapply(out, `[[`, "store"),
+       signature = vapply(out, `[[`, character(1), "signature"))
+}
+
+# Batches of at least this many stores are opened in parallel workers.
+PCODEC_BATCH_PARALLEL_OPEN <- 8L
 
 # Every batched result must be a data frame (pcodec_parallel_lapply() has
 # already re-raised worker errors and rejected dead workers).

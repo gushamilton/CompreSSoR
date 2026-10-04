@@ -111,35 +111,25 @@ test_that("a dead forked worker is an error, never missing data", {
                "returned no result")
 })
 
-test_that("region and row candidate reads stop when a decode worker dies", {
+test_that("batched candidate reads stop when a store's worker dies", {
   skip_unless_native()
   skip_on_os("windows")
-  # Two 131,072-row key blocks so the key decode is split across workers.
-  n <- 140000L
-  data <- hardening_data(n)
-  path <- write_hardening_store(data, pvalue_order = FALSE)
-  reg <- "chr1:1-248000000"
-  ref <- read_candidates(path, 1e-3, region = reg, columns = c("key", "p_value"),
-                         threads = 2L)
-  expect_gt(nrow(ref), 0L)
+  data <- hardening_data(2000L)
+  paths <- c(write_hardening_store(data), write_hardening_store(hardening_data(2000L, 2L)),
+             write_hardening_store(hardening_data(2000L, 3L)))
+  ref <- read_candidates_batch(paths, 1e-3, columns = c("key", "p_value"), threads = 2L)
+  expect_length(ref, 3L)
   main <- Sys.getpid()
-  original <- CompreSSoR:::candidates_stream_reader
-  local_mocked_bindings(candidates_stream_reader = function(store) {
-    io <- original(store)
-    open <- io$open
-    io$open <- function(spec) {
-      if (Sys.getpid() != main && identical(spec$file, "position.pco")) {
-        tools::pskill(Sys.getpid(), 9L)
-      }
-      open(spec)
+  original <- CompreSSoR:::candidates_prepare
+  local_mocked_bindings(candidates_prepare = function(store, ...) {
+    if (Sys.getpid() != main && grepl(basename(paths[2]), store, fixed = TRUE)) {
+      tools::pskill(Sys.getpid(), 9L)
     }
-    io
+    original(store, ...)
   }, .package = "CompreSSoR")
-  expect_error(read_candidates(path, 1e-3, region = reg,
-                               columns = c("key", "p_value"), threads = 2L),
-               "returned no result|failed")
-  expect_error(read_candidates(path, 1e-3, columns = c("key", "p_value"), threads = 2L),
-               "returned no result|failed")
+  expect_error(read_candidates_batch(paths, 1e-3, columns = c("key", "p_value"),
+                                     threads = 3L),
+               "returned no result")
 })
 
 # ---------------------------------------------------------- (2) checksums
@@ -221,7 +211,11 @@ test_that("batch identity sharing refuses a store whose identity streams are cor
   # Half-copied store: truncated position stream, manifest intact.
   bytes <- readBin(file.path(b, "position.pco"), raw(), n = 1e7)
   writeBin(bytes[seq_len(length(bytes) %/% 2L)], file.path(b, "position.pco"))
-  old <- options(CompreSSoR.batch_share_panels = TRUE)
+  # Without sharing each store reads its own (corrupt) streams and fails.
+  expect_error(read_sumstats_batch(list(a, b), variants = kv, threads = 1L))
+  expect_error(read_candidates_batch(list(a, b), 5e-8, columns = c("key", "p_value")))
+  old <- options(CompreSSoR.batch_share_panels = TRUE,
+                 CompreSSoR.candidates_share_keys = TRUE)
   on.exit(options(old), add = TRUE)
   expect_error(read_sumstats_batch(list(a, b), variants = kv, threads = 1L),
                "failed identity verification")

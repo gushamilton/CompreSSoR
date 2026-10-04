@@ -1,5 +1,37 @@
 # CompreSSoR (development)
 
+Faster, bit-identical reads (adversarial review findings 1, 6-9, 11, 15):
+
+- `read_candidates()` and `read_candidates_batch()` fetch candidate rows
+  through the native selective reader: only the key and value blocks that
+  hold candidate rows are read and decoded, in native threads, instead of
+  decoding whole blocks in R.
+- One value decoder for every reader. Row-ID, key, region, region+key,
+  candidate and batched reads decode with the same compiled decoder as the
+  full read (it now takes a per-row SE-centre index), so every reader returns
+  values bit-identical to the full read; previously selective reads decoded
+  in R and differed in the last bits (up to ~4.5e-14 relative). The package
+  is compiled with `-ffp-contract=off` where the compiler supports it, so the
+  decoder's arithmetic does not depend on FMA contraction. Full-read values
+  on platforms whose compiler contracted by default (clang on arm64) can
+  change in the last bit; stores are unchanged.
+- The exception sidecar is read natively in one call with one file handle.
+- Opening a store reads `manifest.json` once (hashed in memory and parsed
+  from the same bytes). Readers use compact cached block matrices instead of
+  the parsed index; parsed indexes are kept for the 16 most recently used
+  stores only (`options(CompreSSoR.index_cache_size = )`). Batched readers
+  open stores, parse indexes and compute identity signatures in parallel
+  workers, and decode the shared keys of separate panel groups in parallel.
+- Missing-EAF stores: an exception record that exists only because EAF is
+  missing (flags = 4) now stores zero in its unread Z and log2(SE) fields,
+  so these records compress (about 4 instead of 9 bytes per missing-EAF row
+  in tests). Decoded values are unchanged; stores with complete EAF are
+  byte-identical to before.
+- Writer: payload files are hashed natively in parallel; input already in
+  key order skips the radix order and duplicate scan; only the columns used
+  afterwards are reordered. Payloads are unchanged.
+
+
 Integrity hardening (adversarial review findings 2-5, 10, 12, 13, 16):
 
 - `compress_sumstats(qc = "none")` no longer writes rows whose effect allele

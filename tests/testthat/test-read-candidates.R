@@ -221,11 +221,19 @@ test_that("read_candidates_batch reuses same-panel identity and matches singles"
   })
   paths <- vapply(stores, function(s) s$path, character(1))
   cols <- c("key", "p_value", "beta")
+  # Default: one pass per store, no shared key decode.
+  before <- CompreSSoR:::.pcodec_batch_trace$identity_resolutions
+  d <- read_candidates_batch(paths, 1e-3, columns = cols, order = "exact")
+  expect_identical(CompreSSoR:::.pcodec_batch_trace$identity_resolutions - before, 0L)
+  # Opt-in sharing decodes the panel's keys once.
+  old <- options(CompreSSoR.candidates_share_keys = TRUE)
+  on.exit(options(old), add = TRUE)
   before <- CompreSSoR:::.pcodec_batch_trace$identity_resolutions
   b <- read_candidates_batch(paths, 1e-3, columns = cols, order = "exact")
   expect_identical(CompreSSoR:::.pcodec_batch_trace$identity_resolutions - before, 1L)
   for (i in 1:3) {
     one <- read_candidates(paths[[i]], 1e-3, columns = cols, order = "exact")
     expect_identical(b[[i]], one)
+    expect_identical(d[[i]], one)
   }
 })

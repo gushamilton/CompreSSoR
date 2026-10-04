@@ -349,6 +349,17 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
       2L * as.integer(se_exception_mask[rows + 1L]) +
       4L * as.integer(!valid_eaf[rows + 1L])
   )
+  # A record that exists only because EAF is missing or invalid (flags = 4)
+  # stores just the EAF; its Z and log2(SE) fields are never read (readers
+  # take only the fields whose flag is set). Zero them so these records,
+  # one per missing-EAF row, compress like the run of identical bytes they
+  # are instead of carrying random float32 Z and SE. Stores whose EAF is
+  # complete have no such records and are unchanged.
+  eaf_only <- exceptions$flags == 4L
+  if (any(eaf_only)) {
+    exceptions$z[eaf_only] <- 0
+    exceptions$log2se[eaf_only] <- 0
+  }
   list(
     z = as.integer(z_codes), eaf = as.integer(eaf_codes),
     se = as.integer(se_codes), centres = centres, exceptions = exceptions,
@@ -744,19 +755,41 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       substitution = as.integer(identity$substitution)
     )
   }
-  order <- order(identity$global_position, identity$substitution, method = "radix")
-  ordered_position <- identity$global_position[order]
-  ordered_substitution <- identity$substitution[order]
-  if (anyDuplicated(compressor_identity_code(ordered_position, ordered_substitution))) {
-    stop("duplicate full REF/ALT identity keys", call. = FALSE)
+  # Input already in strictly increasing key order (sorted, no duplicates)
+  # needs neither the radix order nor the duplicate scan.
+  code <- compressor_identity_code(identity$global_position, identity$substitution)
+  if (!anyNA(code) && !is.unsorted(code, strictly = TRUE)) {
+    order <- seq_len(nrow(data))
+    ordered_position <- identity$global_position
+    ordered_substitution <- identity$substitution
+  } else {
+    order <- order(identity$global_position, identity$substitution, method = "radix")
+    ordered_position <- identity$global_position[order]
+    ordered_substitution <- identity$substitution[order]
+    if (anyDuplicated(code)) {
+      stop("duplicate full REF/ALT identity keys", call. = FALSE)
+    }
   }
+  rm(code)
+  identity <- NULL  # positions and substitutions now live in ordered_*
   # Input already in canonical key order needs no reordered copy: a sorted
   # permutation is the identity, and data[order, ] would only re-materialise
-  # every column (and the row.names) unchanged.
-  ordered <- if (identical(class(data), "data.frame") && !is.unsorted(order)) {
+  # every column (and the row.names) unchanged. Otherwise only the columns
+  # read after this point are reordered.
+  ordered <- if (!identical(class(data), "data.frame")) {
+    data[order, , drop = FALSE]
+  } else if (!is.unsorted(order)) {
     data
   } else {
-    data[order, , drop = FALSE]
+    reordered <- data[order, intersect(c("z", "standard_error",
+                                         "effect_allele_frequency", "p_value"),
+                                       names(data)), drop = FALSE]
+    # data[order, , drop = FALSE] keeps the frame's own attributes (for
+    # example p_value_source_present); a column subset does not.
+    for (name in setdiff(names(attributes(data)), c("names", "row.names", "class"))) {
+      attr(reordered, name) <- attr(data, name)
+    }
+    reordered
   }
   identity_seconds <- phase_seconds(identity_started)
   encode_started <- phase_clock()
@@ -796,6 +829,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       values$se, file.path(output, "se.pco"), "u8", block_rows,
       workers = requested_workers)
   )
+  # Free the per-row code vectors as soon as their streams are written.
+  values$z <- values$eaf <- values$se <- NULL
   pvalue_flag_spec <- metadata$pvalue_flag %||% list(enabled = FALSE)
   if (!is.list(pvalue_flag_spec) || length(pvalue_flag_spec$enabled) != 1L ||
       !is.logical(pvalue_flag_spec$enabled) || is.na(pvalue_flag_spec$enabled)) {
@@ -892,6 +927,7 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
     )
   }
   pvalue_resolved <- NULL
+  ordered <- NULL
   exception_stream <- pcodec_native_write_exceptions(
     values$exceptions, output, block_template, workers = requested_workers
   )
@@ -1091,11 +1127,15 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       manifest_metadata
     }
   )
-  integrity_files <- stats::setNames(lapply(unname(unlist(files)), function(relative) {
-    path <- file.path(output, relative)
-    list(bytes = as.numeric(file.info(path)$size),
-         sha256 = digest::digest(path, algo = "sha256", file = TRUE))
-  }), unname(unlist(files)))
+  # Payload files are hashed natively, several at a time.
+  relative_files <- unname(unlist(files))
+  file_paths <- file.path(output, relative_files)
+  file_sha <- pcodec_sha256_files(file_paths, threads = max(1L, requested_workers))
+  if (anyNA(file_sha)) stop("could not hash the native Pcodec payload files", call. = FALSE)
+  file_bytes <- as.numeric(file.info(file_paths, extra_cols = FALSE)$size)
+  integrity_files <- stats::setNames(lapply(seq_along(relative_files), function(i) {
+    list(bytes = file_bytes[[i]], sha256 = file_sha[[i]])
+  }), relative_files)
   manifest$integrity <- list(
     algorithm = "sha256",
     files = integrity_files,
@@ -1223,17 +1263,53 @@ pcodec_native_read_index <- function(store) {
     stop("native Pcodec manifest row count is invalid", call. = FALSE)
   }
   pcodec_native_validate_index_parity(index, n)
-  .pcodec_native_cache[[key]] <- list(stamp = stamp, value = index)
+  pcodec_native_cache_index(key, list(stamp = stamp, value = index))
   index
 }
 
-# Block matrices handed to the native selective reader, cached per index.
-pcodec_native_select_matrices <- function(store, index) {
+# The parsed index (about 1 MB of R lists for a 10M-row store) is kept for
+# the most recently used stores only: every native reader works from the
+# compact block matrices (pcodec_native_select_matrices(), cached for every
+# store), so batched reads over thousands of stores do not hold thousands of
+# parsed indexes. getOption("CompreSSoR.index_cache_size", 16) entries.
+.pcodec_native_index_lru <- new.env(parent = emptyenv())
+.pcodec_native_index_lru$keys <- character()
+
+pcodec_native_cache_index <- function(key, entry) {
+  .pcodec_native_cache[[key]] <- entry
+  keys <- c(setdiff(.pcodec_native_index_lru$keys, key), key)
+  limit <- max(1L, as.integer(getOption("CompreSSoR.index_cache_size", 16L)))
+  if (length(keys) > limit) {
+    drop <- keys[seq_len(length(keys) - limit)]
+    rm(list = intersect(drop, ls(.pcodec_native_cache, all.names = TRUE)),
+       envir = .pcodec_native_cache)
+    keys <- keys[-seq_len(length(keys) - limit)]
+  }
+  .pcodec_native_index_lru$keys <- keys
+  invisible(entry)
+}
+
+# Put block matrices computed elsewhere (a forked worker) into this
+# process's cache under the store's content stamp.
+pcodec_native_register_matrices <- function(store, mats) {
+  if (is.null(mats)) return(invisible(NULL))
+  index_path <- file.path(store$path, store$manifest$files$index)
+  .pcodec_native_cache[[paste0("matrices:", index_path)]] <-
+    list(stamp = pcodec_native_cache_stamp(store, index_path), value = mats)
+  invisible(mats)
+}
+
+# Block matrices handed to the native readers, cached per store (keyed by the
+# manifest's content identity, like the index). `index` is parsed only on a
+# cache miss when not supplied. Besides the matrices the entry records what
+# the readers need from the index: the exception codec and position encoding.
+pcodec_native_select_matrices <- function(store, index = NULL) {
   index_path <- file.path(store$path, store$manifest$files$index)
   stamp <- pcodec_native_cache_stamp(store, index_path)
   key <- paste0("matrices:", index_path)
   hit <- .pcodec_native_cache[[key]]
   if (!is.null(hit) && identical(hit$stamp, stamp)) return(hit$value)
+  if (is.null(index)) index <- pcodec_native_read_index(store)
   key_blocks <- pcodec_native_index_blocks(index, "key")
   value_blocks <- pcodec_native_index_blocks(index, "value")
   exception_blocks <- index$exceptions$blocks %||% list()
@@ -1258,7 +1334,9 @@ pcodec_native_select_matrices <- function(store, index) {
     exceptions = do.call(rbind, lapply(exception_blocks, function(block) {
       c(as.numeric(block$offset), as.numeric(block$length),
         as.numeric(block$count), as.numeric(block$raw_length))
-    })) %||% matrix(numeric(), nrow = 0L, ncol = 4L)
+    })) %||% matrix(numeric(), nrow = 0L, ncol = 4L),
+    exception_codec = index$exceptions$codec %||% "raw",
+    delta = identical(index$position_encoding, "delta_u32_within_block")
   )
   .pcodec_native_cache[[key]] <- list(stamp = stamp, value = value)
   value
@@ -1750,35 +1828,17 @@ pcodec_native_validate_code_domains <- function(codes, streams, semantic,
   invisible(codes)
 }
 
-pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L) {
+pcodec_native_read_native_codes <- function(store, index = NULL, streams, threads = 1L) {
   if (!is.loaded("compressor_read_pcodec_native_codes", PACKAGE = "CompreSSoR")) {
     stop("native Pcodec stream reader is not available in this build", call. = FALSE)
   }
-  key_blocks <- pcodec_native_index_blocks(index, "key")
-  value_blocks <- pcodec_native_index_blocks(index, "value")
-  exception_blocks <- index$exceptions$blocks %||% list()
-  files <- c(
-    file.path(store$path, index$streams$position$file),
-    file.path(store$path, index$streams$substitution$file),
-    file.path(store$path, index$streams$z$file),
-    file.path(store$path, index$streams$eaf$file),
-    file.path(store$path, index$streams$se$file),
-    file.path(store$path, index$exceptions$file)
-  )
-  codes <- .Call("compressor_read_pcodec_native_codes", files,
-        pcodec_native_block_matrix(key_blocks, index$streams$position$blocks,
-                                   first_position = TRUE),
-        pcodec_native_block_matrix(key_blocks, index$streams$substitution$blocks,
-                                   first_position = TRUE),
-        pcodec_native_block_matrix(value_blocks, index$streams$z$blocks),
-        pcodec_native_block_matrix(value_blocks, index$streams$eaf$blocks),
-        pcodec_native_block_matrix(value_blocks, index$streams$se$blocks),
-        do.call(rbind, lapply(exception_blocks, function(block) {
-          c(as.numeric(block$offset), as.numeric(block$length),
-            as.numeric(block$count), as.numeric(block$raw_length))
-        })) %||% matrix(numeric(), nrow = 0L, ncol = 4L),
+  # The block matrices are cached per store (pcodec_native_select_matrices()).
+  mats <- pcodec_native_select_matrices(store, index)
+  codes <- .Call("compressor_read_pcodec_native_codes", mats$files,
+        mats$position, mats$substitution, mats$z, mats$eaf, mats$se,
+        mats$exceptions,
         as.numeric(store$manifest$n_rows %||% store$manifest$rows),
-        as.character(streams), index$exceptions$codec %||% "raw",
+        as.character(streams), mats$exception_codec,
         as.integer(threads),
         PACKAGE = "CompreSSoR")
   pcodec_native_validate_code_domains(
@@ -1788,21 +1848,17 @@ pcodec_native_read_native_codes <- function(store, index, streams, threads = 1L)
   codes
 }
 
-pcodec_native_read_all_exceptions <- function(store, index) {
-  locations <- index$exceptions$blocks
-  if (!length(locations)) {
+# Every exception record of the store, read natively in one call with one
+# file handle: a data frame of row (zero-based), z, log2se, eaf and flags.
+pcodec_native_read_all_exceptions <- function(store, index = NULL) {
+  if (!nrow(pcodec_native_select_matrices(store, index)$exceptions)) {
     return(data.frame(row = integer(), z = numeric(), log2se = numeric(),
                       eaf = numeric(), flags = integer()))
   }
-  parts <- lapply(seq_along(locations), function(block) {
-    pcodec_native_read_exception_block(store, index, block)
-  })
-  parts <- parts[vapply(parts, nrow, integer(1)) > 0L]
-  if (!length(parts)) {
-    return(data.frame(row = integer(), z = numeric(), log2se = numeric(),
-                      eaf = numeric(), flags = integer()))
-  }
-  do.call(rbind, parts)
+  e <- pcodec_native_read_native_codes(store, index, "exceptions")$exceptions
+  structure(list(row = e$row, z = e$z, log2se = e$log2se, eaf = e$eaf,
+                 flags = e$flags),
+            class = "data.frame", row.names = .set_row_names(length(e$row)))
 }
 
 pcodec_native_full_read <- function(store, index, requested, need_identity,
@@ -1829,6 +1885,7 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
   if (native_stream_reader) {
     codes <- pcodec_native_read_native_codes(store, index, streams, threads = threads)
   } else {
+    if (is.null(index)) index <- pcodec_native_read_index(store)
     decoded_streams <- pcodec_parallel_lapply(
       streams, function(stream) pcodec_native_read_stream_all(store, index, stream),
       threads = threads
@@ -1862,7 +1919,7 @@ pcodec_native_full_read <- function(store, index, requested, need_identity,
       as.integer(exceptions$row), as.numeric(exceptions$z),
       as.numeric(2^exceptions$log2se), as.numeric(exceptions$eaf),
       as.integer(exceptions$flags), isTRUE("beta" %in% requested),
-      isTRUE("p_value" %in% requested), se_range[1], se_range[2],
+      isTRUE("p_value" %in% requested), se_range[1], se_range[2], NULL,
       PACKAGE = "CompreSSoR")
   } else list(z = numeric(n), standard_error = numeric(n),
               effect_allele_frequency = numeric(n))
@@ -2130,7 +2187,9 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
                                             threads = threads)
   manifest <- store$manifest
   build <- compressor_normalize_build(manifest$genome_build %||% "GRCh38")
-  index <- pcodec_native_read_index(store)
+  # Native readers need only the cached block matrices; the parsed index is
+  # loaded below for the per-block R path alone.
+  index <- NULL
   n <- as.integer(manifest$n_rows %||% manifest$rows)
   if (!is.null(columns) && !length(columns)) stop("columns must contain at least one column name", call. = FALSE)
   requested <- if (is.null(columns)) {
@@ -2195,6 +2254,7 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       need_se, need_eaf, needed, row_targets, key_targets, lower, upper, threads))
   }
 
+  index <- pcodec_native_read_index(store)
   source_bytes <- 0
   value_blocks <- pcodec_native_index_blocks(index, "value")
   selected_rows <- selected_position <- selected_substitution <- NULL
@@ -2307,14 +2367,12 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
       block_source_bytes <- block_source_bytes +
         as.numeric(index$exceptions$blocks[[block]]$length)
     }
-    centre_id <- floor(row_start / as.integer(
-      manifest$semantic_codec$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
-    )) + 1L
-    decoded <- pcodec_native_decode_values(
-      value_codes, exceptions, centre_id,
-      as.numeric(unlist(manifest$semantic_codec$block_centers_log2_residual)),
-      row_start, length(rows), needed, manifest$semantic_codec
-    )
+    decoded <- pcodec_native_decode_rows(
+      manifest$semantic_codec, rows, value_codes,
+      list(index = as.integer(exceptions$row) - row_start, z = exceptions$z,
+           log2se = exceptions$log2se, eaf = exceptions$eaf,
+           flags = exceptions$flags),
+      want_beta = "beta" %in% requested, want_p = "p_value" %in% requested)
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)
     if (identity_needed) {
@@ -2324,17 +2382,11 @@ pcodec_native_read_store <- function(store, region = NULL, variants = NULL,
         build = build)
       part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
     }
-    if ("z" %in% names(decoded)) part$z <- decoded$z
-    if ("se" %in% names(decoded)) part$standard_error <- decoded$se
-    if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
-    if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-    if ("p_value" %in% requested) {
-      zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
-      p_block <- pcodec_native_p_from_codes(
-        candidates_semantic(store), value_codes$z,
-        as.integer(exceptions$row[zx]) - row_start, exceptions$z[zx])
-      part$p_value <- p_block[keep]
-    }
+    if ("z" %in% needed) part$z <- decoded$z
+    if ("se" %in% needed) part$standard_error <- decoded$standard_error
+    if ("eaf" %in% needed) part$effect_allele_frequency <- decoded$effect_allele_frequency
+    if ("beta" %in% requested) part$beta <- decoded$beta
+    if ("p_value" %in% requested) part$p_value <- decoded$p_value
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,
@@ -2416,57 +2468,84 @@ pcodec_native_select_read <- function(store, index, manifest, build, requested,
   res <- .Call("compressor_read_pcodec_native_select", mats$files, mats$position,
                mats$substitution, mats$z, mats$eaf, mats$se, mats$exceptions,
                as.numeric(manifest$n_rows %||% manifest$rows), as.character(streams),
-               index$exceptions$codec %||% "raw", as.integer(threads), mode,
-               selection, isTRUE(identity_needed),
-               identical(index$position_encoding, "delta_u32_within_block"),
+               mats$exception_codec, as.integer(threads), mode,
+               selection, isTRUE(identity_needed), isTRUE(mats$delta),
                PACKAGE = "CompreSSoR")
   rows <- res$rows
   m <- length(rows)
   if (!m) return(pcodec_native_empty_result(columns))
-  decoded <- list()
-  if (length(needed)) {
-    semantic <- manifest$semantic_codec
-    exceptions <- data.frame(row = res$exc_index + 1L, z = res$exc_z,
-                             log2se = res$exc_log2se, eaf = res$exc_eaf,
-                             flags = res$exc_flags)
-    centre_id <- floor(rows / as.integer(
-      semantic$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
-    )) + 1L
-    decoded <- pcodec_native_decode_values(
-      list(z = res$z, eaf = res$eaf, se = res$se), exceptions, centre_id,
-      as.numeric(unlist(semantic$block_centers_log2_residual)),
-      1L, m, needed, semantic
-    )
-  }
-  part <- data.frame(row = rows, stringsAsFactors = FALSE)
-  if (identity_needed) {
-    identity_part <- pcodec_native_key_columns(res$position, res$substitution,
-                                               build = build)
-    part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
-  }
-  if ("z" %in% names(decoded)) part$z <- decoded$z
-  if ("se" %in% names(decoded)) part$standard_error <- decoded$se
-  if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
-  if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-  if ("p_value" %in% requested) {
-    zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
-    part$p_value <- pcodec_native_p_from_codes(
-      candidates_semantic(store), res$z, exceptions$row[zx] - 1L, exceptions$z[zx])
-  }
-  output <- part
-  row.names(output) <- NULL
-  if (is.null(columns)) {
-    output <- output[c("row", setdiff(c("chromosome", "base_pair_location",
-      "reference_allele", "alternate_allele",
-      "effect_allele", "other_allele", "z", "beta", "standard_error",
-      "effect_allele_frequency", "p_value"), ""))]
-  } else {
-    missing <- setdiff(requested, names(output))
-    if (length(missing)) stop("requested columns are not present: ", paste(missing, collapse = ", "), call. = FALSE)
-    output <- output[c("row", requested)]
-  }
+  output <- pcodec_native_assemble_rows(
+    manifest$semantic_codec, rows, res, needed, requested, columns,
+    identity_needed, build)
   attr(output, "source_bytes_read") <- res$source_bytes
   output
+}
+
+# Decode the value codes of selected rows with the native decoder: the same
+# compiled arithmetic (table lookups, SE centre factor, exception overrides,
+# beta = z * se, p from the Z table or erfc) as a full read, so every reader
+# returns the same bits for a row. `rows` are zero-based store rows; `codes`
+# holds integer z/se/eaf codes aligned with them (a missing stream is NULL);
+# `exc` holds the exception records for those rows, `exc$index` being the
+# zero-based position into `rows`.
+pcodec_native_decode_rows <- function(semantic, rows, codes, exc,
+                                      want_beta = FALSE, want_p = FALSE) {
+  params <- pcodec_native_semantic_params(semantic)
+  m <- length(rows)
+  code <- function(x, fill) if (length(x) == m) as.integer(x) else rep.int(fill, m)
+  centre_rows <- as.integer(semantic$se_center_block_rows %||%
+                              PCODEC_NATIVE_SE_CENTER_ROWS)
+  .Call("compressor_decode_native",
+        code(codes$z, params$z_count), code(codes$se, params$se_count),
+        code(codes$eaf, 0L),
+        params$z_range[1], params$z_range[2], params$z_count, params$se_count,
+        params$eaf_count, params$z_bits, params$se_bits, params$eaf_bits,
+        centre_rows, as.numeric(unlist(semantic$block_centers_log2_residual)),
+        as.integer(exc$index), as.numeric(exc$z), as.numeric(2^exc$log2se),
+        as.numeric(exc$eaf), as.integer(exc$flags), isTRUE(want_beta),
+        isTRUE(want_p), params$se_range[1], params$se_range[2],
+        as.integer(as.numeric(rows) %/% centre_rows), PACKAGE = "CompreSSoR")
+}
+
+# Output data frame for selected rows from a native selective-read result
+# (`res`: rows, position, substitution, z/eaf/se codes and exceptions).
+pcodec_native_assemble_rows <- function(semantic, rows, res, needed, requested,
+                                        columns, identity_needed, build) {
+  m <- length(rows)
+  out <- list(row = as.integer(rows))
+  if (identity_needed) {
+    key_wanted <- if (is.null(columns)) PCODEC_NATIVE_KEY_COLUMNS else
+      intersect(PCODEC_NATIVE_KEY_COLUMNS, requested)
+    if ("global_position" %in% requested) out$global_position <- as.numeric(res$position)
+    if ("substitution" %in% requested) out$substitution <- as.integer(res$substitution)
+    if (length(key_wanted)) {
+      out <- c(out, pcodec_native_key_columns(res$position, res$substitution,
+                                              build = build, columns = key_wanted))
+    }
+  }
+  if (length(needed)) {
+    decoded <- pcodec_native_decode_rows(
+      semantic, rows, list(z = res$z, se = res$se, eaf = res$eaf),
+      list(index = res$exc_index, z = res$exc_z, log2se = res$exc_log2se,
+           eaf = res$exc_eaf, flags = res$exc_flags),
+      want_beta = "beta" %in% requested, want_p = "p_value" %in% requested)
+    if ("z" %in% needed) out$z <- decoded$z
+    if ("se" %in% needed) out$standard_error <- decoded$standard_error
+    if ("eaf" %in% needed) out$effect_allele_frequency <- decoded$effect_allele_frequency
+    if ("beta" %in% requested) out$beta <- decoded$beta
+    if ("p_value" %in% requested) out$p_value <- decoded$p_value
+  }
+  order <- if (is.null(columns)) {
+    c("row", "chromosome", "base_pair_location", "reference_allele",
+      "alternate_allele", "effect_allele", "other_allele", "z", "beta",
+      "standard_error", "effect_allele_frequency", "p_value")
+  } else c("row", requested)
+  missing <- setdiff(order, names(out))
+  if (length(missing)) {
+    stop("requested columns are not present: ", paste(missing, collapse = ", "),
+         call. = FALSE)
+  }
+  structure(out[order], class = "data.frame", row.names = .set_row_names(m))
 }
 
 

@@ -36,7 +36,7 @@ pcodec_native_p_from_codes <- function(semantic, z_codes, exc_row0, exc_z) {
     semantic$eaf_bits, PCODEC_NATIVE_SE_CENTER_ROWS, numeric(),
     as.integer(exc_row0), as.numeric(exc_z),
     numeric(k), numeric(k), rep.int(1L, k), FALSE, TRUE,
-    semantic$se_range[1], semantic$se_range[2],
+    semantic$se_range[1], semantic$se_range[2], NULL,
     PACKAGE = "CompreSSoR"
   )
   decoded$p_value
@@ -327,7 +327,9 @@ candidates_prepare <- function(store, pvalue_threshold, region, columns, order,
            call. = FALSE)
     }
   }
-  index <- pcodec_native_read_index(store)
+  # Candidate reads use only the cached block matrices, never the parsed
+  # index; `index` stays NULL in the context (cheap to return from a worker).
+  index <- NULL
   picked <- candidates_select_rows(store, index, threshold, threads, strategy)
   fetch <- unique(c(out_columns, if (identical(order, "reconstructed")) "p_value"))
   build <- compressor_normalize_build(store$manifest$genome_build %||% "GRCh38")
@@ -412,10 +414,14 @@ candidates_finish <- function(ctx, threads, keys = NULL) {
 
 #' Read threshold candidates from several native Pcodec stores
 #'
-#' Applies [read_candidates()] to each store. Stores that share a variant
-#' panel (equal identity signature) decode the position/substitution key
-#' blocks once, for the union of their candidate rows, when identity columns
-#' (or `key`, or a region) are requested.
+#' Applies [read_candidates()] to each store, stores in parallel, and returns
+#' exactly the per-store results. With
+#' `options(CompreSSoR.candidates_share_keys = TRUE)`, stores that share a
+#' variant panel (equal identity signature, each verified against its own
+#' manifest) decode the position/substitution key blocks once, for the union
+#' of their candidate rows, when identity columns (or `key`, or a region) are
+#' requested; by default each store decodes its own candidate keys, which with
+#' the native selective reader is faster.
 #'
 #' @inheritParams read_candidates
 #' @param stores A non-empty list or character vector of native Pcodec stores.
@@ -452,59 +458,84 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   labels <- vapply(seq_along(stores), function(i) {
     candidates_store_label(stores[[i]], names(stores)[i])
   }, character(1))
-  # Stage 1 (parallel over stores): select candidate rows.  A store's own
+  need_key <- function(ctx) {
+    id <- c("global_position", "substitution", "chromosome", "base_pair_location",
+            "reference_allele", "alternate_allele", "effect_allele", "other_allele")
+    !is.null(ctx$range) || any(id %in% ctx$wanted)
+  }
+  share <- length(stores) > 1L && candidates_share_keys()
+  if (!share) {
+    # One pass per store: select and fetch in the same worker.
+    pieces <- pcodec_parallel_lapply(seq_along(stores), function(i) {
+      guard(candidates_finish(candidates_prepare(stores[[i]], thresholds[[i]], region,
+                                                 columns, order, inner, strategy),
+                              inner))
+    }, threads = threads, labels = labels, what = "candidate read")
+    return(candidates_batch_result(pieces, stores, labels, thresholds, bind))
+  }
+  # Stage 1 (parallel over stores): select candidate rows; each worker also
+  # returns the store's compact block matrices and, when keys may be shared,
+  # its identity signature, so the parent parses no index. A store's own
   # error is carried as a condition object and reported below with its
   # label; a dead worker (NULL) is rejected by pcodec_parallel_lapply().
   ctxs <- pcodec_parallel_lapply(seq_along(stores), function(i) {
-    guard(candidates_prepare(stores[[i]], thresholds[[i]], region, columns,
-                             order, inner, strategy))
+    guard({
+      ctx <- candidates_prepare(stores[[i]], thresholds[[i]], region, columns,
+                                order, inner, strategy)
+      ctx$mats <- pcodec_native_select_matrices(ctx$store)
+      ctx$signature <- if (share && need_key(ctx)) {
+        tryCatch(pcodec_identity_signature(ctx$store), error = function(e) NA_character_)
+      } else NA_character_
+      ctx
+    })
   }, threads = threads, labels = labels, what = "candidate selection")
   ctxs <- lapply(ctxs, function(x) {
     if (is.list(x) && !inherits(x, "error") && is.list(x$picked)) return(x)
     if (inherits(x, "error")) return(x)
     simpleError("candidate selection worker returned no context")
   })
+  ok <- !vapply(ctxs, inherits, logical(1), "error")
+  if (length(stores) > 1L && threads > 1L) {
+    for (ctx in ctxs[ok]) pcodec_native_register_matrices(ctx$store, ctx$mats)
+  }
   # Stage 2: stores sharing a variant panel (equal identity signature) decode
   # the position/substitution blocks once, for the union of their candidate
   # rows (the candidate analogue of read_sumstats_batch() identity reuse).
   # `shared` must keep one slot per store: assign with `[<-` and list(), never
   # `shared[[i]] <- NULL`, which deletes slot i and shifts every later store's
   # keys onto the wrong store (the cause of silently dropped candidates).
-  ok <- !vapply(ctxs, inherits, logical(1), "error")
   shared <- vector("list", length(stores))
-  need_key <- function(ctx) {
-    id <- c("global_position", "substitution", "chromosome", "base_pair_location",
-            "reference_allele", "alternate_allele", "effect_allele", "other_allele")
-    !is.null(ctx$range) || any(id %in% ctx$wanted)
-  }
-  if (sum(ok) > 1L) {
+  if (share && sum(ok) > 1L) {
     sig <- rep(NA_character_, length(stores))
-    sig[ok] <- vapply(ctxs[ok], function(ctx) {
-      tryCatch(pcodec_identity_signature(ctx$store), error = function(e) NA_character_)
-    }, character(1))
-    sig[ok & !vapply(seq_along(ctxs), function(i) ok[i] && need_key(ctxs[[i]]),
-                     logical(1))] <- NA_character_
+    sig[ok] <- vapply(ctxs[ok], function(ctx) ctx$signature %||% NA_character_,
+                      character(1))
     grouped <- which(!is.na(sig) & sig %in% sig[duplicated(sig) & !is.na(sig)])
     # Every store about to receive another store's decoded keys must first
     # match its own manifest checksums (a corrupt store errors here).
     pcodec_verify_identity_files(lapply(ctxs[grouped], `[[`, "store"),
                                  threads = threads)
-    for (g in unique(stats::na.omit(sig))) {
-      members <- which(sig %in% g)
-      if (length(members) < 2L) next
+    groups <- lapply(unique(sig[grouped]), function(g) which(sig %in% g))
+    # Union key decode per group; groups run in parallel, each on
+    # threads %/% groups native threads.
+    group_threads <- max(1L, threads %/% max(1L, length(groups)))
+    group_keys <- pcodec_parallel_lapply(groups, function(members) {
       union_rows <- sort(unique(unlist(lapply(ctxs[members], function(ctx) {
         ctx$picked$rows
       }), use.names = FALSE)))
-      first <- ctxs[[members[1L]]]
       # No candidate rows in the group (or none in the region): nothing to
       # share; each member's own finish step handles its empty result.
-      if (!length(union_rows)) next
+      if (!length(union_rows)) return(PCODEC_PARALLEL_EMPTY)
+      first <- ctxs[[members[1L]]]
       keys <- guard(candidates_fetch_keys(
-        first$store, first$index, union_rows, first$range, threads))
-      if (is.null(keys) || inherits(keys, "error")) next
+        first$store, first$index, union_rows, first$range, group_threads))
+      if (is.null(keys) || inherits(keys, "error")) PCODEC_PARALLEL_EMPTY else keys
+    }, threads = if (length(groups) > 1L) threads else 1L,
+    what = "shared candidate key decode")
+    for (g in seq_along(groups)) {
+      if (pcodec_parallel_is_empty(group_keys[[g]])) next
       .pcodec_batch_trace$identity_resolutions <-
         .pcodec_batch_trace$identity_resolutions + 1L
-      shared[members] <- list(keys)
+      shared[groups[[g]]] <- list(group_keys[[g]])
     }
   }
   stopifnot(length(shared) == length(stores))
@@ -512,6 +543,11 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
     if (!ok[[i]]) return(ctxs[[i]])
     guard(candidates_finish(ctxs[[i]], inner, keys = shared[[i]]))
   }, threads = threads, labels = labels, what = "candidate decode")
+  candidates_batch_result(pieces, stores, labels, thresholds, bind)
+}
+
+# Check and assemble read_candidates_batch() results (one per store).
+candidates_batch_result <- function(pieces, stores, labels, thresholds, bind) {
   failed <- vapply(pieces, function(x) !is.data.frame(x), logical(1))
   if (any(failed)) {
     first <- which(failed)[1L]
@@ -540,6 +576,14 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   combined
 }
 
+# Whether read_candidates_batch() decodes the keys of same-panel stores once
+# (option CompreSSoR.candidates_share_keys, default FALSE). With the native
+# selective reader each store's candidate keys cost milliseconds, so one
+# pass per store (no grouping, verification or second fork round) is faster.
+candidates_share_keys <- function() {
+  isTRUE(getOption("CompreSSoR.candidates_share_keys", FALSE))
+}
+
 # A store's name in a batch (its list name, else its path) for error messages.
 candidates_store_label <- function(store, name = NULL) {
   if (!is.null(name) && !is.na(name) && nzchar(name)) return(name)
@@ -566,86 +610,58 @@ candidates_region_range <- function(region, build) {
   pcodec_native_region_range(region, build) %||% c(1, 0)
 }
 
-candidates_stream_reader <- function(store) {
-  list(
-    open = function(spec) file(file.path(store$path, spec$file), open = "rb"),
-    read_at = function(con, location) {
-      seek(con, where = as.numeric(location$offset), origin = "start")
-      blob <- readBin(con, raw(), n = as.integer(location$length), endian = "little")
-      if (length(blob) != as.integer(location$length)) {
-        stop("native Pcodec stream is truncated", call. = FALSE)
-      }
-      blob
-    })
+
+# One native selective read (mode 0: sorted zero-based row IDs) of `streams`
+# for `rows`: only the key/value blocks holding those rows are read and
+# decoded, every payload file is opened once, and blocks are decoded on up
+# to `threads` native threads.
+candidates_native_select <- function(store, index, rows, streams, identity,
+                                     threads) {
+  mats <- pcodec_native_select_matrices(store, index)
+  threads <- pcodec_validate_threads(threads)
+  check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
+  if (nzchar(check_limit) && check_limit != "false") threads <- min(threads, 2L)
+  .Call("compressor_read_pcodec_native_select", mats$files, mats$position,
+        mats$substitution, mats$z, mats$eaf, mats$se, mats$exceptions,
+        as.numeric(store$manifest$n_rows %||% store$manifest$rows),
+        as.character(streams), mats$exception_codec,
+        as.integer(threads), 0L, as.numeric(rows), isTRUE(identity),
+        isTRUE(mats$delta), PACKAGE = "CompreSSoR")
 }
 
-# Key (position + substitution) blocks touched by `rows`, restricted to the
-# region range.  Returns list(row, position, substitution) sorted by row, or
-# NULL when nothing survives.  Only key blocks that contain a requested row (and
-# overlap the region) are decoded.
+# Keys (position + substitution) of `rows` (sorted, zero-based), restricted
+# to the region range. Returns list(row, position, substitution) sorted by
+# row, or NULL when nothing survives. Only the key blocks that hold a
+# requested row are decoded.
 candidates_fetch_keys <- function(store, index, rows, range, threads) {
-  key_blocks <- pcodec_native_index_blocks(index, "key")
-  num <- function(blocks, field) vapply(blocks, function(b) as.numeric(b[[field]]),
-                                        numeric(1))
-  key_stops <- num(key_blocks, "row_stop")
-  key_starts <- num(key_blocks, "row_start")
-  key_first <- num(key_blocks, "first_position")
-  key_last <- num(key_blocks, "last_position")
-  delta <- identical(index$position_encoding, "delta_u32_within_block")
-  key_id <- findInterval(rows, key_stops) + 1L
-  todo <- unique(key_id)
-  if (!is.null(range)) todo <- todo[key_last[todo] >= range[1] & key_first[todo] <= range[2]]
-  io <- candidates_stream_reader(store)
-  open_stream <- io$open
-  read_at <- io$read_at
-  keys <- pcodec_parallel_lapply(candidates_split(todo, threads), function(chunk) {
-    pos_con <- open_stream(index$streams$position)
-    sub_con <- open_stream(index$streams$substitution)
-    on.exit({ close(pos_con); close(sub_con) }, add = TRUE)
-    lapply(chunk, function(b) {
-      mine <- rows[key_id == b]
-      local <- mine - key_starts[b] + 1
-      pos_loc <- index$streams$position$blocks[[b]]
-      position <- pcodec_native_decompress(read_at(pos_con, pos_loc),
-                                           as.integer(pos_loc$values), "u32")
-      position <- if (delta) cumsum(position) + key_first[b] else as.numeric(position)
-      position <- position[local]
-      keep <- if (is.null(range)) rep.int(TRUE, length(mine)) else
-        position >= range[1] & position <= range[2]
-      if (!any(keep)) return(NULL)
-      sub_loc <- index$streams$substitution$blocks[[b]]
-      substitution <- pcodec_native_decompress(read_at(sub_con, sub_loc),
-                                               as.integer(sub_loc$values), "u8")
-      list(row = mine[keep], position = position[keep],
-           substitution = as.integer(substitution[local[keep]]))
-    })
-  }, threads = threads, labels = store$path, what = "candidate key decode")
-  keys <- unlist(keys, recursive = FALSE, use.names = FALSE)
-  keys <- keys[!vapply(keys, is.null, logical(1))]
-  if (!length(keys)) return(NULL)
-  sel_row <- unlist(lapply(keys, `[[`, "row"), use.names = FALSE)
-  o <- order(sel_row)
-  list(row = as.integer(sel_row[o]),
-       position = unlist(lapply(keys, `[[`, "position"), use.names = FALSE)[o],
-       substitution = unlist(lapply(keys, `[[`, "substitution"), use.names = FALSE)[o])
+  if (!is.null(range) && length(rows)) {
+    # Skip rows whose key block lies outside the region (block anchors from
+    # the cached matrices: row_stop, first and last position).
+    pos <- pcodec_native_select_matrices(store, index)$position
+    block <- findInterval(rows, pos[, 5L]) + 1L
+    rows <- rows[pos[block, 7L] >= range[1] & pos[block, 6L] <= range[2]]
+  }
+  if (!length(rows)) return(NULL)
+  res <- candidates_native_select(store, index, rows,
+                                  c("position", "substitution"), TRUE, threads)
+  keep <- if (is.null(range)) rep.int(TRUE, length(res$rows)) else
+    res$position >= range[1] & res$position <= range[2]
+  if (!any(keep)) return(NULL)
+  list(row = as.integer(res$rows[keep]), position = as.numeric(res$position[keep]),
+       substitution = as.integer(res$substitution[keep]))
 }
 
 # `keys` (optional): precomputed candidates_fetch_keys() result for a superset
 # of `rows` under the same region (same-panel reuse); sliced, not re-decoded.
+# Values come from one native selective read of the surviving rows and are
+# decoded by the native decoder, so they are bit-identical to a full read.
 candidates_fetch <- function(store, index, rows, range, build, wanted,
                              threads, keys = NULL) {
-  manifest <- store$manifest
-  semantic <- manifest$semantic_codec %||% list()
-  value_blocks <- pcodec_native_index_blocks(index, "value")
-  num <- function(blocks, field) vapply(blocks, function(b) as.numeric(b[[field]]),
-                                        numeric(1))
+  semantic <- store$manifest$semantic_codec %||% list()
   identity <- c("global_position", "substitution", "chromosome",
                 "base_pair_location", "reference_allele", "alternate_allele",
                 "effect_allele", "other_allele")
   need_identity <- !is.null(range) || any(identity %in% wanted)
-  io <- candidates_stream_reader(store)
-  open_stream <- io$open
-  read_at <- io$read_at
   if (need_identity) {
     if (is.null(keys)) {
       keys <- candidates_fetch_keys(store, index, rows, range, threads)
@@ -656,76 +672,40 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
     }
     if (is.null(keys)) return(NULL)
     sel_row <- keys$row
-    sel_position <- keys$position
-    sel_substitution <- keys$substitution
   } else {
     sel_row <- as.integer(rows)
   }
 
   out <- list(row = sel_row)
   if (any(identity %in% wanted)) {
-    cols <- pcodec_native_key_columns(sel_position, sel_substitution, build = build)
-    cols$global_position <- sel_position
-    cols$substitution <- sel_substitution
+    cols <- pcodec_native_key_columns(keys$position, keys$substitution, build = build)
+    cols$global_position <- keys$position
+    cols$substitution <- keys$substitution
     for (nm in intersect(identity, wanted)) out[[nm]] <- cols[[nm]]
   }
   need_z <- any(c("z", "beta") %in% wanted)
   need_se <- any(c("standard_error", "beta") %in% wanted)
   need_eaf <- "effect_allele_frequency" %in% wanted || need_se
   needed <- c(if (need_z) "z", if (need_eaf) "eaf", if (need_se) "se")
-  if (length(needed)) {
-    value_stops <- num(value_blocks, "row_stop")
-    value_starts <- num(value_blocks, "row_start")
-    value_id <- findInterval(sel_row, value_stops) + 1L
-    centre_rows <- as.integer(semantic$se_center_block_rows %||%
-                                PCODEC_NATIVE_SE_CENTER_ROWS)
-    centres <- as.numeric(unlist(semantic$block_centers_log2_residual))
-    codec <- index$exceptions$codec %||% "raw"
-    parts <- pcodec_parallel_lapply(
-      candidates_split(unique(value_id), threads), function(chunk) {
-        cons <- lapply(stats::setNames(needed, needed), function(s) open_stream(index$streams[[s]]))
-        exc_con <- open_stream(index$exceptions)
-        on.exit({ lapply(cons, close); close(exc_con) }, add = TRUE)
-        lapply(chunk, function(b) {
-          pick <- value_id == b
-          local <- sel_row[pick] - value_starts[b] + 1
-          n_block <- value_stops[b] - value_starts[b]
-          codes <- lapply(stats::setNames(needed, needed), function(s) {
-            loc <- index$streams[[s]]$blocks[[b]]
-            pcodec_native_decompress(read_at(cons[[s]], loc), as.integer(loc$values),
-                                     if (identical(s, "z")) "u16" else "u8")
-          })
-          exc <- index$exceptions$blocks[[b]]
-          exceptions <- if (as.integer(exc$count)) {
-            blob <- read_at(exc_con, exc)
-            if (identical(codec, "zstd")) {
-              blob <- pcodec_native_zstd_decompress(
-                blob, as.integer(exc$raw_length %||% (as.integer(exc$count) * 17L)))
-            } else if (!identical(codec, "raw")) {
-              stop("unsupported native exception codec: ", codec, call. = FALSE)
-            }
-            pcodec_native_read_exception_bytes(blob, as.integer(exc$count))
-          } else {
-            data.frame(row = integer(), z = numeric(), log2se = numeric(),
-                       eaf = numeric(), flags = integer())
-          }
-          decoded <- pcodec_native_decode_values(
-            codes, exceptions, floor(value_starts[b] / centre_rows) + 1L,
-            centres, value_starts[b], n_block, needed, semantic)
-          lapply(decoded, function(v) v[local])
-        })
-      }, threads = threads, labels = store$path, what = "candidate value decode")
-    parts <- unlist(parts, recursive = FALSE, use.names = FALSE)
-    pull <- function(field) unlist(lapply(parts, `[[`, field), use.names = FALSE)
-    if (need_z) out$z <- pull("z")
-    if (need_se) out$standard_error <- pull("se")
-    if (need_eaf) out$effect_allele_frequency <- pull("eaf")
-    if ("beta" %in% wanted) out$beta <- out$z * out$standard_error
+  if (length(needed) && length(sel_row)) {
+    res <- candidates_native_select(store, index, sel_row, needed, FALSE, threads)
+    if (!identical(as.integer(res$rows), as.integer(sel_row))) {
+      stop("candidate value decode returned other rows than requested in store '",
+           store$path, "'", call. = FALSE)
+    }
+    decoded <- pcodec_native_decode_rows(
+      semantic, sel_row, list(z = res$z, se = res$se, eaf = res$eaf),
+      list(index = res$exc_index, z = res$exc_z, log2se = res$exc_log2se,
+           eaf = res$exc_eaf, flags = res$exc_flags),
+      want_beta = "beta" %in% wanted)
+    if (need_z) out$z <- decoded$z
+    if (need_se) out$standard_error <- decoded$standard_error
+    if (need_eaf) out$effect_allele_frequency <- decoded$effect_allele_frequency
+    if ("beta" %in% wanted) out$beta <- decoded$beta
   }
-  out <- as.data.frame(out[c("row", intersect(c(identity, "z", "beta",
-    "standard_error", "effect_allele_frequency"), names(out)))],
-    stringsAsFactors = FALSE)
-  out
+  out <- out[c("row", intersect(c(identity, "z", "beta", "standard_error",
+                                  "effect_allele_frequency"), names(out)))]
+  structure(out, class = "data.frame", row.names = .set_row_names(length(sel_row)))
 }
 
 #' Feature flags of this CompreSSoR build
@@ -733,17 +713,23 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
 #' Lets dependent packages feature-detect capabilities without version
 #' parsing. `"candidates_one_pass"` means [read_candidates()] returns values,
 #' `key`, `p_value` (bit-identical to [read_sumstats()]) and exact ranks for
-#' the candidate rows in a single pass, and [read_candidates_batch()] reuses
-#' same-panel identity. `"candidates_batch_rows_checked"` means
+#' the candidate rows in a single pass, and [read_candidates_batch()] can
+#' reuse same-panel identity. `"candidates_batch_rows_checked"` means
 #' [read_candidates_batch()] returns exactly the per-store [read_candidates()]
 #' result for every batch composition (the shared-identity row loss in
 #' 0.7.0 is fixed) and both readers stop, rather than return partial data,
 #' when a decode loses selected rows or a `pvalue_flag` read disagrees with
-#' the manifest's flagged-row count.
+#' the manifest's flagged-row count. `"reads_bit_identical"` means every
+#' reader (full, row-ID, key, region, candidate and batched reads) decodes a
+#' row with the same native decoder, so values are bit-identical to the full
+#' read. `"integrity_verified"` means `validate_compressor(full = TRUE)`
+#' checks every payload checksum, the native index is checked whenever it is
+#' parsed, and batched identity sharing verifies each member's identity
+#' streams.
 #'
 #' @return A character vector of capability names.
 #' @export
 compressor_capabilities <- function() {
   c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction",
-    "candidates_batch_rows_checked")
+    "candidates_batch_rows_checked", "reads_bit_identical", "integrity_verified")
 }

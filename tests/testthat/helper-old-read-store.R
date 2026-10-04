@@ -151,14 +151,14 @@ pcodec_native_read_store_reference <- function(store, region = NULL, variants = 
       block_source_bytes <- block_source_bytes +
         as.numeric(index$exceptions$blocks[[block]]$length)
     }
-    centre_id <- floor(row_start / as.integer(
-      manifest$semantic_codec$se_center_block_rows %||% PCODEC_NATIVE_SE_CENTER_ROWS
-    )) + 1L
-    decoded <- pcodec_native_decode_values(
-      value_codes, exceptions, centre_id,
-      as.numeric(unlist(manifest$semantic_codec$block_centers_log2_residual)),
-      row_start, length(rows), needed, manifest$semantic_codec
-    )
+    # Values use the shared native decoder (since 0.7.2 every reader does),
+    # so this reference checks row selection and assembly, not arithmetic.
+    decoded <- pcodec_native_decode_rows(
+      manifest$semantic_codec, rows, value_codes,
+      list(index = as.integer(exceptions$row) - row_start, z = exceptions$z,
+           log2se = exceptions$log2se, eaf = exceptions$eaf,
+           flags = exceptions$flags),
+      want_beta = "beta" %in% requested, want_p = "p_value" %in% requested)
     decoded <- lapply(decoded, function(value) value[keep])
     part <- data.frame(row = rows[keep], stringsAsFactors = FALSE)
     if (identity_needed) {
@@ -168,17 +168,11 @@ pcodec_native_read_store_reference <- function(store, region = NULL, variants = 
         build = build)
       part <- cbind(part, as.data.frame(identity_part, stringsAsFactors = FALSE))
     }
-    if ("z" %in% names(decoded)) part$z <- decoded$z
-    if ("se" %in% names(decoded)) part$standard_error <- decoded$se
-    if ("eaf" %in% names(decoded)) part$effect_allele_frequency <- decoded$eaf
-    if ("beta" %in% requested) part$beta <- part$z * part$standard_error
-    if ("p_value" %in% requested) {
-      # p now uses the single shared reconstruction (the decoder's erfc path)
-      zx <- bitwAnd(as.integer(exceptions$flags), 1L) != 0L
-      part$p_value <- pcodec_native_p_from_codes(
-        candidates_semantic(store), value_codes$z,
-        as.integer(exceptions$row[zx]) - row_start, exceptions$z[zx])[keep]
-    }
+    if ("z" %in% needed) part$z <- decoded$z
+    if ("se" %in% needed) part$standard_error <- decoded$standard_error
+    if ("eaf" %in% needed) part$effect_allele_frequency <- decoded$effect_allele_frequency
+    if ("beta" %in% requested) part$beta <- decoded$beta
+    if ("p_value" %in% requested) part$p_value <- decoded$p_value
     list(part = part, source_bytes = block_source_bytes)
   }
   block_results <- pcodec_parallel_lapply(candidate_blocks, decode_value_block,

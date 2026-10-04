@@ -64,8 +64,12 @@ A list or data frame; \code{attr(x, "candidate_strategy")} is the
 per-store strategy vector.
 }
 \description{
-Applies \code{\link[=read_candidates]{read_candidates()}} to each store. Stores that share a variant
-panel (equal identity signature) decode the position/substitution key
-blocks once, for the union of their candidate rows, when identity columns
-(or \code{key}, or a region) are requested.
+Applies \code{\link[=read_candidates]{read_candidates()}} to each store, stores in parallel, and returns
+exactly the per-store results. With
+\code{options(CompreSSoR.candidates_share_keys = TRUE)}, stores that share a
+variant panel (equal identity signature, each verified against its own
+manifest) decode the position/substitution key blocks once, for the union
+of their candidate rows, when identity columns (or \code{key}, or a region)
+are requested; by default each store decodes its own candidate keys, which
+with the native selective reader is faster.
 }

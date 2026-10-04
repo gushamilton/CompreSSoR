@@ -5,7 +5,7 @@
 extern SEXP compressor_decode_native(
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-    SEXP, SEXP);
+    SEXP, SEXP, SEXP);
 extern SEXP compressor_read_pcodec_native_codes(
     SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP compressor_read_pcodec_native_select(
@@ -34,7 +34,7 @@ extern SEXP compressor_exception_blocks(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP
 extern SEXP compressor_parse_variant_keys(SEXP, SEXP, SEXP, SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
-    {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 22},
+    {"compressor_decode_native", (DL_FUNC) &compressor_decode_native, 23},
     {"compressor_read_pcodec_native_codes", (DL_FUNC) &compressor_read_pcodec_native_codes, 11},
     {"compressor_read_pcodec_native_select", (DL_FUNC) &compressor_read_pcodec_native_select, 15},
     {"compressor_pcodec_key_columns", (DL_FUNC) &compressor_pcodec_key_columns, 5},

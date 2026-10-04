@@ -22,6 +22,13 @@
 
 #include "native_error.h"
 
+// Decoded values must not depend on the compiler fusing a * b + c into one
+// rounding (FMA): every reader and platform must produce the same bits.
+// Makevars also passes -ffp-contract=off where the compiler accepts it.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #ifdef COMPRESSOR_NATIVE_PCODEC
 #include "pcodec_native.h"
 #endif
@@ -413,7 +420,8 @@ extern "C" SEXP compressor_decode_native(
     SEXP include_beta,
     SEXP include_p,
     SEXP se_residual_min,
-    SEXP se_residual_max) {
+    SEXP se_residual_max,
+    SEXP centre_index) {
   return compressor_guard([&]() -> SEXP {
     if (TYPEOF(z_code) != INTSXP || TYPEOF(se_code) != INTSXP ||
         TYPEOF(eaf_code) != INTSXP) {
@@ -529,6 +537,18 @@ extern "C" SEXP compressor_decode_native(
       centre_factors[static_cast<std::size_t>(i)] = std::exp2(centre_values[i]);
     }
   
+    // Optional zero-based SE-centre block of every row, for rows that are not
+    // a contiguous run from row 0 (selective, region and candidate reads).
+    // Without it the centre is row / block_rows, as for a full read. Either
+    // way the arithmetic is the same, so every reader decodes a row to the
+    // same bits.
+    const int* centre_ids = nullptr;
+    if (centre_index != R_NilValue) {
+      if (TYPEOF(centre_index) != INTSXP || XLENGTH(centre_index) != n) {
+        compressor_fail("native decoder centre index must be one integer per row");
+      }
+      centre_ids = INTEGER(centre_index);
+    }
     const bool want_beta = Rf_asLogical(include_beta) == TRUE;
     const bool want_p = Rf_asLogical(include_p) == TRUE;
     const int output_count = 3 + (want_beta ? 1 : 0) + (want_p ? 1 : 0);
@@ -576,7 +596,9 @@ extern "C" SEXP compressor_decode_native(
       z_out[row] = z_ok ? z_table[static_cast<std::size_t>(z_value)] : kNaN;
       eaf_out[row] = eaf_ok ? eaf_table[static_cast<std::size_t>(eaf_value)] : kNaN;
       if (se_ok && centre_count > 0) {
-        const R_xlen_t block = row / block_rows_value;
+        R_xlen_t block = centre_ids ? static_cast<R_xlen_t>(centre_ids[row])
+                                    : row / block_rows_value;
+        if (block < 0) block = 0;  // includes NA_INTEGER
         const R_xlen_t centre = std::min<R_xlen_t>(block, centre_count - 1);
         se_out[row] = se_table[static_cast<std::size_t>(se_value) * eaf_width +
                                 safe_eaf_value] *
@@ -682,6 +704,9 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
     const bool need_se = requested_has(streams, "se");
     const bool need_eaf = need_se || requested_has(streams, "eaf");
     const bool need_numeric = need_z || need_se || need_eaf;
+    // "exceptions" alone reads just the exception sidecar (one file handle,
+    // one call), e.g. for threshold candidate selection.
+    const bool need_exceptions = need_numeric || requested_has(streams, "exceptions");
 
     std::vector<NativePcodecBlock> positions = read_native_blocks(
       position_blocks, static_cast<R_xlen_t>(n), true);
@@ -701,7 +726,7 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
                              "native value stream");
     require_block_row_parity(z_values, se_values,
                              "native value stream");
-    if (need_numeric && exceptions.size() != z_values.size()) {
+    if (need_exceptions && exceptions.size() != z_values.size()) {
       throw std::runtime_error("native Pcodec exception index does not match value blocks");
     }
 
@@ -733,7 +758,7 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
     }
 
     std::unique_ptr<NativePcodecFile> exception_file;
-    if (need_numeric) exception_file.reset(new NativePcodecFile(
+    if (need_exceptions) exception_file.reset(new NativePcodecFile(
       native_path(files, 5, "exception")));
 
     if (need_position) {
@@ -816,7 +841,7 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
     std::vector<double> exception_log2se;
     std::vector<double> exception_eaf;
     std::vector<int> exception_flags;
-    if (need_numeric) {
+    if (need_exceptions) {
       const std::string codec = CHAR(STRING_ELT(exception_codec, 0));
       std::int64_t previous_row = -1;
       for (std::size_t block_id = 0; block_id < exceptions.size(); ++block_id) {

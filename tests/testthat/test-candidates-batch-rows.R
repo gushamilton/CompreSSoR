@@ -90,11 +90,14 @@ test_that("read_candidates_batch equals per-store reads in every composition", {
          c("L1", "X1", "X2", "S2", "L2", "S1"),
          names(paths)),
     replicate(6L, sample(names(paths), sample(2:10, 1L)), simplify = FALSE))
-  for (comp in compositions) for (strategy in c("pvalue_flag", "auto")) {
+  # Both the default one-pass batch and opt-in shared key decoding.
+  for (share in c(FALSE, TRUE)) for (comp in compositions) for (strategy in c("pvalue_flag", "auto")) {
     for (order in c("none", "exact")) for (threads in c(1L, 2L)) {
+      old_share <- options(CompreSSoR.candidates_share_keys = share)
       got <- read_candidates_batch(as.list(paths[comp]), 5e-8, columns = cols,
                                    order = order, threads = threads,
                                    strategy = strategy)
+      options(old_share)
       expect_identical(names(got), comp)
       for (nm in comp) {
         info <- paste(strategy, order, threads, paste(comp, collapse = ","), nm)
