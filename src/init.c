@@ -27,6 +27,7 @@ extern SEXP compressor_same_strings(SEXP, SEXP);
 extern SEXP compressor_column_xxh64(SEXP, SEXP);
 extern SEXP compressor_sha256_raw(SEXP);
 extern SEXP compressor_sha256_files(SEXP, SEXP);
+extern SEXP compressor_files_equal(SEXP, SEXP, SEXP);
 extern SEXP compressor_serialize_sha256(SEXP, SEXP, SEXP, SEXP);
 extern SEXP compressor_pcodec_compress_blocks(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP compressor_exception_blocks(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -52,6 +53,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"compressor_column_xxh64", (DL_FUNC) &compressor_column_xxh64, 2},
     {"compressor_sha256_raw", (DL_FUNC) &compressor_sha256_raw, 1},
     {"compressor_sha256_files", (DL_FUNC) &compressor_sha256_files, 2},
+    {"compressor_files_equal", (DL_FUNC) &compressor_files_equal, 3},
     {"compressor_serialize_sha256", (DL_FUNC) &compressor_serialize_sha256, 4},
     {"compressor_pcodec_compress_blocks", (DL_FUNC) &compressor_pcodec_compress_blocks, 6},
     {"compressor_exception_blocks", (DL_FUNC) &compressor_exception_blocks, 8},

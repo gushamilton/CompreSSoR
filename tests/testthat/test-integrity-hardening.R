@@ -234,6 +234,27 @@ test_that("batch identity sharing refuses a store whose identity streams are cor
                "failed identity verification")
 })
 
+test_that("identity verification names the corrupt store wherever it is in the set", {
+  skip_unless_native()
+  data <- hardening_data(1500L)
+  good <- write_hardening_store(data)
+  bad <- copy_store(write_hardening_store(data))
+  other <- copy_store(good)
+  flip_byte(file.path(bad, "position.pco"))
+  for (order in list(c(bad, good, other), c(good, bad, other), c(good, other, bad))) {
+    stores <- lapply(order, open_compressor)
+    rm(list = ls(CompreSSoR:::.pcodec_identity_verified),
+       envir = CompreSSoR:::.pcodec_identity_verified)
+    expect_error(CompreSSoR:::pcodec_verify_identity_files(stores, threads = 2L),
+                 basename(bad), fixed = TRUE)
+  }
+  ok <- lapply(c(good, other), open_compressor)
+  expect_true(CompreSSoR:::pcodec_verify_identity_files(ok, threads = 2L))
+  files <- file.path(c(good, good, bad), "position.pco")
+  expect_identical(CompreSSoR:::pcodec_files_equal(files[c(1, 1)], files[c(2, 3)], threads = 2L),
+                   c(TRUE, FALSE))
+})
+
 test_that("identity verification is cached per file stamp", {
   skip_unless_native()
   data <- hardening_data(1000L)

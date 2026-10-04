@@ -126,45 +126,94 @@ pcodec_identity_verify_stamp <- function(store) {
         sep = "|", collapse = ";")
 }
 
-# Verify the identity streams of `stores` (a list of open stores), hashing
-# the files of every store not already verified in one threaded native call.
-# Stops on the first store that fails, naming it.
+# Verify the identity streams of `stores` (a list of open stores). Stores
+# whose manifests record the same identity hashes form a set: one member
+# (preferably one verified earlier) is hashed and compared with its record,
+# and every other member's files are compared byte for byte with that
+# verified member's files -- equal bytes then match the same recorded hash,
+# at memory-compare rather than SHA-256 cost. Stops on the first store that
+# fails, naming it. A verified result is cached per file stamp.
 pcodec_verify_identity_files <- function(stores, threads = 1L) {
   if (!length(stores)) return(invisible(TRUE))
   stamps <- lapply(stores, pcodec_identity_verify_stamp)
-  todo <- which(vapply(seq_along(stores), function(i) {
-    stamp <- stamps[[i]]
-    is.null(stamp) || !identical(.pcodec_identity_verified[[stores[[i]]$path]], stamp)
-  }, logical(1)))
-  if (!length(todo)) return(invisible(TRUE))
-  names <- lapply(stores[todo], pcodec_identity_file_names)
-  paths <- unlist(Map(function(store, n) file.path(store$path, n), stores[todo], names),
-                  use.names = FALSE)
-  digests <- pcodec_sha256_files(paths, threads = threads)
-  at <- 0L
-  for (t in seq_along(todo)) {
-    store <- stores[[todo[t]]]
-    n <- names[[t]]
-    if (length(n) != 2L || is.null(stamps[[todo[t]]])) {
-      stop("store '", store$path, "' has no identity stream record; ",
+  for (i in seq_along(stores)) {
+    if (is.null(stamps[[i]])) {
+      stop("store '", stores[[i]]$path, "' has no identity stream record; ",
            "it cannot take part in shared identity decoding", call. = FALSE)
     }
-    observed <- digests[at + seq_along(n)]
-    at <- at + length(n)
-    recorded <- vapply(n, function(name) {
-      tolower(as.character(store$manifest$integrity$files[[name]]$sha256 %||% NA_character_))
-    }, character(1))
-    bad <- is.na(observed) | is.na(recorded) | tolower(observed) != recorded
-    if (any(bad)) {
-      stop("store '", store$path, "' failed identity verification: ",
-           paste(n[bad], collapse = ", "),
-           " do not match the store's manifest checksums (corrupt, truncated ",
-           "or half-copied store); refusing to share decoded identity with it",
-           call. = FALSE)
+  }
+  verified <- vapply(seq_along(stores), function(i) {
+    identical(.pcodec_identity_verified[[stores[[i]]$path]], stamps[[i]])
+  }, logical(1))
+  if (all(verified)) return(invisible(TRUE))
+  names_of <- lapply(stores, pcodec_identity_file_names)
+  recorded <- vapply(seq_along(stores), function(i) {
+    paste(vapply(names_of[[i]], function(name) {
+      tolower(as.character(stores[[i]]$manifest$integrity$files[[name]]$sha256 %||% NA_character_))
+    }, character(1)), collapse = "|")
+  }, character(1))
+  fail <- function(store, files) {
+    stop("store '", store$path, "' failed identity verification: ",
+         paste(files, collapse = ", "),
+         " do not match the store's manifest checksums (corrupt, truncated ",
+         "or half-copied store); refusing to share decoded identity with it",
+         call. = FALSE)
+  }
+  paths_of <- function(i) file.path(stores[[i]]$path, names_of[[i]])
+  # One reference per recorded-hash set: a verified member, else the first,
+  # hashed now (all such references in one threaded call).
+  sets <- split(seq_along(stores), recorded)
+  reference <- vapply(sets, function(members) {
+    hit <- members[verified[members]]
+    if (length(hit)) hit[1L] else members[1L]
+  }, integer(1))
+  to_hash <- reference[!verified[reference]]
+  if (length(to_hash)) {
+    digests <- pcodec_sha256_files(unlist(lapply(to_hash, paths_of)), threads = threads)
+    at <- 0L
+    for (i in to_hash) {
+      n <- names_of[[i]]
+      observed <- tolower(digests[at + seq_along(n)])
+      at <- at + length(n)
+      expected <- strsplit(recorded[[i]], "|", fixed = TRUE)[[1L]]
+      bad <- is.na(observed) | observed != expected
+      if (any(bad)) fail(stores[[i]], n[bad])
+      .pcodec_identity_verified[[stores[[i]]$path]] <- stamps[[i]]
+      verified[i] <- TRUE
     }
-    .pcodec_identity_verified[[store$path]] <- stamps[[todo[t]]]
+  }
+  # Every other unverified member: byte-compare with its set's reference.
+  todo <- which(!verified)
+  if (length(todo)) {
+    ref_of <- reference[match(recorded[todo], names(sets))]
+    a <- unlist(lapply(todo, paths_of))
+    b <- unlist(lapply(ref_of, paths_of))
+    equal <- pcodec_files_equal(a, b, threads = threads)
+    at <- 0L
+    for (t in seq_along(todo)) {
+      i <- todo[t]
+      n <- names_of[[i]]
+      same <- equal[at + seq_along(n)]
+      at <- at + length(n)
+      if (!all(same)) fail(stores[[i]], n[!same])
+      .pcodec_identity_verified[[stores[[i]]$path]] <- stamps[[i]]
+    }
   }
   invisible(TRUE)
+}
+
+# Pairwise byte equality of files (natively, `threads` pairs at a time).
+pcodec_files_equal <- function(a, b, threads = 1L) {
+  if (!length(a)) return(logical())
+  if (is.loaded("compressor_files_equal", PACKAGE = "CompreSSoR")) {
+    return(.Call("compressor_files_equal", as.character(a), as.character(b),
+                 as.integer(threads), PACKAGE = "CompreSSoR"))
+  }
+  mapply(function(x, y) {
+    sx <- file.size(x); sy <- file.size(y)
+    !is.na(sx) && !is.na(sy) && sx == sy &&
+      identical(readBin(x, raw(), sx), readBin(y, raw(), sy))
+  }, a, b, USE.NAMES = FALSE)
 }
 
 pcodec_canonical_manifest_sha256 <- function(manifest) {
