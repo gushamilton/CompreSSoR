@@ -15,11 +15,13 @@
 #include <limits>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
 #ifdef COMPRESSOR_NATIVE_PCODEC
 #include "pcodec_native.h"
+#include "native_error.h"
 
 namespace {
 constexpr unsigned char kPcoTypeU32 = 1;
@@ -28,14 +30,14 @@ constexpr unsigned char kPcoTypeU8 = 10;
 
 void check_status(CompressorPcoError status, const char* operation) {
   if (status != COMPRESSOR_PCO_SUCCESS) {
-    Rf_error("native Pcodec %s failed (error code %d)", operation,
+    compressor_fail("native Pcodec %s failed (error code %d)", operation,
              static_cast<int>(status));
   }
 }
 
 template <typename T>
 SEXP compress_integer(SEXP input, SEXP level, SEXP page_n, unsigned char dtype) {
-  if (TYPEOF(input) != INTSXP) Rf_error("native Pcodec expects an integer vector");
+  if (TYPEOF(input) != INTSXP) compressor_fail("native Pcodec expects an integer vector");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
   if (n == 0) return Rf_allocVector(RAWSXP, 0);
   std::vector<T> values(n);
@@ -44,7 +46,7 @@ SEXP compress_integer(SEXP input, SEXP level, SEXP page_n, unsigned char dtype) 
     if (source[i] == NA_INTEGER || source[i] < 0 ||
         static_cast<std::uint64_t>(source[i]) >
           static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
-      Rf_error("native Pcodec input contains an out-of-range integer");
+      compressor_fail("native Pcodec input contains an out-of-range integer");
     }
     values[i] = static_cast<T>(source[i]);
   }
@@ -53,13 +55,13 @@ SEXP compress_integer(SEXP input, SEXP level, SEXP page_n, unsigned char dtype) 
     static_cast<std::size_t>(std::max(0, Rf_asInteger(page_n)))
   };
   const std::size_t capacity = compressor_pco_guarantee_file_size(n, dtype);
-  if (!capacity) Rf_error("native Pcodec returned zero output capacity");
+  if (!capacity) compressor_fail("native Pcodec returned zero output capacity");
   SEXP output = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(capacity)));
   std::size_t written = 0;
   check_status(compressor_pco_compress_into(
       values.data(), n, dtype, &config, RAW(output), capacity, &written),
     "compression");
-  if (written > capacity) Rf_error("native Pcodec wrote beyond its output buffer");
+  if (written > capacity) compressor_fail("native Pcodec wrote beyond its output buffer");
   if (written != capacity) {
     SEXP trimmed = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(written)));
     if (written) std::memcpy(RAW(trimmed), RAW(output), written);
@@ -72,9 +74,9 @@ SEXP compress_integer(SEXP input, SEXP level, SEXP page_n, unsigned char dtype) 
 
 template <typename T>
 SEXP decompress_integer(SEXP compressed, SEXP n, unsigned char dtype) {
-  if (TYPEOF(compressed) != RAWSXP) Rf_error("compressed must be a raw vector");
+  if (TYPEOF(compressed) != RAWSXP) compressor_fail("compressed must be a raw vector");
   const R_xlen_t expected = Rf_asInteger(n);
-  if (expected < 0) Rf_error("n must be non-negative");
+  if (expected < 0) compressor_fail("n must be non-negative");
   if (expected == 0) return Rf_allocVector(INTSXP, 0);
   std::vector<T> values(static_cast<std::size_t>(expected));
   std::size_t written = 0;
@@ -83,7 +85,7 @@ SEXP decompress_integer(SEXP compressed, SEXP n, unsigned char dtype) {
       values.data(), static_cast<std::size_t>(expected), &written),
     "decompression");
   if (written != static_cast<std::size_t>(expected)) {
-    Rf_error("native Pcodec returned %zu values; expected %td", written, expected);
+    compressor_fail("native Pcodec returned %zu values; expected %td", written, expected);
   }
   SEXP output = PROTECT(Rf_allocVector(INTSXP, expected));
   int* target = INTEGER(output);
@@ -91,7 +93,7 @@ SEXP decompress_integer(SEXP compressed, SEXP n, unsigned char dtype) {
     if (static_cast<std::uint64_t>(values[i]) >
         static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
       UNPROTECT(1);
-      Rf_error("native Pcodec value does not fit R's integer type");
+      compressor_fail("native Pcodec value does not fit R's integer type");
     }
     target[i] = static_cast<int>(values[i]);
   }
@@ -168,7 +170,7 @@ SEXP compress_blocks(const std::vector<T>& values, std::size_t block_rows,
   for (std::size_t block = 0; block < blocks; ++block) {
     const std::size_t count = std::min(n, (block + 1) * block_rows) - block * block_rows;
     capacity[block] = compressor_pco_guarantee_file_size(count, dtype);
-    if (!capacity[block]) Rf_error("native Pcodec returned zero output capacity");
+    if (!capacity[block]) compressor_fail("native Pcodec returned zero output capacity");
   }
   std::vector<CompressorPcoError> status(blocks, COMPRESSOR_PCO_SUCCESS);
   std::vector<int> overflow(blocks, 0);
@@ -185,18 +187,19 @@ SEXP compress_blocks(const std::vector<T>& values, std::size_t block_rows,
       blob.resize(std::min(written, capacity[block]));
     });
   } catch (const std::exception& failure) {
-    Rf_error("native Pcodec block compression failed: %s", failure.what());
+    throw std::runtime_error(std::string("native Pcodec block compression failed: ") +
+                             failure.what());
   }
   for (std::size_t block = 0; block < blocks; ++block) {
     check_status(status[block], dtype == kPcoTypeU32 ? "uint32 compression" : "compression");
-    if (overflow[block]) Rf_error("native Pcodec wrote beyond its output buffer");
+    if (overflow[block]) compressor_fail("native Pcodec wrote beyond its output buffer");
   }
   return raw_list(blobs);
 }
 
 template <typename T>
 std::vector<T> integer_stream_values(SEXP input) {
-  if (TYPEOF(input) != INTSXP) Rf_error("native Pcodec expects an integer vector");
+  if (TYPEOF(input) != INTSXP) compressor_fail("native Pcodec expects an integer vector");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
   std::vector<T> values(n);
   const int* source = INTEGER(input);
@@ -204,7 +207,7 @@ std::vector<T> integer_stream_values(SEXP input) {
     if (source[i] == NA_INTEGER || source[i] < 0 ||
         static_cast<std::uint64_t>(source[i]) >
           static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
-      Rf_error("native Pcodec input contains an out-of-range integer");
+      compressor_fail("native Pcodec input contains an out-of-range integer");
     }
     values[i] = static_cast<T>(source[i]);
   }
@@ -212,7 +215,7 @@ std::vector<T> integer_stream_values(SEXP input) {
 }
 
 std::vector<std::uint32_t> numeric_u32_stream_values(SEXP input) {
-  if (TYPEOF(input) != REALSXP) Rf_error("native Pcodec uint32 input must be numeric");
+  if (TYPEOF(input) != REALSXP) compressor_fail("native Pcodec uint32 input must be numeric");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
   std::vector<std::uint32_t> values(n);
   const double* source = REAL(input);
@@ -220,7 +223,7 @@ std::vector<std::uint32_t> numeric_u32_stream_values(SEXP input) {
     if (!R_FINITE(source[i]) || source[i] < 0.0 ||
         source[i] != std::floor(source[i]) ||
         source[i] > 4294967295.0) {
-      Rf_error("native Pcodec uint32 input contains an invalid value");
+      compressor_fail("native Pcodec uint32 input contains an invalid value");
     }
     values[i] = static_cast<std::uint32_t>(source[i]);
   }
@@ -243,7 +246,7 @@ std::uint32_t float_bits(double value) {
 }
 
 SEXP compress_numeric_u32(SEXP input, SEXP level, SEXP page_n) {
-  if (TYPEOF(input) != REALSXP) Rf_error("native Pcodec uint32 input must be numeric");
+  if (TYPEOF(input) != REALSXP) compressor_fail("native Pcodec uint32 input must be numeric");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
   if (n == 0) return Rf_allocVector(RAWSXP, 0);
   std::vector<std::uint32_t> values(n);
@@ -252,7 +255,7 @@ SEXP compress_numeric_u32(SEXP input, SEXP level, SEXP page_n) {
     if (!R_FINITE(source[i]) || source[i] < 0.0 ||
         source[i] != std::floor(source[i]) ||
         source[i] > 4294967295.0) {
-      Rf_error("native Pcodec uint32 input contains an invalid value");
+      compressor_fail("native Pcodec uint32 input contains an invalid value");
     }
     values[i] = static_cast<std::uint32_t>(source[i]);
   }
@@ -261,13 +264,13 @@ SEXP compress_numeric_u32(SEXP input, SEXP level, SEXP page_n) {
     static_cast<std::size_t>(std::max(0, Rf_asInteger(page_n)))
   };
   const std::size_t capacity = compressor_pco_guarantee_file_size(n, kPcoTypeU32);
-  if (!capacity) Rf_error("native Pcodec returned zero output capacity");
+  if (!capacity) compressor_fail("native Pcodec returned zero output capacity");
   SEXP output = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(capacity)));
   std::size_t written = 0;
   check_status(compressor_pco_compress_into(
       values.data(), n, kPcoTypeU32, &config, RAW(output), capacity, &written),
     "uint32 compression");
-  if (written > capacity) Rf_error("native Pcodec wrote beyond its output buffer");
+  if (written > capacity) compressor_fail("native Pcodec wrote beyond its output buffer");
   if (written != capacity) {
     SEXP trimmed = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(written)));
     if (written) std::memcpy(RAW(trimmed), RAW(output), written);
@@ -279,9 +282,9 @@ SEXP compress_numeric_u32(SEXP input, SEXP level, SEXP page_n) {
 }
 
 SEXP decompress_numeric_u32(SEXP compressed, SEXP n) {
-  if (TYPEOF(compressed) != RAWSXP) Rf_error("compressed must be a raw vector");
+  if (TYPEOF(compressed) != RAWSXP) compressor_fail("compressed must be a raw vector");
   const R_xlen_t expected = Rf_asInteger(n);
-  if (expected < 0) Rf_error("n must be non-negative");
+  if (expected < 0) compressor_fail("n must be non-negative");
   if (expected == 0) return Rf_allocVector(REALSXP, 0);
   std::vector<std::uint32_t> values(static_cast<std::size_t>(expected));
   std::size_t written = 0;
@@ -290,7 +293,7 @@ SEXP decompress_numeric_u32(SEXP compressed, SEXP n) {
       values.data(), static_cast<std::size_t>(expected), &written),
     "uint32 decompression");
   if (written != static_cast<std::size_t>(expected)) {
-    Rf_error("native Pcodec returned %zu values; expected %td", written, expected);
+    compressor_fail("native Pcodec returned %zu values; expected %td", written, expected);
   }
   SEXP output = PROTECT(Rf_allocVector(REALSXP, expected));
   double* target = REAL(output);
@@ -300,7 +303,7 @@ SEXP decompress_numeric_u32(SEXP compressed, SEXP n) {
 }
 
 SEXP zstd_compress(SEXP input, SEXP level) {
-  if (TYPEOF(input) != RAWSXP) Rf_error("Zstandard input must be a raw vector");
+  if (TYPEOF(input) != RAWSXP) compressor_fail("Zstandard input must be a raw vector");
   const std::size_t n = static_cast<std::size_t>(XLENGTH(input));
   if (n == 0) return Rf_allocVector(RAWSXP, 0);
   const int compression_level = Rf_asInteger(level);
@@ -321,9 +324,9 @@ SEXP zstd_compress(SEXP input, SEXP level) {
 }
 
 SEXP zstd_decompress(SEXP input, SEXP expected) {
-  if (TYPEOF(input) != RAWSXP) Rf_error("Zstandard input must be a raw vector");
+  if (TYPEOF(input) != RAWSXP) compressor_fail("Zstandard input must be a raw vector");
   const R_xlen_t expected_length = Rf_asInteger(expected);
-  if (expected_length < 0) Rf_error("expected decompressed length must be non-negative");
+  if (expected_length < 0) compressor_fail("expected decompressed length must be non-negative");
   if (expected_length == 0) return Rf_allocVector(RAWSXP, 0);
   SEXP output = PROTECT(Rf_allocVector(RAWSXP, expected_length));
   std::size_t written = 0;
@@ -333,7 +336,7 @@ SEXP zstd_decompress(SEXP input, SEXP expected) {
     "Zstandard decompression");
   if (written != static_cast<std::size_t>(expected_length)) {
     UNPROTECT(1);
-    Rf_error("Zstandard returned %zu bytes; expected %td", written, expected_length);
+    compressor_fail("Zstandard returned %zu bytes; expected %td", written, expected_length);
   }
   UNPROTECT(1);
   return output;
@@ -345,57 +348,75 @@ extern "C" SEXP compressor_pcodec_native_available() {
 }
 
 extern "C" SEXP compressor_pcodec_compress_u8(SEXP input, SEXP level, SEXP page_n) {
-  return compress_integer<std::uint8_t>(input, level, page_n, kPcoTypeU8);
+  return compressor_guard([&]() -> SEXP {
+    return compress_integer<std::uint8_t>(input, level, page_n, kPcoTypeU8);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_compress_u16(SEXP input, SEXP level, SEXP page_n) {
-  return compress_integer<std::uint16_t>(input, level, page_n, kPcoTypeU16);
+  return compressor_guard([&]() -> SEXP {
+    return compress_integer<std::uint16_t>(input, level, page_n, kPcoTypeU16);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_compress_u32(SEXP input, SEXP level, SEXP page_n) {
-  return compress_numeric_u32(input, level, page_n);
+  return compressor_guard([&]() -> SEXP {
+    return compress_numeric_u32(input, level, page_n);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_decompress_u8(SEXP compressed, SEXP n) {
-  return decompress_integer<std::uint8_t>(compressed, n, kPcoTypeU8);
+  return compressor_guard([&]() -> SEXP {
+    return decompress_integer<std::uint8_t>(compressed, n, kPcoTypeU8);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_decompress_u16(SEXP compressed, SEXP n) {
-  return decompress_integer<std::uint16_t>(compressed, n, kPcoTypeU16);
+  return compressor_guard([&]() -> SEXP {
+    return decompress_integer<std::uint16_t>(compressed, n, kPcoTypeU16);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_decompress_u32(SEXP compressed, SEXP n) {
-  return decompress_numeric_u32(compressed, n);
+  return compressor_guard([&]() -> SEXP {
+    return decompress_numeric_u32(compressed, n);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_zstd_compress(SEXP input, SEXP level) {
-  return zstd_compress(input, level);
+  return compressor_guard([&]() -> SEXP {
+    return zstd_compress(input, level);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_zstd_decompress(SEXP input, SEXP expected) {
-  return zstd_decompress(input, expected);
+  return compressor_guard([&]() -> SEXP {
+    return zstd_decompress(input, expected);
+  }, "native Pcodec error");
 }
 
 extern "C" SEXP compressor_pcodec_compress_blocks(SEXP input, SEXP dtype, SEXP block_rows,
                                                   SEXP level, SEXP page_n, SEXP threads) {
-  const int rows = Rf_asInteger(block_rows);
-  if (rows == NA_INTEGER || rows < 1) Rf_error("native Pcodec stream block_rows must be positive");
-  const char* type = CHAR(STRING_ELT(dtype, 0));
-  const std::size_t block = static_cast<std::size_t>(rows);
-  if (std::strcmp(type, "u8") == 0) {
-    return compress_blocks<std::uint8_t>(integer_stream_values<std::uint8_t>(input), block,
-                                         kPcoTypeU8, level, page_n, threads);
-  }
-  if (std::strcmp(type, "u16") == 0) {
-    return compress_blocks<std::uint16_t>(integer_stream_values<std::uint16_t>(input), block,
-                                          kPcoTypeU16, level, page_n, threads);
-  }
-  if (std::strcmp(type, "u32") == 0) {
-    return compress_blocks<std::uint32_t>(numeric_u32_stream_values(input), block,
-                                          kPcoTypeU32, level, page_n, threads);
-  }
-  Rf_error("unsupported native Pcodec dtype: %s", type);
-  return R_NilValue;
+  return compressor_guard([&]() -> SEXP {
+    const int rows = Rf_asInteger(block_rows);
+    if (rows == NA_INTEGER || rows < 1) compressor_fail("native Pcodec stream block_rows must be positive");
+    const char* type = CHAR(STRING_ELT(dtype, 0));
+    const std::size_t block = static_cast<std::size_t>(rows);
+    if (std::strcmp(type, "u8") == 0) {
+      return compress_blocks<std::uint8_t>(integer_stream_values<std::uint8_t>(input), block,
+                                           kPcoTypeU8, level, page_n, threads);
+    }
+    if (std::strcmp(type, "u16") == 0) {
+      return compress_blocks<std::uint16_t>(integer_stream_values<std::uint16_t>(input), block,
+                                            kPcoTypeU16, level, page_n, threads);
+    }
+    if (std::strcmp(type, "u32") == 0) {
+      return compress_blocks<std::uint32_t>(numeric_u32_stream_values(input), block,
+                                            kPcoTypeU32, level, page_n, threads);
+    }
+    compressor_fail("unsupported native Pcodec dtype: %s", type);
+    return R_NilValue;
+  }, "native Pcodec error");
 }
 
 // Build and Zstandard-compress the per-value-block exception frames.  A frame
@@ -408,77 +429,80 @@ extern "C" SEXP compressor_pcodec_compress_blocks(SEXP input, SEXP dtype, SEXP b
 extern "C" SEXP compressor_exception_blocks(SEXP row, SEXP z, SEXP log2se, SEXP eaf,
                                             SEXP flags, SEXP block_stops, SEXP level,
                                             SEXP threads) {
-  if (TYPEOF(row) != INTSXP || TYPEOF(flags) != INTSXP || TYPEOF(z) != REALSXP ||
-      TYPEOF(log2se) != REALSXP || TYPEOF(eaf) != REALSXP || TYPEOF(block_stops) != REALSXP) {
-    Rf_error("native exception frame inputs have the wrong types");
-  }
-  const std::size_t n = static_cast<std::size_t>(XLENGTH(row));
-  if (static_cast<std::size_t>(XLENGTH(z)) != n || static_cast<std::size_t>(XLENGTH(log2se)) != n ||
-      static_cast<std::size_t>(XLENGTH(eaf)) != n || static_cast<std::size_t>(XLENGTH(flags)) != n) {
-    Rf_error("native exception frame inputs have unequal lengths");
-  }
-  const std::size_t blocks = static_cast<std::size_t>(XLENGTH(block_stops));
-  const int* rows = INTEGER(row);
-  const double* stops = REAL(block_stops);
-  // Member range [first[b], first[b + 1]) of each block, by a linear sweep.
-  std::vector<std::size_t> first(blocks + 1, n);
-  std::size_t at = 0;
-  for (std::size_t block = 0; block < blocks; ++block) {
-    first[block] = at;
-    while (at < n && static_cast<double>(rows[at]) < stops[block]) ++at;
-  }
-  first[blocks] = at;
-  if (at != n) Rf_error("native Pcodec exception row is outside the value blocks");
-  const double* zv = REAL(z);
-  const double* sv = REAL(log2se);
-  const double* ev = REAL(eaf);
-  const int* fv = INTEGER(flags);
-  const int compression_level = Rf_asInteger(level);
-  std::vector<std::vector<unsigned char>> blobs(blocks);
-  std::vector<int> raw_lengths(blocks, 0);
-  std::vector<int> counts(blocks, 0);
-  std::vector<CompressorPcoError> status(blocks, COMPRESSOR_PCO_SUCCESS);
-  try {
-    run_parallel_tasks(blocks, thread_count_arg(threads), [&](std::size_t block) {
-      const std::size_t lo = first[block];
-      const std::size_t count = first[block + 1] - lo;
-      counts[block] = static_cast<int>(count);
-      if (!count) return;
-      std::vector<unsigned char> frame(count * 17u);
-      for (std::size_t i = 0; i < count; ++i) {
-        append_le32(frame, 4u * i, static_cast<std::uint32_t>(rows[lo + i]));
-        append_le32(frame, 4u * (count + i), float_bits(zv[lo + i]));
-        append_le32(frame, 4u * (2u * count + i), float_bits(sv[lo + i]));
-        append_le32(frame, 4u * (3u * count + i), float_bits(ev[lo + i]));
-        frame[16u * count + i] = static_cast<unsigned char>(static_cast<signed char>(fv[lo + i]));
-      }
-      raw_lengths[block] = static_cast<int>(frame.size());
-      const std::size_t capacity = frame.size() + (frame.size() / 8) + 131072;
-      std::vector<unsigned char>& blob = blobs[block];
-      blob.resize(capacity);
-      std::size_t written = 0;
-      status[block] = compressor_zstd_compress_into(
-        frame.data(), frame.size(), compression_level, blob.data(), capacity, &written);
-      blob.resize(std::min(written, capacity));
-    });
-  } catch (const std::exception& failure) {
-    Rf_error("native exception frame compression failed: %s", failure.what());
-  }
-  for (std::size_t block = 0; block < blocks; ++block) {
-    check_status(status[block], "Zstandard compression");
-  }
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
-  SET_VECTOR_ELT(out, 0, raw_list(blobs));
-  SEXP lengths = Rf_allocVector(INTSXP, static_cast<R_xlen_t>(blocks));
-  SET_VECTOR_ELT(out, 1, lengths);
-  SEXP member_counts = Rf_allocVector(INTSXP, static_cast<R_xlen_t>(blocks));
-  SET_VECTOR_ELT(out, 2, member_counts);
-  for (std::size_t block = 0; block < blocks; ++block) {
-    INTEGER(lengths)[block] = raw_lengths[block];
-    INTEGER(member_counts)[block] = counts[block];
-  }
-  UNPROTECT(1);
-  return out;
+  return compressor_guard([&]() -> SEXP {
+    if (TYPEOF(row) != INTSXP || TYPEOF(flags) != INTSXP || TYPEOF(z) != REALSXP ||
+        TYPEOF(log2se) != REALSXP || TYPEOF(eaf) != REALSXP || TYPEOF(block_stops) != REALSXP) {
+      compressor_fail("native exception frame inputs have the wrong types");
+    }
+    const std::size_t n = static_cast<std::size_t>(XLENGTH(row));
+    if (static_cast<std::size_t>(XLENGTH(z)) != n || static_cast<std::size_t>(XLENGTH(log2se)) != n ||
+        static_cast<std::size_t>(XLENGTH(eaf)) != n || static_cast<std::size_t>(XLENGTH(flags)) != n) {
+      compressor_fail("native exception frame inputs have unequal lengths");
+    }
+    const std::size_t blocks = static_cast<std::size_t>(XLENGTH(block_stops));
+    const int* rows = INTEGER(row);
+    const double* stops = REAL(block_stops);
+    // Member range [first[b], first[b + 1]) of each block, by a linear sweep.
+    std::vector<std::size_t> first(blocks + 1, n);
+    std::size_t at = 0;
+    for (std::size_t block = 0; block < blocks; ++block) {
+      first[block] = at;
+      while (at < n && static_cast<double>(rows[at]) < stops[block]) ++at;
+    }
+    first[blocks] = at;
+    if (at != n) compressor_fail("native Pcodec exception row is outside the value blocks");
+    const double* zv = REAL(z);
+    const double* sv = REAL(log2se);
+    const double* ev = REAL(eaf);
+    const int* fv = INTEGER(flags);
+    const int compression_level = Rf_asInteger(level);
+    std::vector<std::vector<unsigned char>> blobs(blocks);
+    std::vector<int> raw_lengths(blocks, 0);
+    std::vector<int> counts(blocks, 0);
+    std::vector<CompressorPcoError> status(blocks, COMPRESSOR_PCO_SUCCESS);
+    try {
+      run_parallel_tasks(blocks, thread_count_arg(threads), [&](std::size_t block) {
+        const std::size_t lo = first[block];
+        const std::size_t count = first[block + 1] - lo;
+        counts[block] = static_cast<int>(count);
+        if (!count) return;
+        std::vector<unsigned char> frame(count * 17u);
+        for (std::size_t i = 0; i < count; ++i) {
+          append_le32(frame, 4u * i, static_cast<std::uint32_t>(rows[lo + i]));
+          append_le32(frame, 4u * (count + i), float_bits(zv[lo + i]));
+          append_le32(frame, 4u * (2u * count + i), float_bits(sv[lo + i]));
+          append_le32(frame, 4u * (3u * count + i), float_bits(ev[lo + i]));
+          frame[16u * count + i] = static_cast<unsigned char>(static_cast<signed char>(fv[lo + i]));
+        }
+        raw_lengths[block] = static_cast<int>(frame.size());
+        const std::size_t capacity = frame.size() + (frame.size() / 8) + 131072;
+        std::vector<unsigned char>& blob = blobs[block];
+        blob.resize(capacity);
+        std::size_t written = 0;
+        status[block] = compressor_zstd_compress_into(
+          frame.data(), frame.size(), compression_level, blob.data(), capacity, &written);
+        blob.resize(std::min(written, capacity));
+      });
+    } catch (const std::exception& failure) {
+      throw std::runtime_error(std::string("native exception frame compression failed: ") +
+                               failure.what());
+    }
+    for (std::size_t block = 0; block < blocks; ++block) {
+      check_status(status[block], "Zstandard compression");
+    }
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
+    SET_VECTOR_ELT(out, 0, raw_list(blobs));
+    SEXP lengths = Rf_allocVector(INTSXP, static_cast<R_xlen_t>(blocks));
+    SET_VECTOR_ELT(out, 1, lengths);
+    SEXP member_counts = Rf_allocVector(INTSXP, static_cast<R_xlen_t>(blocks));
+    SET_VECTOR_ELT(out, 2, member_counts);
+    for (std::size_t block = 0; block < blocks; ++block) {
+      INTEGER(lengths)[block] = raw_lengths[block];
+      INTEGER(member_counts)[block] = counts[block];
+    }
+    UNPROTECT(1);
+    return out;
+  }, "native Pcodec error");
 }
 
 #else

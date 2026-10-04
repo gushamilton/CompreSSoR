@@ -199,7 +199,7 @@ candidates_read_flag_rows <- function(store, threads) {
         }
         as.integer(starts[b] + which(v != 0L) - 1)
       })
-    }, threads = threads)
+    }, threads = threads, labels = store$path, what = "p-value flag read")
   as.integer(unlist(parts, use.names = FALSE))
 }
 
@@ -449,21 +449,20 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   threads <- pcodec_validate_threads(threads)
   inner <- if (length(stores) > 1L) 1L else threads
   guard <- function(expr) tryCatch(expr, error = function(e) e)
-  # Stage 1 (parallel over stores): select candidate rows.  A forked worker
-  # that dies returns NULL (or a try-error) rather than our guarded error, so
-  # anything that is not a prepared context is treated as a failure.
+  labels <- vapply(seq_along(stores), function(i) {
+    candidates_store_label(stores[[i]], names(stores)[i])
+  }, character(1))
+  # Stage 1 (parallel over stores): select candidate rows.  A store's own
+  # error is carried as a condition object and reported below with its
+  # label; a dead worker (NULL) is rejected by pcodec_parallel_lapply().
   ctxs <- pcodec_parallel_lapply(seq_along(stores), function(i) {
     guard(candidates_prepare(stores[[i]], thresholds[[i]], region, columns,
                              order, inner, strategy))
-  }, threads = threads)
-  if (length(ctxs) != length(stores)) {
-    stop("candidate selection returned ", length(ctxs), " results for ",
-         length(stores), " stores", call. = FALSE)
-  }
+  }, threads = threads, labels = labels, what = "candidate selection")
   ctxs <- lapply(ctxs, function(x) {
     if (is.list(x) && !inherits(x, "error") && is.list(x$picked)) return(x)
     if (inherits(x, "error")) return(x)
-    simpleError(if (inherits(x, "try-error")) as.character(x) else "worker failed")
+    simpleError("candidate selection worker returned no context")
   })
   # Stage 2: stores sharing a variant panel (equal identity signature) decode
   # the position/substitution blocks once, for the union of their candidate
@@ -485,6 +484,11 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
     }, character(1))
     sig[ok & !vapply(seq_along(ctxs), function(i) ok[i] && need_key(ctxs[[i]]),
                      logical(1))] <- NA_character_
+    grouped <- which(!is.na(sig) & sig %in% sig[duplicated(sig) & !is.na(sig)])
+    # Every store about to receive another store's decoded keys must first
+    # match its own manifest checksums (a corrupt store errors here).
+    pcodec_verify_identity_files(lapply(ctxs[grouped], `[[`, "store"),
+                                 threads = threads)
     for (g in unique(stats::na.omit(sig))) {
       members <- which(sig %in% g)
       if (length(members) < 2L) next
@@ -507,17 +511,14 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   pieces <- pcodec_parallel_lapply(seq_along(stores), function(i) {
     if (!ok[[i]]) return(ctxs[[i]])
     guard(candidates_finish(ctxs[[i]], inner, keys = shared[[i]]))
-  }, threads = threads)
-  if (length(pieces) != length(stores)) {
-    stop("candidate decode returned ", length(pieces), " results for ",
-         length(stores), " stores", call. = FALSE)
-  }
+  }, threads = threads, labels = labels, what = "candidate decode")
   failed <- vapply(pieces, function(x) !is.data.frame(x), logical(1))
   if (any(failed)) {
     first <- which(failed)[1L]
     msg <- if (inherits(pieces[[first]], "error")) conditionMessage(pieces[[first]])
            else "worker failed"
-    stop("failed to read candidates from store ", first, ": ", msg, call. = FALSE)
+    stop("failed to read candidates from store ", first, " ('", labels[first],
+         "'): ", msg, call. = FALSE)
   }
   labels <- names(stores)
   if (is.null(labels)) labels <- as.character(seq_along(stores))
@@ -537,6 +538,14 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   attr(combined, "candidate_strategy") <- strategy
   attr(combined, "candidate_threshold") <- thresholds
   combined
+}
+
+# A store's name in a batch (its list name, else its path) for error messages.
+candidates_store_label <- function(store, name = NULL) {
+  if (!is.null(name) && !is.na(name) && nzchar(name)) return(name)
+  if (inherits(store, "compressor_store")) return(store$path)
+  if (is.character(store) && length(store) == 1L && !is.na(store)) return(store)
+  "<store>"
 }
 
 # ---------------------------------------------------------------------------
@@ -610,7 +619,7 @@ candidates_fetch_keys <- function(store, index, rows, range, threads) {
       list(row = mine[keep], position = position[keep],
            substitution = as.integer(substitution[local[keep]]))
     })
-  }, threads = threads)
+  }, threads = threads, labels = store$path, what = "candidate key decode")
   keys <- unlist(keys, recursive = FALSE, use.names = FALSE)
   keys <- keys[!vapply(keys, is.null, logical(1))]
   if (!length(keys)) return(NULL)
@@ -705,7 +714,7 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
             centres, value_starts[b], n_block, needed, semantic)
           lapply(decoded, function(v) v[local])
         })
-      }, threads = threads)
+      }, threads = threads, labels = store$path, what = "candidate value decode")
     parts <- unlist(parts, recursive = FALSE, use.names = FALSE)
     pull <- function(field) unlist(lapply(parts, `[[`, field), use.names = FALSE)
     if (need_z) out$z <- pull("z")

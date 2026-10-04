@@ -1745,11 +1745,29 @@ stage_store_output <- function(output, overwrite = FALSE) {
   list(target = target, staging = staging, overwrite = isTRUE(overwrite))
 }
 
+# Write a file through `writer(tmp)` into a temporary file beside `path`,
+# then rename it over `path` (atomic on POSIX file systems).
+atomic_write_file <- function(path, writer) {
+  tmp <- tempfile(paste0(".", basename(path), "-"), tmpdir = dirname(path))
+  on.exit(unlink(tmp, force = TRUE), add = TRUE)
+  writer(tmp)
+  if (!file.rename(tmp, path)) stop("could not replace ", path, call. = FALSE)
+  invisible(path)
+}
+
 commit_store_output <- function(transaction) {
   target <- transaction$target
   staging <- transaction$staging
   backup <- NULL
   target_exists <- file.exists(target) || dir.exists(target)
+  # overwrite = FALSE was checked when staging started; the destination may
+  # have been created since (another writer). Re-check before committing:
+  # renaming the staging directory onto an existing empty directory would
+  # otherwise silently succeed.
+  if (target_exists && !isTRUE(transaction$overwrite)) {
+    stop("output already exists (created while this store was being written); ",
+         "use overwrite = TRUE", call. = FALSE)
+  }
   if (target_exists) {
     backup <- tempfile(paste0(".", basename(target), "-backup-"), tmpdir = dirname(target))
     if (!file.rename(target, backup)) {

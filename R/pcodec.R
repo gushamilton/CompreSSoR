@@ -20,6 +20,153 @@ pcodec_payload_sha256 <- function(files) {
   digest::digest(paste(entries, collapse = "\n"), algo = "sha256", serialize = FALSE)
 }
 
+# SHA-256 hex digests of files (NA for a file that cannot be read), hashed
+# natively on up to `threads` threads; equal to digest::digest(path, algo =
+# "sha256", file = TRUE).
+pcodec_sha256_files <- function(paths, threads = 1L) {
+  paths <- as.character(paths)
+  if (!length(paths)) return(character())
+  if (is.loaded("compressor_sha256_files", PACKAGE = "CompreSSoR")) {
+    return(.Call("compressor_sha256_files", paths, as.integer(threads),
+                 PACKAGE = "CompreSSoR"))
+  }
+  vapply(paths, function(path) {
+    if (!file.exists(path) || dir.exists(path)) return(NA_character_)
+    digest::digest(path, algo = "sha256", file = TRUE)
+  }, character(1), USE.NAMES = FALSE)
+}
+
+# Compare files of a store with its manifest integrity record (byte count and
+# sha256). `names` are relative payload paths (default: every recorded file).
+# With `payload = TRUE` the aggregate payload_sha256 is recomputed from the
+# per-file record and every file named in manifest$files must have a record.
+# Returns a character vector of problems (empty when everything matches).
+pcodec_integrity_problems <- function(store, names = NULL, threads = 1L,
+                                      payload = is.null(names)) {
+  force(payload)  # its default depends on `names`, which is reassigned below
+  integrity <- store$manifest$integrity
+  files <- integrity$files
+  if (!is.list(files) || !length(files)) {
+    return("the manifest has no per-file integrity record")
+  }
+  if (is.null(names)) names <- names(files)
+  problems <- character()
+  unknown <- setdiff(names, names(files))
+  if (length(unknown)) {
+    problems <- c(problems, paste0(unknown, ": no integrity record in the manifest"))
+  }
+  names <- intersect(names, names(files))
+  paths <- file.path(store$path, names)
+  info <- file.info(paths, extra_cols = FALSE)
+  size <- info$size
+  missing <- is.na(size) | info$isdir %in% TRUE
+  if (any(missing)) problems <- c(problems, paste0(names[missing], ": missing"))
+  recorded_bytes <- vapply(files[names], function(item) {
+    as.numeric(item$bytes %||% NA_real_)
+  }, numeric(1))
+  recorded_sha <- vapply(files[names], function(item) {
+    tolower(as.character(item$sha256 %||% NA_character_))
+  }, character(1))
+  wrong_size <- !missing & !is.na(recorded_bytes) & size != recorded_bytes
+  if (any(wrong_size)) {
+    problems <- c(problems, sprintf(
+      "%s: %s bytes on disk but the manifest records %s (truncated or modified)",
+      names[wrong_size], format(size[wrong_size], scientific = FALSE),
+      format(recorded_bytes[wrong_size], scientific = FALSE)))
+  }
+  check <- !missing & !wrong_size
+  if (any(check)) {
+    observed <- pcodec_sha256_files(paths[check], threads = threads)
+    bad <- is.na(observed) | is.na(recorded_sha[check]) |
+      tolower(observed) != recorded_sha[check]
+    if (any(bad)) {
+      problems <- c(problems, paste0(names[check][bad],
+                                     ": sha256 mismatch (corrupt or modified file)"))
+    }
+  }
+  if (isTRUE(payload)) {
+    if (!identical(tolower(as.character(integrity$payload_sha256 %||% "")),
+                   pcodec_payload_sha256(files))) {
+      problems <- c(problems,
+                    "payload_sha256 does not match the per-file integrity record")
+    }
+    listed <- unname(unlist(store$manifest$files))
+    unrecorded <- setdiff(listed, names(files))
+    if (length(unrecorded)) {
+      problems <- c(problems, paste0(unrecorded,
+                                     ": payload file has no integrity record"))
+    }
+  }
+  problems
+}
+
+# Batch identity sharing serves one store's decoded keys to every store with
+# the same identity signature, and the signature is built from manifest
+# hashes. Before a store takes part, its position and substitution streams
+# are hashed and compared with its own manifest record, so a corrupt or
+# half-copied store fails instead of being masked by another store's keys.
+# (The index, which holds the block anchors, is verified whenever it is
+# parsed.) A verified result is cached per (path, size, mtime, recorded hash).
+.pcodec_identity_verified <- new.env(parent = emptyenv())
+
+pcodec_identity_file_names <- function(store) {
+  files <- store$manifest$files
+  c(files$position, files$substitution)
+}
+
+pcodec_identity_verify_stamp <- function(store) {
+  names <- pcodec_identity_file_names(store)
+  if (length(names) != 2L) return(NULL)
+  paths <- file.path(store$path, names)
+  info <- file.info(paths, extra_cols = FALSE)
+  recorded <- vapply(names, function(name) {
+    as.character(store$manifest$integrity$files[[name]]$sha256 %||% NA_character_)
+  }, character(1))
+  paste(paths, info$size, format(as.numeric(info$mtime), digits = 17), recorded,
+        sep = "|", collapse = ";")
+}
+
+# Verify the identity streams of `stores` (a list of open stores), hashing
+# the files of every store not already verified in one threaded native call.
+# Stops on the first store that fails, naming it.
+pcodec_verify_identity_files <- function(stores, threads = 1L) {
+  if (!length(stores)) return(invisible(TRUE))
+  stamps <- lapply(stores, pcodec_identity_verify_stamp)
+  todo <- which(vapply(seq_along(stores), function(i) {
+    stamp <- stamps[[i]]
+    is.null(stamp) || !identical(.pcodec_identity_verified[[stores[[i]]$path]], stamp)
+  }, logical(1)))
+  if (!length(todo)) return(invisible(TRUE))
+  names <- lapply(stores[todo], pcodec_identity_file_names)
+  paths <- unlist(Map(function(store, n) file.path(store$path, n), stores[todo], names),
+                  use.names = FALSE)
+  digests <- pcodec_sha256_files(paths, threads = threads)
+  at <- 0L
+  for (t in seq_along(todo)) {
+    store <- stores[[todo[t]]]
+    n <- names[[t]]
+    if (length(n) != 2L || is.null(stamps[[todo[t]]])) {
+      stop("store '", store$path, "' has no identity stream record; ",
+           "it cannot take part in shared identity decoding", call. = FALSE)
+    }
+    observed <- digests[at + seq_along(n)]
+    at <- at + length(n)
+    recorded <- vapply(n, function(name) {
+      tolower(as.character(store$manifest$integrity$files[[name]]$sha256 %||% NA_character_))
+    }, character(1))
+    bad <- is.na(observed) | is.na(recorded) | tolower(observed) != recorded
+    if (any(bad)) {
+      stop("store '", store$path, "' failed identity verification: ",
+           paste(n[bad], collapse = ", "),
+           " do not match the store's manifest checksums (corrupt, truncated ",
+           "or half-copied store); refusing to share decoded identity with it",
+           call. = FALSE)
+    }
+    .pcodec_identity_verified[[store$path]] <- stamps[[todo[t]]]
+  }
+  invisible(TRUE)
+}
+
 pcodec_canonical_manifest_sha256 <- function(manifest) {
   strip_observational <- function(value) {
     if (!is.list(value)) return(value)
@@ -28,7 +175,12 @@ pcodec_canonical_manifest_sha256 <- function(manifest) {
       value <- value[!names_value %in% c("timings", "elapsed_seconds",
                                          "read_elapsed_seconds",
                                          "projection_elapsed_seconds",
-                                         "build_info")]
+                                         "build_info",
+                                         # thread counts: observational, so
+                                         # the hash is thread-independent
+                                         "threads", "threads_requested",
+                                         "writer", "requested_workers",
+                                         "effective_workers")]
     }
     lapply(value, strip_observational)
   }
@@ -84,11 +236,27 @@ pcodec_seal_manifest_value <- function(manifest) {
   manifest
 }
 
-# Write an already-sealed manifest and its manifest.sha256 record.
-write_pcodec_manifest <- function(manifest, path) {
-  write_manifest(manifest, path)
-  checksum <- digest::digest(path, algo = "sha256", file = TRUE)
-  writeLines(checksum, pcodec_manifest_checksum_path(path), useBytes = TRUE)
+# Write an already-sealed manifest and its manifest.sha256 record. With
+# `atomic = TRUE` (a manifest inside a committed store) both are written to
+# temporary files beside their targets and renamed into place, manifest first
+# and checksum immediately after, so neither file is ever seen truncated.
+write_pcodec_manifest <- function(manifest, path, atomic = FALSE) {
+  checksum_path <- pcodec_manifest_checksum_path(path)
+  if (!isTRUE(atomic)) {
+    write_manifest(manifest, path)
+    checksum <- digest::digest(path, algo = "sha256", file = TRUE)
+    writeLines(checksum, checksum_path, useBytes = TRUE)
+    return(invisible(checksum))
+  }
+  manifest_tmp <- tempfile(".manifest-", tmpdir = dirname(path), fileext = ".json")
+  checksum_tmp <- tempfile(".manifest-", tmpdir = dirname(path), fileext = ".sha256")
+  on.exit(unlink(c(manifest_tmp, checksum_tmp), force = TRUE), add = TRUE)
+  write_manifest(manifest, manifest_tmp)
+  checksum <- digest::digest(manifest_tmp, algo = "sha256", file = TRUE)
+  writeLines(checksum, checksum_tmp, useBytes = TRUE)
+  if (!file.rename(manifest_tmp, path) || !file.rename(checksum_tmp, checksum_path)) {
+    stop("could not replace the store manifest at ", path, call. = FALSE)
+  }
   invisible(checksum)
 }
 
@@ -167,6 +335,21 @@ pcodec_native_projection <- function(out, columns = NULL) {
   out
 }
 
+# Zero-based row IDs as integers. Non-integer, missing or non-finite values
+# are an error (as.integer() would silently truncate 1.5 to row 1).
+pcodec_row_ids <- function(x) {
+  if (!is.numeric(x)) stop("row IDs must be numeric", call. = FALSE)
+  if (is.integer(x)) {
+    if (anyNA(x)) stop("row IDs must not be missing", call. = FALSE)
+    return(x)
+  }
+  if (anyNA(x)) stop("row IDs must not be missing", call. = FALSE)
+  if (any(!is.finite(x) | x != floor(x) | abs(x) > .Machine$integer.max)) {
+    stop("row IDs must be whole numbers (zero-based integer row IDs)", call. = FALSE)
+  }
+  as.integer(x)
+}
+
 pcodec_validate_threads <- function(threads, label = "threads") {
   if (length(threads) != 1L || !is.numeric(threads) || is.na(threads) ||
       !is.finite(threads) || threads < 1 || threads != floor(threads)) {
@@ -187,20 +370,106 @@ pcodec_native_default_threads <- function(region = NULL, variants = NULL,
   if (!is.null(region) || !is.null(variants)) 1L else 4L
 }
 
-pcodec_parallel_lapply <- function(X, FUN, threads = 1L) {
+# lapply() over X, forked over up to `threads` workers on Unix-like systems.
+# Every result is checked centrally (pcodec_parallel_check()): a worker error
+# is re-raised, and a missing result -- mclapply() returns NULL for a forked
+# worker that died (OOM killer, signal) -- is an error, never data. FUN must
+# therefore not return NULL; return PCODEC_PARALLEL_EMPTY (or another
+# non-NULL value) for "nothing". `labels` (one per element of X, e.g. store
+# paths) attributes a failure to the element it came from.
+PCODEC_PARALLEL_EMPTY <- structure(list(), class = "compressor_parallel_empty")
+
+pcodec_parallel_is_empty <- function(x) inherits(x, "compressor_parallel_empty")
+
+pcodec_parallel_lapply <- function(X, FUN, threads = 1L, labels = NULL,
+                                   what = "parallel worker") {
   threads <- pcodec_validate_threads(threads)
+  if (length(labels) == 1L && length(X) != 1L) labels <- rep(labels, length(X))
+  if (!is.null(labels) && length(labels) != length(X)) {
+    stop("internal error: parallel labels must match the work items", call. = FALSE)
+  }
   # R CMD check sets this guard to prevent packages from spawning an
   # uncontrolled number of workers. Respect it while retaining the native
   # four-thread default for ordinary whole-file reads.
   check_limit <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", ""))
   if (nzchar(check_limit) && check_limit != "false") threads <- min(threads, 2L)
-  if (length(X) <= 1L || threads <= 1L) return(lapply(X, FUN))
-  # Forked workers are safe here because each worker opens independent files
-  # and calls the standalone Pcodec decoder on private R objects. Windows has
-  # no fork backend; retain deterministic serial behaviour there.
-  if (.Platform$OS.type == "windows") return(lapply(X, FUN))
-  parallel::mclapply(X, FUN, mc.cores = min(threads, length(X)),
-                     mc.preschedule = TRUE)
+  serial <- length(X) <= 1L || threads <= 1L ||
+    # Forked workers are safe here because each worker opens independent
+    # files and calls the standalone Pcodec decoder on private R objects.
+    # Windows has no fork backend; retain deterministic serial behaviour.
+    .Platform$OS.type == "windows"
+  if (serial) {
+    out <- if (is.null(labels)) lapply(X, FUN) else {
+      lapply(seq_along(X), function(i) {
+        tryCatch(FUN(X[[i]]), error = function(e) {
+          pcodec_parallel_raise(e, labels[[i]], what)
+        })
+      })
+    }
+    return(pcodec_parallel_check(out, length(X), labels, what))
+  }
+  # Each element's own error is caught in the worker and returned as a
+  # marked condition, so it is attributed to its element (mclapply() would
+  # mark every element of a failed prescheduled job). Failures are re-raised
+  # by pcodec_parallel_check(); drop mclapply()'s generic warnings about them.
+  guarded <- function(x) {
+    tryCatch(FUN(x), error = function(e) {
+      structure(list(condition = e), class = "compressor_parallel_error")
+    })
+  }
+  out <- withCallingHandlers(
+    parallel::mclapply(X, guarded, mc.cores = min(threads, length(X)),
+                       mc.preschedule = TRUE),
+    warning = function(w) {
+      if (grepl("encountered errors? in user code|did not deliver",
+                conditionMessage(w))) {
+        invokeRestart("muffleWarning")
+      }
+    })
+  pcodec_parallel_check(out, length(X), labels, what)
+}
+
+pcodec_parallel_raise <- function(condition, label, what) {
+  is_condition <- inherits(condition, "condition")
+  if (is.null(label) && is_condition) stop(condition)
+  message <- if (is_condition) conditionMessage(condition) else
+    sub("^Error[^:]*: ", "", trimws(paste(as.character(condition), collapse = " ")))
+  if (is.null(label)) stop(message, call. = FALSE)
+  stop(what, " failed for '", label, "': ", message, call. = FALSE)
+}
+
+# Central result check for pcodec_parallel_lapply(): exactly one result per
+# work item; a try-error re-raises the worker's condition; NULL (a dead
+# forked worker) is an error.
+pcodec_parallel_check <- function(out, expected, labels = NULL,
+                                  what = "parallel worker") {
+  if (length(out) != expected) {
+    stop(what, " returned ", length(out), " results for ", expected,
+         " work items", call. = FALSE)
+  }
+  if (!expected) return(out)
+  marked <- vapply(out, inherits, logical(1), "compressor_parallel_error")
+  if (any(marked)) {
+    at <- which(marked)[1L]
+    pcodec_parallel_raise(out[[at]]$condition, labels[at], what)
+  }
+  failed <- vapply(out, inherits, logical(1), "try-error")
+  if (any(failed)) {
+    at <- which(failed)[1L]
+    bad <- out[[at]]
+    condition <- attr(bad, "condition")
+    pcodec_parallel_raise(if (inherits(condition, "condition")) condition else bad,
+                          labels[at], what)
+  }
+  missing <- vapply(out, is.null, logical(1))
+  if (any(missing)) {
+    at <- which(missing)[1L]
+    stop(what, " for ", if (is.null(labels)) paste("item", at) else
+      paste0("'", labels[[at]], "'"),
+      " returned no result (the worker process died, for example killed ",
+      "for memory); refusing to return partial data", call. = FALSE)
+  }
+  out
 }
 
 pcodec_read_store <- function(store, region = NULL, variants = NULL,
@@ -288,6 +557,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   columns <- unique(as.character(columns))
   threads <- pcodec_validate_threads(threads)
   stores <- lapply(stores, pcodec_open_store_cached)
+  store_labels <- vapply(stores, function(store) store$path, character(1))
   if (any(!vapply(stores, function(store) {
     store$manifest$format_version %in% PCODEC_NATIVE_SUPPORTED_FORMATS
   }, logical(1)))) {
@@ -302,10 +572,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
       }
       return(unique(trimws(keys)))
     }
-    if (is.numeric(keys)) {
-      if (anyNA(keys)) stop("row IDs must not be missing", call. = FALSE)
-      return(unique(as.integer(keys)))
-    }
+    if (is.numeric(keys)) return(unique(pcodec_row_ids(keys)))
     stop("each variants element must contain canonical variant keys or row IDs",
          call. = FALSE)
   }
@@ -353,20 +620,15 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
       targets[t] <- list(parsed[[ck]])
     }
     inner <- max(1L, threads %/% length(idx))
-    # A worker error is re-raised below; drop mclapply's generic warning.
-    out <- withCallingHandlers(pcodec_parallel_lapply(seq_along(idx), function(t) {
+    out <- pcodec_parallel_lapply(seq_along(idx), function(t) {
       i <- idx[t]
       pcodec_native_projection(
         pcodec_native_read_store(stores[[i]], region = region[[i]],
                                  variants = variants[[i]], columns = columns,
                                  threads = inner, key_targets = targets[[t]]),
         columns = columns)
-    }, threads = threads), warning = function(w) {
-      if (grepl("encountered errors? in user code", conditionMessage(w))) {
-        invokeRestart("muffleWarning")
-      }
-    })
-    pcodec_batch_check_workers(out, length(idx))
+    }, threads = threads, labels = store_labels[idx], what = "batched read")
+    pcodec_batch_check_workers(out, length(idx), store_labels[idx])
   }
 
   if (!pcodec_batch_share_panels(k, threads)) {
@@ -397,6 +659,11 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   # A store alone in its group needs no shared resolution: those stores are
   # read in one pass each, in parallel.
   single <- !rows_only & !full & as.integer(group_size[resolve_key]) == 1L
+  # Stores whose rows (and identity columns) come from another member of
+  # their group: check their identity streams against their own manifests
+  # first (see pcodec_verify_identity_files()).
+  pcodec_verify_identity_files(stores[which(!single & !rows_only & !full)],
+                               threads = threads)
   resolved <- list()
   for (i in seq_len(k)) {
     key <- resolve_key[[i]]
@@ -451,32 +718,25 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     row.names(out) <- NULL
     attr(out, "source_bytes_read") <- bytes
     pcodec_native_projection(out, columns)
-  }, threads = threads)
-  # Shared-panel workers must not hand back a try-error or a NULL (a dead
-  # fork) in place of a store's data.
-  pcodec_batch_check_workers(decoded, k)
+  }, threads = threads, labels = store_labels[need], what = "batched read")
+  # Shared-panel workers must not hand back anything but a store's data.
+  pcodec_batch_check_workers(decoded, k, store_labels)
   names(decoded) <- names(stores)
   decoded
 }
 
-# Every batched worker result must be a data frame: re-raise a worker error
-# (mclapply returns a "try-error"), and fail on a missing result (a forked
-# worker that died returns NULL) instead of returning it as a store's data.
-pcodec_batch_check_workers <- function(out, expected) {
+# Every batched result must be a data frame (pcodec_parallel_lapply() has
+# already re-raised worker errors and rejected dead workers).
+pcodec_batch_check_workers <- function(out, expected, labels = NULL) {
   if (length(out) != expected) {
     stop("batched read returned ", length(out), " results for ", expected,
          " stores", call. = FALSE)
   }
-  failed <- vapply(out, inherits, logical(1), "try-error")
-  if (any(failed)) {
-    bad <- out[[which(failed)[1L]]]
-    condition <- attr(bad, "condition")
-    if (inherits(condition, "condition")) stop(condition)
-    stop(as.character(bad), call. = FALSE)
-  }
   missing <- !vapply(out, is.data.frame, logical(1))
   if (any(missing)) {
-    stop("batched read worker for store ", which(missing)[1L],
+    at <- which(missing)[1L]
+    stop("batched read worker for store ",
+         if (is.null(labels)) at else paste0("'", labels[[at]], "'"),
          " returned no data (worker failed)", call. = FALSE)
   }
   out
