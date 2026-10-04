@@ -592,7 +592,7 @@ pcodec_batch_share_panels <- function(k, threads) {
 }
 
 pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
-                               region = NULL) {
+                               region = NULL, annotate = FALSE) {
   if (!length(stores)) stop("stores must be non-empty", call. = FALSE)
   k <- length(stores)
   if (!is.list(variants) || is.data.frame(variants)) variants <- rep(list(variants), k)
@@ -676,11 +676,13 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
           parse_cache[[ck]] <- targets
         }
       }
-      pcodec_native_projection(
+      out <- pcodec_native_projection(
         pcodec_native_read_store(store, region = region[[i]], variants = variants[[i]],
                                  columns = columns, threads = inner,
                                  key_targets = targets),
         columns = columns)
+      if (isTRUE(annotate)) attr(out, "compressor_store_meta") <- pcodec_store_meta(store)
+      out
     }, threads = threads, labels = labels, what = "batched read")
     pcodec_batch_check_workers(decoded, k, labels)
     names(decoded) <- store_names
@@ -800,8 +802,20 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   }, threads = threads, labels = store_labels[need], what = "batched read")
   # Shared-panel workers must not hand back anything but a store's data.
   pcodec_batch_check_workers(decoded, k, store_labels)
+  if (isTRUE(annotate)) {
+    for (i in seq_len(k)) {
+      attr(decoded[[i]], "compressor_store_meta") <- pcodec_store_meta(stores[[i]])
+    }
+  }
   names(decoded) <- store_names
   decoded
+}
+
+# Build and row count of an opened store, for request_index.
+pcodec_store_meta <- function(store) {
+  m <- store$manifest
+  list(build = compressor_normalize_build(m$genome_build %||% "GRCh38"),
+       n_rows = as.numeric(m$n_rows %||% m$rows))
 }
 
 # Open the stores of a batch (and load their cached block matrices, plus the

@@ -725,11 +725,16 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
 #' read. `"integrity_verified"` means `validate_compressor(full = TRUE)`
 #' checks every payload checksum, the native index is checked whenever it is
 #' parsed, and batched identity sharing verifies each member's identity
-#' streams.
+#' streams. `"key_reads_identity_columns"` means key, row-ID and region reads
+#' (single and batched) return the numeric identity columns `global_position`
+#' and `substitution` when requested. `"request_index"` means
+#' [read_sumstats_batch()] accepts `request_index = TRUE`, and
+#' `"identity_code"` that [compressor_identity_code()] is exported.
 #'
 #' @return A character vector of capability names.
 #' @export
 compressor_capabilities <- function() {
   c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction",
-    "candidates_batch_rows_checked", "reads_bit_identical", "integrity_verified")
+    "candidates_batch_rows_checked", "reads_bit_identical", "integrity_verified",
+    "key_reads_identity_columns", "request_index", "identity_code")
 }

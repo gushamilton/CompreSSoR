@@ -23,5 +23,9 @@ row with the same native decoder, so values are bit-identical to the full
 read. \code{"integrity_verified"} means \code{validate_compressor(full = TRUE)}
 checks every payload checksum, the native index is checked whenever it is
 parsed, and batched identity sharing verifies each member's identity
-streams.
+streams. \code{"key_reads_identity_columns"} means key, row-ID and region reads
+(single and batched) return the numeric identity columns \code{global_position}
+and \code{substitution} when requested. \code{"request_index"} means
+\code{\link[=read_sumstats_batch]{read_sumstats_batch()}} accepts \code{request_index = TRUE}, and
+\code{"identity_code"} that \code{\link[=compressor_identity_code]{compressor_identity_code()}} is exported.
 }

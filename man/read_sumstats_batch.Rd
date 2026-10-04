@@ -10,7 +10,8 @@ read_sumstats_batch(
   columns = c("chromosome", "base_pair_location", "effect_allele", "other_allele",
     "beta", "standard_error"),
   threads = 1L,
-  region = NULL
+  region = NULL,
+  request_index = FALSE
 )
 }
 \arguments{
@@ -36,6 +37,16 @@ parallel. With \code{options(CompreSSoR.batch_share_panels = TRUE)}, stores
 that share the same variant panel (identical position and substitution
 streams, each verified against its own manifest) resolve keys, row IDs and
 regions to rows once, then decode values only.}
+
+\item{request_index}{If \code{TRUE}, each data frame gets a final integer column
+\code{request_index}: the one-based position, in that store's \code{variants}
+element as supplied, of the request the row answers (the first such
+position when a key or row ID is repeated). For canonical-key requests
+a row answers the request with the same identity code (see
+\code{\link[=compressor_identity_code]{compressor_identity_code()}}); for row-ID requests, the request with the
+same row ID. Rows of region-only or whole-store reads get \code{NA}. Row-ID
+requests cannot be combined with a region when \code{request_index = TRUE}.
+The other columns are exactly those returned with \code{request_index = FALSE}.}
 }
 \value{
 A list of decoded data frames in the same order as \code{stores}.
