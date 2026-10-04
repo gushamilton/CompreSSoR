@@ -1437,7 +1437,7 @@ structural_qc_report <- function(data, input_build = "GRCh38",
     identity <- compressor_encode_variant_identity(
       chromosome, position, other, effect, build = input_build, validated = TRUE
     )
-    key <- compressor_identity_code(identity$global_position, identity$substitution)
+    key <- compressor_identity_fields_code(identity$global_position, identity$substitution)
   } else {
     key <- rep(NA_real_, n)
     if (any(valid_key)) {
@@ -1445,7 +1445,7 @@ structural_qc_report <- function(data, input_build = "GRCh38",
         chromosome[valid_key], position[valid_key], other[valid_key], effect[valid_key],
         build = input_build, validated = TRUE
       )
-      key[valid_key] <- compressor_identity_code(identity$global_position,
+      key[valid_key] <- compressor_identity_fields_code(identity$global_position,
                                                  identity$substitution)
     }
   }

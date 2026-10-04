@@ -432,7 +432,7 @@ read_variant_panel <- function(panel, chromosomes = NULL, rows = NULL, keys = NU
   attr(out, "variant_set_identity") <- list(
     global_position = as.numeric(position[keep]),
     substitution = as.integer(substitution[keep]),
-    code = compressor_identity_code(position[keep], substitution[keep])
+    code = compressor_identity_fields_code(position[keep], substitution[keep])
   )
   attr(out, "variant_set_metadata") <- list(
     id = "bundled_core_hm3", name = if (isTRUE(hm3_only)) "hm3" else "core",

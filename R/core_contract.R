@@ -271,7 +271,7 @@ canonicalize_core_identity <- function(data, build, include_variant_id = TRUE,
   attr(data, "compressor_identity") <- list(
     global_position = identity$global_position,
     substitution = identity$substitution,
-    code = compressor_identity_code(identity$global_position, identity$substitution)
+    code = compressor_identity_fields_code(identity$global_position, identity$substitution)
   )
   attr(data, "genome_build") <- build
   attr(data, "compressor_identity_verified") <- TRUE

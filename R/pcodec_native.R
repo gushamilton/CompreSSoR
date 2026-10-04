@@ -757,7 +757,7 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
   }
   # Input already in strictly increasing key order (sorted, no duplicates)
   # needs neither the radix order nor the duplicate scan.
-  code <- compressor_identity_code(identity$global_position, identity$substitution)
+  code <- compressor_identity_fields_code(identity$global_position, identity$substitution)
   if (!anyNA(code) && !is.unsorted(code, strictly = TRUE)) {
     order <- seq_len(nrow(data))
     ordered_position <- identity$global_position
