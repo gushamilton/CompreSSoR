@@ -115,6 +115,7 @@ candidates_select_rows <- function(store, index, threshold, threads,
            "threshold equals pvalue_threshold", call. = FALSE)
     }
     rows <- candidates_read_flag_rows(store, threads)
+    candidates_check_flag_count(store, length(rows), "flag stream")
     return(list(rows = rows, p = candidates_exception_p(store, index, rows),
                 strategy = "pvalue_flag"))
   }
@@ -156,6 +157,21 @@ candidates_select_rows <- function(store, index, threshold, threads,
   }
   o <- base::order(rows)
   list(rows = as.integer(rows[o]), p = p[o], strategy = "z_stream")
+}
+
+# The manifest records the number of flagged rows at write time
+# (`domains$pvalue_flag$hit_rows`).  A pvalue_flag selection without a region
+# must return exactly that many rows; anything else is partial data, so stop
+# rather than return it.  Stores whose manifest lacks the count are not checked.
+candidates_check_flag_count <- function(store, n, what) {
+  expected <- ((store$manifest$domains %||% list())$pvalue_flag %||% list())$hit_rows
+  if (is.null(expected) || length(expected) != 1L || is.na(expected)) return(invisible(TRUE))
+  if (!identical(as.numeric(n), as.numeric(expected))) {
+    stop("candidate row count mismatch in store '", store$path, "': ", what,
+         " gave ", n, " pvalue_flag rows but the manifest records ", expected,
+         " flagged rows; refusing to return partial data", call. = FALSE)
+  }
+  invisible(TRUE)
 }
 
 # Flag rows with one open connection per worker (same validation as
@@ -342,6 +358,14 @@ candidates_finish <- function(ctx, threads, keys = NULL) {
     data <- pcodec_native_empty_result(unique(c(wanted, "z")))
     data$p_value <- numeric()
   }
+  # Without a region every selected row must come back, in row order.
+  if (is.null(ctx$range) && !identical(as.integer(data$row), as.integer(rows))) {
+    stop("candidate rows lost in decode for store '", store$path, "': selected ",
+         length(rows), " rows, decoded ", nrow(data), call. = FALSE)
+  }
+  if (identical(picked$strategy, "pvalue_flag") && is.null(ctx$range)) {
+    candidates_check_flag_count(store, nrow(data), "the candidate read")
+  }
   if (nrow(data) && "p_value" %in% fetch) {
     # The decoder's erfc p (the one reconstruction shared with full and
     # selective reads, see pcodec_native_p_from_codes()). Flag-selected
@@ -425,14 +449,28 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
   threads <- pcodec_validate_threads(threads)
   inner <- if (length(stores) > 1L) 1L else threads
   guard <- function(expr) tryCatch(expr, error = function(e) e)
-  # Stage 1 (parallel over stores): select candidate rows.
+  # Stage 1 (parallel over stores): select candidate rows.  A forked worker
+  # that dies returns NULL (or a try-error) rather than our guarded error, so
+  # anything that is not a prepared context is treated as a failure.
   ctxs <- pcodec_parallel_lapply(seq_along(stores), function(i) {
     guard(candidates_prepare(stores[[i]], thresholds[[i]], region, columns,
                              order, inner, strategy))
   }, threads = threads)
+  if (length(ctxs) != length(stores)) {
+    stop("candidate selection returned ", length(ctxs), " results for ",
+         length(stores), " stores", call. = FALSE)
+  }
+  ctxs <- lapply(ctxs, function(x) {
+    if (is.list(x) && !inherits(x, "error") && is.list(x$picked)) return(x)
+    if (inherits(x, "error")) return(x)
+    simpleError(if (inherits(x, "try-error")) as.character(x) else "worker failed")
+  })
   # Stage 2: stores sharing a variant panel (equal identity signature) decode
   # the position/substitution blocks once, for the union of their candidate
   # rows (the candidate analogue of read_sumstats_batch() identity reuse).
+  # `shared` must keep one slot per store: assign with `[<-` and list(), never
+  # `shared[[i]] <- NULL`, which deletes slot i and shifts every later store's
+  # keys onto the wrong store (the cause of silently dropped candidates).
   ok <- !vapply(ctxs, inherits, logical(1), "error")
   shared <- vector("list", length(stores))
   need_key <- function(ctx) {
@@ -454,18 +492,26 @@ read_candidates_batch <- function(stores, pvalue_threshold, region = NULL,
         ctx$picked$rows
       }), use.names = FALSE)))
       first <- ctxs[[members[1L]]]
-      keys <- if (length(union_rows)) guard(candidates_fetch_keys(
-        first$store, first$index, union_rows, first$range, threads)) else NULL
-      if (inherits(keys, "error")) next
+      # No candidate rows in the group (or none in the region): nothing to
+      # share; each member's own finish step handles its empty result.
+      if (!length(union_rows)) next
+      keys <- guard(candidates_fetch_keys(
+        first$store, first$index, union_rows, first$range, threads))
+      if (is.null(keys) || inherits(keys, "error")) next
       .pcodec_batch_trace$identity_resolutions <-
         .pcodec_batch_trace$identity_resolutions + 1L
-      for (i in members) shared[[i]] <- keys
+      shared[members] <- list(keys)
     }
   }
+  stopifnot(length(shared) == length(stores))
   pieces <- pcodec_parallel_lapply(seq_along(stores), function(i) {
     if (!ok[[i]]) return(ctxs[[i]])
     guard(candidates_finish(ctxs[[i]], inner, keys = shared[[i]]))
   }, threads = threads)
+  if (length(pieces) != length(stores)) {
+    stop("candidate decode returned ", length(pieces), " results for ",
+         length(stores), " stores", call. = FALSE)
+  }
   failed <- vapply(pieces, function(x) !is.data.frame(x), logical(1))
   if (any(failed)) {
     first <- which(failed)[1L]
@@ -679,10 +725,16 @@ candidates_fetch <- function(store, index, rows, range, build, wanted,
 #' parsing. `"candidates_one_pass"` means [read_candidates()] returns values,
 #' `key`, `p_value` (bit-identical to [read_sumstats()]) and exact ranks for
 #' the candidate rows in a single pass, and [read_candidates_batch()] reuses
-#' same-panel identity.
+#' same-panel identity. `"candidates_batch_rows_checked"` means
+#' [read_candidates_batch()] returns exactly the per-store [read_candidates()]
+#' result for every batch composition (the shared-identity row loss in
+#' 0.7.0 is fixed) and both readers stop, rather than return partial data,
+#' when a decode loses selected rows or a `pvalue_flag` read disagrees with
+#' the manifest's flagged-row count.
 #'
 #' @return A character vector of capability names.
 #' @export
 compressor_capabilities <- function() {
-  c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction")
+  c("candidates_one_pass", "candidate_key_column", "p_value_shared_reconstruction",
+    "candidates_batch_rows_checked")
 }
