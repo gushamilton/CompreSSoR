@@ -366,14 +366,7 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
         invokeRestart("muffleWarning")
       }
     })
-    failed <- vapply(out, inherits, logical(1), "try-error")
-    if (any(failed)) {
-      bad <- out[[which(failed)[1L]]]
-      condition <- attr(bad, "condition")
-      if (inherits(condition, "condition")) stop(condition)
-      stop(as.character(bad), call. = FALSE)
-    }
-    out
+    pcodec_batch_check_workers(out, length(idx))
   }
 
   if (!pcodec_batch_share_panels(k, threads)) {
@@ -459,8 +452,34 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     attr(out, "source_bytes_read") <- bytes
     pcodec_native_projection(out, columns)
   }, threads = threads)
+  # Shared-panel workers must not hand back a try-error or a NULL (a dead
+  # fork) in place of a store's data.
+  pcodec_batch_check_workers(decoded, k)
   names(decoded) <- names(stores)
   decoded
+}
+
+# Every batched worker result must be a data frame: re-raise a worker error
+# (mclapply returns a "try-error"), and fail on a missing result (a forked
+# worker that died returns NULL) instead of returning it as a store's data.
+pcodec_batch_check_workers <- function(out, expected) {
+  if (length(out) != expected) {
+    stop("batched read returned ", length(out), " results for ", expected,
+         " stores", call. = FALSE)
+  }
+  failed <- vapply(out, inherits, logical(1), "try-error")
+  if (any(failed)) {
+    bad <- out[[which(failed)[1L]]]
+    condition <- attr(bad, "condition")
+    if (inherits(condition, "condition")) stop(condition)
+    stop(as.character(bad), call. = FALSE)
+  }
+  missing <- !vapply(out, is.data.frame, logical(1))
+  if (any(missing)) {
+    stop("batched read worker for store ", which(missing)[1L],
+         " returned no data (worker failed)", call. = FALSE)
+  }
+  out
 }
 
 pcodec_validate_store <- function(store, full = FALSE) {

@@ -1,5 +1,21 @@
 # CompreSSoR (development)
 
+- Fix silent candidate loss in `read_candidates_batch()` (0.7.0). When a batch
+  mixed variant sets and an identity group (stores with the same variant
+  panel) had no candidate rows, stage 2 assigned `shared[[i]] <- NULL`, which
+  deletes the list slot and shifted every later store's shared key slice
+  onto the wrong store. Those stores came back partial or empty (on 2,940
+  UKB-PPP stores, FIS1 returned 1 of 367 flagged rows and EFNA4 0 of 246), or
+  the read failed with "subscript out of bounds". Batches of stores sharing
+  one variant set were not affected. Every store in every batch composition
+  now returns exactly the per-store `read_candidates()` result.
+- `read_candidates()` and `read_candidates_batch()` now stop instead of
+  returning partial data when the decode step loses selected rows (no
+  region), or when a `strategy = "pvalue_flag"` read disagrees with the
+  flagged-row count recorded in the store manifest. Batched readers also treat
+  a missing worker result (a forked worker that died) as an error.
+  `compressor_capabilities()` reports `"candidates_batch_rows_checked"`.
+
 - Faster `compress_sumstats()`; the store payload (every payload file and the
   payload hash) is byte-for-byte unchanged, and for file inputs so is the
   manifest apart from timings and build information:
