@@ -1,5 +1,20 @@
 # CompreSSoR (development)
 
+Batch strategy:
+
+- `read_sumstats_batch()` chooses panel sharing again when it pays. With no
+  `CompreSSoR.batch_share_panels` option set, it shares when every store gets
+  the same key list, there are at most 64 stores per thread, and on average at
+  least 90% of the stores repeat another store's variant panel. Panel
+  repetition is judged by the byte sizes of the position and substitution
+  streams. Otherwise it reads one pass per store, as in 0.7.2.
+  - On BluePebble this brings back sharing for many stores on one panel, for
+    example 50 simulated GWAS with 1,000 keys on 1 thread: 23 s instead of
+    26.5 s.
+  - UKB-PPP protein sets (20-2,940 stores, 8 threads) keep one pass per store.
+  - The option still forces either strategy, and results are identical either
+    way.
+
 P-value flag reads:
 
 - `read_pvalue_flag(as = "row_ids")` and the `pvalue_flag` candidate

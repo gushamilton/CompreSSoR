@@ -574,21 +574,62 @@ pcodec_identity_signature <- function(store) {
 # * one pass per store (the default): each forked worker opens its store and
 #   reads keys -> rows -> values in one native call; a shared key list is
 #   normalised once and parsed once per genome build per worker.
-# * panel sharing (opt-in, options(CompreSSoR.batch_share_panels = TRUE)):
+# * panel sharing (by the default rule below, or forced with options(CompreSSoR.batch_share_panels = TRUE)):
 #   stores with the same variant panel (equal identity signature) resolve
 #   keys, row IDs and regions to rows once, then decode values only, stores
 #   in parallel with threads %/% length(stores) decoder threads each; stores
 #   alone in their group are read in one pass each. Members are verified
 #   against their own manifests first (pcodec_verify_identity_files()).
 # Sharing was the default while selective reads decoded keys in R. With the
-# native selective reader a per-store key resolution costs milliseconds, and
-# sharing needs a parent-side grouping pass plus identity verification: on
-# BluePebble (8 threads) one pass per store was as fast on 20 shared-panel
-# simulated stores (1k keys) and faster on 300 UKB-PPP stores (6k keys).
-pcodec_batch_share_panels <- function(k, threads) {
+# native selective reader a per-store key resolution is cheap, but sharing
+# still needs a parent-side open, grouping and identity-verification pass.
+# It pays when many stores really share a panel (each panel's keys are then
+# resolved once instead of once per store) and costs when they do not.
+# Default (no option set): share only when
+#   * every store gets the same key list (no region, no row IDs),
+#   * there are at most PCODEC_BATCH_SHARE_STORES_PER_THREAD stores per
+#     thread, and
+#   * on average at least PCODEC_BATCH_SHARE_MIN_REPEAT of the stores repeat
+#     another store's panel (1 - panels / stores), judged from the
+#     byte sizes of their position and substitution streams (a stat() per
+#     store; the share path still groups by verified identity signature, so
+#     this only picks the strategy).
+# Measured on BluePebble (Gold 6226R, 8-CPU jobs, fresh processes, median of
+# 3; benchmarks/perf/batch_share/). Sharing was faster for 20 and 50 simulated
+# stores on one panel (repeat fraction 0.95-0.98), clearest at 1 thread
+# (50 stores, 1,000 keys: 23.0 vs 26.5 s). It was slower for UKB-PPP protein
+# stores at 8 threads, whose panels repeat less (fraction 0.15-0.66 for
+# 20-300 stores: 160 stores 10.1 vs 9.1 s, 300 stores 18.3 vs 17.3 s), and
+# for 20 one-panel stores plus 5 UKB-PPP stores (fraction 0.76: 2.3 vs
+# 1.8 s), hence 0.9. 2,940 UKB-PPP stores (fraction 0.83, 368 per thread)
+# were no faster with sharing. An explicit
+# options(CompreSSoR.batch_share_panels = TRUE / FALSE) overrides the rule.
+pcodec_batch_share_panels <- function(k, threads, shared_keys = FALSE, stores = NULL) {
   forced <- getOption("CompreSSoR.batch_share_panels", NULL)
   if (!is.null(forced)) return(k > 1L && isTRUE(forced))
-  FALSE
+  if (k < 2L || !isTRUE(shared_keys) ||
+      k > PCODEC_BATCH_SHARE_STORES_PER_THREAD * threads) return(FALSE)
+  pcodec_batch_panel_repeat_fraction(stores) >= PCODEC_BATCH_SHARE_MIN_REPEAT - 1e-9
+}
+
+PCODEC_BATCH_SHARE_STORES_PER_THREAD <- 64L
+PCODEC_BATCH_SHARE_MIN_REPEAT <- 0.9
+
+# Fraction of stores whose (position, substitution) stream sizes repeat an
+# earlier store's: a cheap proxy for "shares a variant panel". Stores whose
+# streams cannot be stat()ed count as distinct.
+pcodec_batch_panel_repeat_fraction <- function(stores) {
+  if (length(stores) < 2L) return(0)
+  dirs <- vapply(stores, function(x) {
+    if (inherits(x, "compressor_store")) x$path
+    else if (is.character(x) && length(x) == 1L && !is.na(x)) x else NA_character_
+  }, character(1))
+  ps <- file.size(file.path(dirs, "position.pco"))
+  ss <- file.size(file.path(dirs, "substitution.pco"))
+  sig <- paste(ps, ss)
+  bad <- is.na(dirs) | is.na(ps) | is.na(ss)
+  sig[bad] <- paste0("distinct", which(bad))
+  1 - length(unique(sig)) / length(sig)
 }
 
 pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
@@ -606,7 +647,6 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
   }
   columns <- unique(as.character(columns))
   threads <- pcodec_validate_threads(threads)
-  share <- pcodec_batch_share_panels(k, threads)
   store_names <- names(stores)
   normalise <- function(keys) {
     if (is.null(keys)) return(NULL)
@@ -637,6 +677,9 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     slot[i] <- j
   }
   variants <- lapply(slot, function(j) distinct[[j]]$norm)
+  shared_keys <- length(distinct) == 1L && is.character(distinct[[1L]]$norm) &&
+    all(vapply(region, is.null, logical(1)))
+  share <- pcodec_batch_share_panels(k, threads, shared_keys, stores)
   id_cols <- intersect(columns, PCODEC_IDENTITY_COLUMNS)
   value_cols <- setdiff(columns, id_cols)
   rows_only <- vapply(seq_len(k), function(i) {
