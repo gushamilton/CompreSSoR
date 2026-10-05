@@ -1079,12 +1079,15 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #'   [read_sumstats()] without a selection), which for large stores is
 #'   expensive; pass keys, row IDs or a region for an extraction.
 #' @param region Optional region string (as in [read_sumstats()]), shared by
-#'   every store or one per store in a list. Each store is read in one pass
-#'   (keys, row IDs or region to rows to values in one native call), stores
-#'   in parallel. With `options(CompreSSoR.batch_share_panels = TRUE)`, stores
-#'   that share the same variant panel (identical position and substitution
-#'   streams, each verified against its own manifest) resolve keys, row IDs
-#'   and regions to rows once, then decode values only.
+#'   every store or one per store in a list. By default each store is read in
+#'   one pass (keys, row IDs or region to rows to values in one native call),
+#'   stores in parallel. When every store gets the same key list, there are at
+#'   most 64 stores per thread and at least 90 per cent of the stores (on average)
+#'   repeat another store's variant panel, stores that share a panel (identical position and
+#'   substitution streams, each verified against its own manifest) instead
+#'   resolve the keys to rows once per panel, then decode values only.
+#'   `options(CompreSSoR.batch_share_panels = TRUE)` or `FALSE` forces either
+#'   strategy. Results are identical either way.
 #' @param columns Output columns requested from every store.
 #' @param threads Number of threads. One store is read with all of them;
 #'   several stores are read in parallel on Unix-like systems, up to `threads`

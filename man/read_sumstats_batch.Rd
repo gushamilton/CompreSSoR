@@ -31,12 +31,15 @@ at a time, each with \code{threads \%/\% length(stores)} (at least one) decoder
 threads. The default is one. Windows uses serial reads for portability.}
 
 \item{region}{Optional region string (as in \code{\link[=read_sumstats]{read_sumstats()}}), shared by
-every store or one per store in a list. Each store is read in one pass
-(keys, row IDs or region to rows to values in one native call), stores in
-parallel. With \code{options(CompreSSoR.batch_share_panels = TRUE)}, stores
-that share the same variant panel (identical position and substitution
-streams, each verified against its own manifest) resolve keys, row IDs and
-regions to rows once, then decode values only.}
+every store or one per store in a list. By default each store is read in
+one pass (keys, row IDs or region to rows to values in one native call),
+stores in parallel. When every store gets the same key list, there are at
+most 64 stores per thread and at least 90 per cent of the stores (on average)
+repeat another store's variant panel, stores that share a panel (identical position and
+substitution streams, each verified against its own manifest) instead
+resolve the keys to rows once per panel, then decode values only.
+\code{options(CompreSSoR.batch_share_panels = TRUE)} or \code{FALSE} forces either
+strategy. Results are identical either way.}
 
 \item{request_index}{If \code{TRUE}, each data frame gets a final integer column
 \code{request_index}: the one-based position, in that store's \code{variants}
