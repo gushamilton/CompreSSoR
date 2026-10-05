@@ -1,5 +1,20 @@
 # CompreSSoR (development)
 
+Request mapping for dependent packages:
+
+- `read_sumstats_batch(..., request_index = TRUE)` adds an integer
+  `request_index` column: for each row, the one-based position in that
+  store's `variants` element of the request it answers (first position for a
+  repeated key or row ID; `NA` for region-only and whole-store reads). Callers
+  no longer rebuild and string-match canonical keys to pair rows with their
+  requests. The other columns are unchanged.
+- `compressor_identity_code(keys, build)` is exported: the exact numeric
+  identity code (`global_position * 16 + substitution`, schema
+  `compressor_variant_identity_v1`) of each canonical key, `NA` for keys that
+  are not biallelic A/C/G/T SNVs within their primary chromosome.
+- `compressor_capabilities()` reports `"key_reads_identity_columns"`,
+  `"request_index"` and `"identity_code"`.
+
 Faster, bit-identical reads (adversarial review findings 1, 6-9, 11, 15):
 
 - `read_candidates()` and `read_candidates_batch()` fetch candidate rows

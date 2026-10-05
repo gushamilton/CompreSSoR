@@ -600,7 +600,7 @@ variant_set_membership <- function(data, panel, build = "GRCh38") {
         data$chromosome[valid], data$base_pair_location[valid],
         data$other_allele[valid], data$effect_allele[valid], build = build
       )
-      data_code[valid] <- compressor_identity_code(
+      data_code[valid] <- compressor_identity_fields_code(
         identity$global_position, identity$substitution
       )
     }

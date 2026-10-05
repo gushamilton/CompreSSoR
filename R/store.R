@@ -1090,6 +1090,15 @@ read_sumstats <- function(store, region = NULL, variants = NULL, columns = NULL,
 #'   several stores are read in parallel on Unix-like systems, up to `threads`
 #'   at a time, each with `threads %/% length(stores)` (at least one) decoder
 #'   threads. The default is one. Windows uses serial reads for portability.
+#' @param request_index If `TRUE`, each data frame gets a final integer column
+#'   `request_index`: the one-based position, in that store's `variants`
+#'   element as supplied, of the request the row answers (the first such
+#'   position when a key or row ID is repeated). For canonical-key requests
+#'   a row answers the request with the same identity code (see
+#'   [compressor_identity_code()]); for row-ID requests, the request with the
+#'   same row ID. Rows of region-only or whole-store reads get `NA`. Row-ID
+#'   requests cannot be combined with a region when `request_index = TRUE`.
+#'   The other columns are exactly those returned with `request_index = FALSE`.
 #' @return A list of decoded data frames in the same order as `stores`.
 #' @examples
 #' \dontrun{
@@ -1107,7 +1116,11 @@ read_sumstats_batch <- function(
     columns = c("chromosome", "base_pair_location", "effect_allele",
                 "other_allele", "beta", "standard_error"),
     threads = 1L,
-    region = NULL) {
+    region = NULL,
+    request_index = FALSE) {
+  if (length(request_index) != 1L || !is.logical(request_index) || is.na(request_index)) {
+    stop("request_index must be TRUE or FALSE", call. = FALSE)
+  }
   if (is.character(stores)) stores <- as.list(stores)
   if (!is.list(stores) || !length(stores)) {
     stop("stores must be a non-empty list or character vector", call. = FALSE)
@@ -1125,10 +1138,64 @@ read_sumstats_batch <- function(
     stop("region must be one region string or one list element per store",
          call. = FALSE)
   }
-  result <- pcodec_read_stores(
-    stores, variants, unique(as.character(columns)), threads = threads,
-    region = region
-  )
+  columns <- unique(as.character(columns))
+  if (!isTRUE(request_index)) {
+    result <- pcodec_read_stores(stores, variants, columns, threads = threads,
+                                 region = region)
+    if (!is.null(store_names)) names(result) <- store_names
+    return(result)
+  }
+  if ("request_index" %in% columns) {
+    stop("request_index cannot also be requested as a column", call. = FALSE)
+  }
+  keyed <- vapply(variants, is.character, logical(1))
+  for (i in which(vapply(variants, is.numeric, logical(1)))) {
+    if (!is.null(region[[i]])) {
+      stop("request_index is not available for row-ID requests combined with a region",
+           call. = FALSE)
+    }
+  }
+  # Key requests are answered by identity code, so read the code columns too.
+  extra <- if (any(keyed)) setdiff(c("global_position", "substitution"), columns) else character()
+  result <- pcodec_read_stores(stores, variants, c(columns, extra), threads = threads,
+                               region = region, annotate = TRUE)
+  code_cache <- list()
+  request_codes <- function(i, build) {
+    for (entry in code_cache) {
+      if (identical(entry$build, build) && identical(entry$request, variants[[i]])) {
+        return(entry$codes)
+      }
+    }
+    codes <- compressor_identity_code(variants[[i]], build = build)
+    code_cache[[length(code_cache) + 1L]] <<- list(build = build, request = variants[[i]],
+                                                   codes = codes)
+    codes
+  }
+  for (i in seq_along(result)) {
+    out <- result[[i]]
+    meta <- attr(out, "compressor_store_meta", exact = TRUE)
+    attr(out, "compressor_store_meta") <- NULL
+    request <- variants[[i]]
+    index <- if (!nrow(out) || is.null(request)) {
+      rep(NA_integer_, nrow(out))
+    } else if (is.character(request)) {
+      code <- as.numeric(out$global_position) * 16 + as.numeric(out$substitution)
+      match(code, request_codes(i, meta$build))
+    } else {
+      ids <- pcodec_row_ids(request)
+      rows <- sort(unique(ids[ids >= 0 & ids < meta$n_rows]))
+      if (length(rows) != nrow(out)) {
+        stop("request_index: row-ID read returned an unexpected number of rows",
+             call. = FALSE)
+      }
+      match(rows, ids)
+    }
+    if (length(extra)) out <- out[setdiff(names(out), extra)]
+    source_bytes_read <- attr(result[[i]], "source_bytes_read", exact = TRUE)
+    out$request_index <- as.integer(index)
+    attr(out, "source_bytes_read") <- source_bytes_read
+    result[[i]] <- out
+  }
   if (!is.null(store_names)) names(result) <- store_names
   result
 }

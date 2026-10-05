@@ -174,7 +174,7 @@ reference_structural_qc_report <- function(data, input_build = "GRCh38",
       chromosome[valid_key], position[valid_key], other[valid_key], effect[valid_key],
       build = input_build
     )
-    key[valid_key] <- compressor_identity_code(identity$global_position,
+    key[valid_key] <- compressor_identity_fields_code(identity$global_position,
                                                identity$substitution)
   }
   # Rows whose key occurs more than once: equal to

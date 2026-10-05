@@ -34,13 +34,62 @@ compressor_identity_base_codes <- c(A = 0L, C = 1L, G = 2L, T = 3L)
 # four-bit substitution codes.  Keeping this representation numeric avoids
 # materialising a large character `chrom:position:REF:ALT` key during normal
 # compression and panel membership.
-compressor_identity_code <- function(global_position, substitution) {
+compressor_identity_fields_code <- function(global_position, substitution) {
   global_position <- as.numeric(global_position)
   substitution <- as.numeric(substitution)
   if (length(global_position) != length(substitution)) {
     stop("identity code fields must have equal length", call. = FALSE)
   }
   global_position * 16 + substitution
+}
+
+#' Identity codes of canonical variant keys
+#'
+#' Returns the numeric identity code `global_position * 16 + substitution`
+#' that self-contained stores use for each canonical
+#' `chromosome:position:REF:ALT` key: the zero-based global position on the
+#' build's primary chromosome table and the directed substitution code
+#' `4 * REF + ALT` with A/C/G/T coded 0/1/2/3 (manifest schema
+#' `compressor_variant_identity_v1`). Keys are read as the store readers read
+#' them (surrounding whitespace, `chr` prefixes and 23/24 chromosome aliases
+#' are accepted). The code is exact (below 2^36) and unique per variant and
+#' build; a row read from a store has code `global_position * 16 +
+#' substitution`.
+#'
+#' @param keys Character vector of canonical variant keys.
+#' @param build Genome build, `"GRCh38"` (default) or `"GRCh37"`.
+#' @return A numeric vector the length of `keys`; `NA` for a key that is not a
+#'   biallelic A/C/G/T SNV within its primary chromosome.
+#' @examples
+#' compressor_identity_code(c("1:100000:A:G", "X:2000:C:T", "1:5:A:AT"))
+#' @export
+compressor_identity_code <- function(keys, build = "GRCh38") {
+  build <- compressor_normalize_build(build)
+  if (!is.character(keys) && !is.factor(keys) && !(is.logical(keys) && all(is.na(keys)))) {
+    stop("keys must be a character vector of canonical variant keys", call. = FALSE)
+  }
+  keys <- as.character(keys)
+  code <- rep(NA_real_, length(keys))
+  present <- which(!is.na(keys))
+  if (!length(present)) return(code)
+  parsed <- parse_canonical_variant_keys(trimws(keys[present]))
+  chromosome <- toupper(trimws(parsed$chromosome))
+  chromosome <- sub("^CHR", "", chromosome)
+  chromosome[!is.na(chromosome) & chromosome == "23"] <- "X"
+  chromosome[!is.na(chromosome) & chromosome == "24"] <- "Y"
+  lengths <- compressor_chromosome_lengths(build)
+  offsets <- compressor_chromosome_offsets(build)
+  table_index <- match(chromosome, names(lengths))
+  position <- as.numeric(parsed$base_pair_location)
+  bases <- compressor_identity_base_codes
+  ref <- unname(bases)[match(parsed$reference_allele, names(bases))]
+  alt <- unname(bases)[match(parsed$alternate_allele, names(bases))]
+  valid <- !is.na(table_index) & !is.na(position) & position >= 1 &
+    position <= unname(lengths)[table_index] & !is.na(ref) & !is.na(alt) & ref != alt
+  valid[is.na(valid)] <- FALSE
+  code[present[valid]] <- (unname(offsets)[table_index[valid]] + position[valid] - 1) * 16 +
+    4 * ref[valid] + alt[valid]
+  code
 }
 
 compressor_normalize_build <- function(build) {
