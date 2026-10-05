@@ -27,6 +27,8 @@ namespace {
 constexpr unsigned char kPcoTypeU32 = 1;
 constexpr unsigned char kPcoTypeU16 = 7;
 constexpr unsigned char kPcoTypeU8 = 10;
+// Experimental lossless value streams (bench/quant-frontier) only.
+constexpr unsigned char kPcoTypeF64 = 6;
 
 void check_status(CompressorPcoError status, const char* operation) {
   if (status != COMPRESSOR_PCO_SUCCESS) {
@@ -425,6 +427,30 @@ extern "C" SEXP compressor_pcodec_decompress_u32(SEXP compressed, SEXP n) {
   }, "native Pcodec error");
 }
 
+// Experimental lossless value streams: one float64 Pcodec frame back to a
+// double vector.
+extern "C" SEXP compressor_pcodec_decompress_f64(SEXP compressed, SEXP n) {
+  return compressor_guard([&]() -> SEXP {
+    if (TYPEOF(compressed) != RAWSXP) compressor_fail("compressed must be a raw vector");
+    const R_xlen_t expected = Rf_asInteger(n);
+    if (expected < 0) compressor_fail("n must be non-negative");
+    SEXP output = PROTECT(Rf_allocVector(REALSXP, expected));
+    if (expected > 0) {
+      std::size_t written = 0;
+      check_status(compressor_pco_decompress_into(
+          RAW(compressed), static_cast<std::size_t>(XLENGTH(compressed)), kPcoTypeF64,
+          REAL(output), static_cast<std::size_t>(expected), &written),
+        "float64 decompression");
+      if (written != static_cast<std::size_t>(expected)) {
+        UNPROTECT(1);
+        compressor_fail("native Pcodec returned %zu values; expected %td", written, expected);
+      }
+    }
+    UNPROTECT(1);
+    return output;
+  }, "native Pcodec error");
+}
+
 extern "C" SEXP compressor_zstd_compress(SEXP input, SEXP level) {
   return compressor_guard([&]() -> SEXP {
     return zstd_compress(input, level);
@@ -455,6 +481,12 @@ extern "C" SEXP compressor_pcodec_compress_blocks(SEXP input, SEXP dtype, SEXP b
     if (std::strcmp(type, "u32") == 0) {
       return compress_blocks<std::uint32_t>(numeric_u32_stream_values(input), block,
                                             kPcoTypeU32, level, page_n, threads);
+    }
+    if (std::strcmp(type, "f64") == 0) {
+      if (TYPEOF(input) != REALSXP) compressor_fail("native Pcodec f64 input must be numeric");
+      const double* source = REAL(input);
+      std::vector<double> values(source, source + XLENGTH(input));
+      return compress_blocks<double>(values, block, kPcoTypeF64, level, page_n, threads);
     }
     compressor_fail("unsupported native Pcodec dtype: %s", type);
     return R_NilValue;
@@ -575,6 +607,9 @@ extern "C" SEXP compressor_pcodec_decompress_u32(SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 extern "C" SEXP compressor_zstd_compress(SEXP, SEXP) {
+  Rf_error("native Pcodec is not available in this build");
+}
+extern "C" SEXP compressor_pcodec_decompress_f64(SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 extern "C" SEXP compressor_zstd_decompress(SEXP, SEXP) {
