@@ -1,5 +1,19 @@
 # CompreSSoR (development)
 
+P-value flag reads:
+
+- `read_pvalue_flag(as = "row_ids")` and the `pvalue_flag` candidate
+  selection decode each flag block natively to row IDs (one C++ pass:
+  decode, reject values above 1, emit `row_start + i`), instead of building
+  the full row-aligned integer vector in R, checking it with a whole-store
+  `%in%` and scanning it again with `which()`. Same rows and validation; on
+  UKB-PPP stores (~10M rows) the row-ID read drops from ~0.27 s to ~0.04 s,
+  and fastMR's per-store candidate read (which calls it before
+  `read_candidates_batch()`) from 150 to 54 CPU-s per 300 stores.
+  `as = "row_ids"` also checks the row count against the manifest's
+  `hit_rows`. The full-vector path (`as = "logical"`,
+  `validate_compressor(full = TRUE)`) checks binary values per block.
+
 Request mapping for dependent packages:
 
 - `read_sumstats_batch(..., request_index = TRUE)` adds an integer

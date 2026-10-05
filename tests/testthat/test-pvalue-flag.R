@@ -92,3 +92,35 @@ test_that("p-value flag arguments are validated", {
     "pvalue_flag"
   )
 })
+
+test_that("native flag-row decode matches the full flag vector and rejects non-binary values", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  flag_rows <- function(blob, n, start) {
+    .Call("compressor_pcodec_flag_rows_u8", blob, as.integer(n), start,
+          PACKAGE = "CompreSSoR")
+  }
+  set.seed(11)
+  v <- as.integer(stats::runif(70000L) < 0.01)
+  v[c(1L, length(v))] <- 1L
+  blob <- CompreSSoR:::pcodec_native_compress(v, "u8")
+  expect_identical(flag_rows(blob, length(v), 0), as.integer(which(v != 0L) - 1L))
+  expect_identical(flag_rows(blob, length(v), 131072), as.integer(131072 + which(v != 0L) - 1L))
+  zero <- CompreSSoR:::pcodec_native_compress(integer(500L), "u8")
+  expect_identical(flag_rows(zero, 500L, 7), integer())
+  bad <- v
+  bad[123L] <- 2L
+  expect_error(flag_rows(CompreSSoR:::pcodec_native_compress(bad, "u8"), length(bad), 0),
+               "not a binary row-aligned stream")
+  expect_error(flag_rows(blob, length(v) + 1L, 0))
+
+  input <- make_fixture(256L)
+  input$p_value <- rep(1e-3, nrow(input))
+  input$p_value[c(3L, 50L, 51L, 200L)] <- 1e-10
+  store <- compress_sumstats(input, tempfile("pvalue-flag-rows-"), overwrite = TRUE,
+                             threads = 1L)
+  logical_rows <- which(read_pvalue_flag(store, as = "logical")) - 1L
+  expect_identical(read_pvalue_flag(store), as.integer(logical_rows))
+  expect_identical(read_pvalue_flag(store, threads = 2L), as.integer(logical_rows))
+  expect_identical(CompreSSoR:::candidates_read_flag_rows(store, 1L), as.integer(logical_rows))
+})

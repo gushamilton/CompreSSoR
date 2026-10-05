@@ -1461,7 +1461,10 @@ pcodec_native_read_pvalue_flag <- function(store, name = "pvalue_flag",
       file.path(store$path, domain$file), location$offset, location$length
     )
     values <- pcodec_native_decompress(blob, as.integer(location$values), "u8")
-    as.integer(values)
+    # u8 values are never negative: > 1 is the whole binary check, per block
+    # (a whole-store `%in%` over ~10M values cost more than the decode).
+    if (any(values > 1L)) pcodec_native_flag_not_binary()
+    values
   }
   flags <- if (length(blocks)) {
     unlist(pcodec_parallel_lapply(seq_along(blocks), read_block, threads = threads,
@@ -1471,11 +1474,64 @@ pcodec_native_read_pvalue_flag <- function(store, name = "pvalue_flag",
     integer()
   }
   n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
-  if (length(flags) != n || any(!flags %in% c(0L, 1L))) {
-    stop("native Pcodec p-value flag payload is not a binary row-aligned stream",
-         call. = FALSE)
-  }
+  if (length(flags) != n) pcodec_native_flag_not_binary()
   flags
+}
+
+pcodec_native_flag_not_binary <- function() {
+  stop("native Pcodec p-value flag payload is not a binary row-aligned stream",
+       call. = FALSE)
+}
+
+# Zero-based row IDs of the flagged rows, block by block: the same blocks,
+# decode and binary/row-aligned validation as pcodec_native_read_pvalue_flag(),
+# without materialising (and re-scanning) the full row-aligned vector. Each
+# worker keeps one connection open for its blocks. With `check_count`, the row
+# count is checked against the manifest's hit_rows when it records one (the
+# candidate reader runs its own check, candidates_check_flag_count()).
+pcodec_native_read_pvalue_flag_rows <- function(store, name = "pvalue_flag",
+                                                 threads = NULL, check_count = TRUE) {
+  if (!pcodec_native_available()) {
+    stop("native Pcodec is not available in this build", call. = FALSE)
+  }
+  domain <- pcodec_native_pvalue_flag_domain(store, name = name)
+  blocks <- domain$blocks
+  threads <- pcodec_native_default_threads(threads = threads)
+  path <- file.path(store$path, domain$file)
+  n <- as.integer(store$manifest$n_rows %||% store$manifest$rows)
+  values <- vapply(blocks, function(b) as.numeric(b$values), numeric(1))
+  # pcodec_native_pvalue_flag_domain() validated the partition (contiguous
+  # row_start/row_stop covering n rows); the decoder checks each block's count.
+  if (!isTRUE(sum(values) == n)) pcodec_native_flag_not_binary()
+  starts <- vapply(blocks, function(b) as.numeric(b$row_start), numeric(1))
+  chunks <- if (length(blocks)) {
+    parts <- max(1L, min(as.integer(threads), length(blocks)))
+    unname(split(seq_along(blocks), ceiling(seq_along(blocks) * parts / length(blocks))))
+  } else list()
+  pieces <- pcodec_parallel_lapply(chunks, function(chunk) {
+    con <- file(path, open = "rb")
+    on.exit(close(con), add = TRUE)
+    lapply(chunk, function(b) {
+      loc <- blocks[[b]]
+      seek(con, where = as.numeric(loc$offset), origin = "start")
+      blob <- readBin(con, raw(), n = as.integer(loc$length), endian = "little")
+      if (length(blob) != as.integer(loc$length)) {
+        stop("native Pcodec p-value flag payload is truncated", call. = FALSE)
+      }
+      .Call("compressor_pcodec_flag_rows_u8", blob, as.integer(loc$values),
+            starts[b], PACKAGE = "CompreSSoR")
+    })
+  }, threads = threads, labels = store$path, what = "p-value flag read")
+  rows <- as.integer(unlist(pieces, use.names = FALSE))
+  expected <- domain$hit_rows
+  if (isTRUE(check_count) && !is.null(expected) && length(expected) == 1L &&
+      !is.na(expected) &&
+      !identical(as.numeric(length(rows)), as.numeric(expected))) {
+    stop("p-value flag row count mismatch in store '", store$path, "': the flag ",
+         "stream gave ", length(rows), " rows but the manifest records ", expected,
+         " flagged rows", call. = FALSE)
+  }
+  rows
 }
 
 #' Read the aligned p-value flag domain from a native Pcodec store
@@ -1501,9 +1557,10 @@ read_pvalue_flag <- function(store, name = "pvalue_flag",
   if (!identical(store$manifest$backend, "pcodec")) {
     stop("read_pvalue_flag requires a native Pcodec store", call. = FALSE)
   }
-  flags <- pcodec_native_read_pvalue_flag(store, name = name, threads = threads)
-  if (identical(as, "logical")) return(as.logical(flags))
-  as.integer(which(flags != 0L) - 1L)
+  if (identical(as, "row_ids")) {
+    return(pcodec_native_read_pvalue_flag_rows(store, name = name, threads = threads))
+  }
+  as.logical(pcodec_native_read_pvalue_flag(store, name = name, threads = threads))
 }
 
 pcodec_native_pvalue_order_domain <- function(store, name = "pvalue_order") {
