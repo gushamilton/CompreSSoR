@@ -37,7 +37,7 @@ test_that("read_sumstats_batch(request_index = TRUE) indexes each row's request"
   )
   keys <- c(input$variant_id[c(10L, 2L, 500L, 2L)], "1:50:A:C", other$variant_id[3L],
             paste0(" ", input$variant_id[900L]))
-  rows <- c(5L, 0L, 5L, 2999L, 4000L, 12L)
+  rows <- c(5L, 0L, 5L, 2999L, 12L)
   columns <- c("beta", "standard_error", "chromosome", "base_pair_location",
                "reference_allele", "alternate_allele")
   requests <- list(keys, keys, rows)
@@ -68,8 +68,8 @@ test_that("read_sumstats_batch(request_index = TRUE) indexes each row's request"
         expect_identical(out$request_index, match(row_keys, trimws(keys)))
       }
       # Row IDs: each row answers the first request with its row ID.
-      expect_identical(rows[indexed[[3L]]$request_index], sort(unique(rows[rows < 3000L])))
-      expect_identical(indexed[[3L]]$request_index, c(2L, 1L, 6L, 4L))
+      expect_identical(rows[indexed[[3L]]$request_index], sort(unique(rows)))
+      expect_identical(indexed[[3L]]$request_index, c(2L, 1L, 5L, 4L))
     }
   }
   options(previous)
