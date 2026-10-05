@@ -371,6 +371,48 @@ extern "C" SEXP compressor_pcodec_decompress_u8(SEXP compressed, SEXP n) {
   }, "native Pcodec error");
 }
 
+// Zero-based row IDs (row_start + i) of the nonzero values of one aligned
+// binary u8 flag block; any value above 1 is an error.  Avoids returning the
+// block's full integer vector to R only to scan it again there.
+extern "C" SEXP compressor_pcodec_flag_rows_u8(SEXP compressed, SEXP n, SEXP row_start) {
+  return compressor_guard([&]() -> SEXP {
+    if (TYPEOF(compressed) != RAWSXP) compressor_fail("compressed must be a raw vector");
+    const R_xlen_t expected = Rf_asInteger(n);
+    if (expected < 0) compressor_fail("n must be non-negative");
+    const double start = Rf_asReal(row_start);
+    if (!(start >= 0) || start + static_cast<double>(expected) >
+                             static_cast<double>(std::numeric_limits<int>::max())) {
+      compressor_fail("flag block row range does not fit R's integer type");
+    }
+    if (expected == 0) return Rf_allocVector(INTSXP, 0);
+    std::vector<std::uint8_t> values(static_cast<std::size_t>(expected));
+    std::size_t written = 0;
+    check_status(compressor_pco_decompress_into(
+        RAW(compressed), static_cast<std::size_t>(XLENGTH(compressed)), kPcoTypeU8,
+        values.data(), static_cast<std::size_t>(expected), &written),
+      "decompression");
+    if (written != static_cast<std::size_t>(expected)) {
+      compressor_fail("native Pcodec returned %zu values; expected %td", written, expected);
+    }
+    R_xlen_t hits = 0;
+    for (std::size_t i = 0; i < written; ++i) {
+      if (values[i] > 1u) {
+        compressor_fail("native Pcodec p-value flag payload is not a binary row-aligned stream");
+      }
+      hits += values[i];
+    }
+    SEXP output = PROTECT(Rf_allocVector(INTSXP, hits));
+    int* target = INTEGER(output);
+    const int base = static_cast<int>(start);
+    R_xlen_t k = 0;
+    for (std::size_t i = 0; i < written; ++i) {
+      if (values[i]) target[k++] = base + static_cast<int>(i);
+    }
+    UNPROTECT(1);
+    return output;
+  }, "native Pcodec error");
+}
+
 extern "C" SEXP compressor_pcodec_decompress_u16(SEXP compressed, SEXP n) {
   return compressor_guard([&]() -> SEXP {
     return decompress_integer<std::uint16_t>(compressed, n, kPcoTypeU16);
@@ -521,6 +563,9 @@ extern "C" SEXP compressor_pcodec_compress_u32(SEXP, SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 extern "C" SEXP compressor_pcodec_decompress_u8(SEXP, SEXP) {
+  Rf_error("native Pcodec is not available in this build");
+}
+extern "C" SEXP compressor_pcodec_flag_rows_u8(SEXP, SEXP, SEXP) {
   Rf_error("native Pcodec is not available in this build");
 }
 extern "C" SEXP compressor_pcodec_decompress_u16(SEXP, SEXP) {

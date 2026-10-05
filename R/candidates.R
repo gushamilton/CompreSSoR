@@ -174,33 +174,9 @@ candidates_check_flag_count <- function(store, n, what) {
   invisible(TRUE)
 }
 
-# Flag rows with one open connection per worker (same validation as
-# read_pvalue_flag(): binary, row-aligned).
+# Flag rows (same reader and validation as read_pvalue_flag(as = "row_ids")).
 candidates_read_flag_rows <- function(store, threads) {
-  domain <- pcodec_native_pvalue_flag_domain(store)
-  blocks <- domain$blocks
-  path <- file.path(store$path, domain$file)
-  starts <- vapply(blocks, function(b) as.numeric(b$row_start), numeric(1))
-  parts <- pcodec_parallel_lapply(
-    candidates_split(seq_along(blocks), threads), function(chunk) {
-      con <- file(path, open = "rb")
-      on.exit(close(con), add = TRUE)
-      lapply(chunk, function(b) {
-        loc <- blocks[[b]]
-        seek(con, where = as.numeric(loc$offset), origin = "start")
-        blob <- readBin(con, raw(), n = as.integer(loc$length), endian = "little")
-        if (length(blob) != as.integer(loc$length)) {
-          stop("native Pcodec p-value flag payload is truncated", call. = FALSE)
-        }
-        v <- pcodec_native_decompress(blob, as.integer(loc$values), "u8")
-        if (any(v > 1L)) {
-          stop("native Pcodec p-value flag payload is not a binary row-aligned stream",
-               call. = FALSE)
-        }
-        as.integer(starts[b] + which(v != 0L) - 1)
-      })
-    }, threads = threads, labels = store$path, what = "p-value flag read")
-  as.integer(unlist(parts, use.names = FALSE))
+  pcodec_native_read_pvalue_flag_rows(store, threads = threads, check_count = FALSE)
 }
 
 candidates_exact_ranks <- function(store, rows) {
