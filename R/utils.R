@@ -1411,6 +1411,31 @@ structural_qc_report <- function(data, input_build = "GRCh38",
       se_all <- se %||% rep(NA_real_, n)
       which(!is.finite(beta_all) | !is.finite(z_all) | !is.finite(se_all) | se_all <= 0)
     })
+    # Finite values the store cannot represent. Z of a large effect is kept
+    # as a float32 exception and beta is rebuilt as z * SE, so a |Z| beyond
+    # float32 or a product beyond double reads back as Inf. Rows whose
+    # beta, Z, SE or rebuilt beta overflow are rejected here so they take the
+    # report/error path instead of silently changing value. The range tests
+    # cover every row; the row mask is built only when they cannot rule the
+    # overflow out. The margin allows for the relative error of the
+    # quantised SE and float32 Z.
+    if (is.null(beta) || is.null(z) || is.null(se)) {
+      add_reason_rows("non_finite_effect", integer())
+    } else {
+      z_limit <- 3.4e38
+      beta_limit <- .Machine$double.xmax * 0.999
+      peak <- function(x) max(abs(value_range(x)))
+      if (!(peak(z) <= z_limit && peak(se) <= beta_limit &&
+            peak(beta) <= beta_limit && peak(z) * peak(se) <= beta_limit)) {
+        finite_row <- is.finite(beta) & is.finite(z) & is.finite(se)
+        add_reason_rows("non_finite_effect", which(
+          finite_row & (abs(z) > z_limit | abs(beta) > beta_limit |
+                          abs(z) * se > beta_limit)
+        ))
+      } else {
+        add_reason_rows("non_finite_effect", integer())
+      }
+    }
   }
 
   # Rows whose canonical key is undefined: the complement of the key
@@ -1579,6 +1604,24 @@ apply_structural_qc <- function(data, input_build = "GRCh38", strict = FALSE,
         report$row_status$reasons[duplicate_first] == "duplicate_variant"
       }
       keep[duplicate_first[only_duplicate_reason]] <- TRUE
+      # Later copies are dropped; the first copy is kept even when the copies
+      # disagree. Count the keys whose copies differ in a stored statistic so
+      # the drop warning can name them. Only the duplicated rows are touched.
+      report$duplicate_rows_dropped <- as.integer(
+        length(duplicate) - sum(only_duplicate_reason)
+      )
+      first_of_key <- match(duplicate_key, duplicate_key)
+      differs <- rep(FALSE, length(duplicate))
+      for (field in intersect(c("beta", "standard_error", "z", "p_value",
+                                "effect_allele_frequency"), names(data))) {
+        x <- suppressWarnings(as.numeric(data[[field]][duplicate]))
+        y <- x[first_of_key]
+        differs <- differs | (is.na(x) != is.na(y)) |
+          (!is.na(x) & !is.na(y) & x != y)
+      }
+      report$duplicate_conflict_keys <- as.integer(
+        length(unique(first_of_key[differs]))
+      )
     }
   }
   if (identical(row_policy, "error") && length(invalid)) {

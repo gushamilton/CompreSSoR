@@ -1,5 +1,22 @@
 # CompreSSoR (development)
 
+Silent row drops, overflow and region syntax:
+
+- `compress_sumstats(row_policy = "report")` now emits one `warning()` per
+  call when it drops rows: the total, a per-reason breakdown (duplicate keys
+  counted as the later copies dropped, naming how many keys had differing
+  values; the first copy is still kept) and a pointer to
+  `row_policy = "error"`. It reuses the counts QC already computes and is
+  recorded as before in `manifest$dropped_rows`.
+- Rows whose beta, Z or SE are finite but would read back as Inf (for
+  example `beta = 1e308, se = 1`: Z is stored as float32) are rejected at
+  write time with the QC reason `non_finite_effect`, through the same
+  report/error path, instead of silently becoming Inf.
+- `read_sumstats(region = )` accepts comma thousands separators and
+  integer-valued scientific notation (`"1:1-1e6"`, `"1:1-1,000,000"`), and
+  maps chromosomes 23 and 24 to X and Y as the writer does. Non-integer and
+  negative coordinates remain clear errors.
+
 Request de-duplication:
 
 - `read_sumstats_batch()` groups the per-store requests in linear time. It

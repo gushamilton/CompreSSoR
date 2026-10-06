@@ -85,3 +85,47 @@ test_that("a region past the chromosome end never returns the next chromosome", 
                                 pvalue_threshold = 1)
   if (nrow(candidates)) expect_true(all(candidates$chromosome == "3"))
 })
+
+test_that("region strings accept commas, scientific notation and chromosomes 23/24", {
+  bounds <- CompreSSoR:::read_region_bounds
+  expect_identical(bounds("1:1-1e6")[c("start", "end")], list(start = 1, end = 1e6))
+  expect_identical(bounds("chr1:1-1,000,000")$end, 1e6)
+  expect_identical(bounds("chr1:1,000-2.5e3")[c("start", "end")],
+                   list(start = 1000, end = 2500))
+  expect_identical(bounds("23:1-100000")$chromosome, "X")
+  expect_identical(bounds("chr24:1-5")$chromosome, "Y")
+  expect_identical(bounds(c("chr23", "1", "1e3"))$chromosome, "X")
+  expect_identical(bounds(c(24, 1, 5))$chromosome, "Y")
+  expect_error(bounds("1:1-1.5"), "whole number")
+  expect_error(bounds("1:1-1e-3"), "whole number")
+  expect_error(bounds("1:1-1,00"), "whole number")
+  expect_error(bounds("1:5--3"), "whole number")
+  expect_error(bounds("1:a-3"), "whole number")
+  expect_error(bounds("chr1-100"), "region must look like")
+
+  range <- CompreSSoR:::pcodec_native_region_range
+  offsets <- CompreSSoR:::compressor_chromosome_offsets("GRCh38")
+  expect_identical(range("23:1-100000", "GRCh38"),
+                   as.numeric(offsets[["X"]]) + c(0, 99999))
+  expect_identical(range("chrX:1-100000", "GRCh38"), range("23:1-100000", "GRCh38"))
+  expect_identical(range("24:1-10", "GRCh38"), range("chrY:1-10", "GRCh38"))
+  expect_identical(range("1:1-1e6", "GRCh38"), range("1:1-1,000,000", "GRCh38"))
+})
+
+test_that("reads accept the extended region syntax", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(),
+              "native Pcodec backend is not built")
+  input <- make_fixture(30L)
+  input$chromosome <- rep(c("1", "23"), each = 15L)
+  input$variant_id <- paste(input$chromosome, input$base_pair_location,
+                            input$other_allele, input$effect_allele, sep = ":")
+  store <- compress_sumstats(input, tempfile("region-syntax-"), overwrite = TRUE)
+  columns <- c("chromosome", "base_pair_location")
+  a <- read_sumstats(store, region = "1:1-1e6", columns = columns)
+  b <- read_sumstats(store, region = "chr1:1-1,000,000", columns = columns)
+  expect_identical(a, b)
+  expect_identical(nrow(a), 15L)
+  x <- read_sumstats(store, region = "23:1-1e6", columns = columns)
+  expect_identical(nrow(x), 15L)
+  expect_true(all(x$chromosome == "X"))
+})

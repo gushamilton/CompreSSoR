@@ -78,9 +78,11 @@ test_that("none bypasses numeric QC without creating unused p-values", {
   expect_identical(none$manifest$qc$statistic_validation, "bypassed")
   expect_equal(none$manifest$timings$phases$statistic_validation, 0)
 
-  compact <- compress_sumstats(input, tempfile("compact-invalid-statistics-"),
-                               qc = "compact", row_policy = "report",
-                               overwrite = TRUE)
+  expect_warning(
+    compact <- compress_sumstats(input, tempfile("compact-invalid-statistics-"),
+                                 qc = "compact", row_policy = "report",
+                                 overwrite = TRUE),
+    "dropped 3 of 4 input rows")
   expect_identical(compact$manifest$n_rows, 1L)
   expect_identical(compact$manifest$qc$statistic_validation, "compact")
 })
@@ -122,9 +124,11 @@ test_that("none mode drops unsupported identity rows before canonicalization", {
   old <- options(CompreSSoR.max_out_of_range_fraction = 0.5)
   on.exit(options(old), add = TRUE)
   expect_warning(
-    store <- compress_sumstats(input, tempfile("none-identity-filter-"),
-                               qc = "none", overwrite = TRUE),
-    "1 of 7 input rows .* past the end of their chromosome")
+    expect_warning(
+      store <- compress_sumstats(input, tempfile("none-identity-filter-"),
+                                 qc = "none", overwrite = TRUE),
+      "1 of 7 input rows .* past the end of their chromosome"),
+    "dropped 6 of 7 input rows.*invalid_allele=1")
   expect_equal(store$manifest$n_rows, 1L)
   expect_equal(store$manifest$dropped_rows$past_chromosome_end, 1L)
   expect_equal(store$manifest$dropped_rows$input_rows, 7L)
@@ -201,8 +205,10 @@ test_that("none mode retains native duplicate safety without structural QC", {
   input <- make_fixture(3L)
   input$reference_allele[1L] <- "AT"
   input$other_allele[1L] <- "AT"
-  store <- compress_sumstats(input, tempfile("none-indel-"), qc = "none",
-                             overwrite = TRUE)
+  expect_warning(
+    store <- compress_sumstats(input, tempfile("none-indel-"), qc = "none",
+                               overwrite = TRUE),
+    "invalid_allele=1")
   expect_equal(store$manifest$n_rows, 2L)
   expect_equal(store$manifest$preparation$preparation$identity_safety$dropped_rows, 1L)
   expect_equal(store$manifest$preparation$preparation$identity_safety$counts$invalid_allele, 1L)

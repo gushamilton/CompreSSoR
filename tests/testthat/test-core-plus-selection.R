@@ -228,10 +228,13 @@ test_that("compact QC rejects malformed supplied p-values before core-plus selec
   input$p_value <- c("not-a-p-value", "1")
   panel <- data.frame(variant_id = "1:200000:A:G", stringsAsFactors = FALSE)
   path <- tempfile("core-plus-compact-p-qc-")
-  store <- compress_sumstats(
-    input, path, selection = "core_plus", variant_set = panel,
-    pvalue_threshold = 1e-5, region_padding = 10000L,
-    overwrite = TRUE, row_policy = "report"
+  expect_warning(
+    store <- compress_sumstats(
+      input, path, selection = "core_plus", variant_set = panel,
+      pvalue_threshold = 1e-5, region_padding = 10000L,
+      overwrite = TRUE, row_policy = "report"
+    ),
+    "malformed_p_value=1"
   )
 
   selection <- store$manifest$selection
