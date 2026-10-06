@@ -1158,21 +1158,43 @@ read_sumstats_batch <- function(
            call. = FALSE)
     }
   }
-  # Key requests are answered by identity code, so read the code columns too.
+  # Key requests are answered by identity code, so their stores also return
+  # the code columns. A key read decodes the position and substitution
+  # streams to find its rows in any case, so this reads no extra bytes. Other
+  # stores (row IDs, regions, whole stores) are read without them: in a batch
+  # mixing both, they are read in a second call.
   extra <- if (any(keyed)) setdiff(c("global_position", "substitution"), columns) else character()
-  result <- pcodec_read_stores(stores, variants, c(columns, extra), threads = threads,
-                               region = region, annotate = TRUE)
-  code_cache <- list()
+  if (length(extra) && !all(keyed)) {
+    result <- vector("list", length(stores))
+    result[keyed] <- pcodec_read_stores(stores[keyed], variants[keyed], c(columns, extra),
+                                        threads = threads, region = region[keyed],
+                                        annotate = TRUE)
+    result[!keyed] <- pcodec_read_stores(stores[!keyed], variants[!keyed], columns,
+                                         threads = threads, region = region[!keyed],
+                                         annotate = TRUE)
+  } else {
+    result <- pcodec_read_stores(stores, variants, c(columns, extra), threads = threads,
+                                 region = region, annotate = TRUE)
+  }
+  # Identity codes of every distinct key request, computed per genome build
+  # in one compressor_identity_code() call on the distinct key strings
+  # (elementwise, so the same codes as one call per request).
+  group <- compressor_request_groups(variants)
+  distinct <- which(group == seq_along(group) & keyed)
+  slot <- match(group, distinct)
+  lens <- lengths(variants[distinct])
+  ends <- cumsum(lens)
+  code_cache <- new.env(hash = TRUE, parent = emptyenv())
   request_codes <- function(i, build) {
-    for (entry in code_cache) {
-      if (identical(entry$build, build) && identical(entry$request, variants[[i]])) {
-        return(entry$codes)
-      }
+    codes <- code_cache[[build]]
+    if (is.null(codes)) {
+      flat <- unlist(variants[distinct], use.names = FALSE)
+      keys <- unique(flat)
+      codes <- compressor_identity_code(keys, build = build)[match(flat, keys)]
+      code_cache[[build]] <- codes
     }
-    codes <- compressor_identity_code(variants[[i]], build = build)
-    code_cache[[length(code_cache) + 1L]] <<- list(build = build, request = variants[[i]],
-                                                   codes = codes)
-    codes
+    j <- slot[i]
+    codes[seq.int(ends[j] - lens[j] + 1L, length.out = lens[j])]
   }
   for (i in seq_along(result)) {
     out <- result[[i]]
@@ -1193,7 +1215,7 @@ read_sumstats_batch <- function(
       }
       match(rows, ids)
     }
-    if (length(extra)) out <- out[setdiff(names(out), extra)]
+    if (length(extra) && keyed[i]) out <- out[setdiff(names(out), extra)]
     source_bytes_read <- attr(result[[i]], "source_bytes_read", exact = TRUE)
     out$request_index <- as.integer(index)
     attr(out, "source_bytes_read") <- source_bytes_read

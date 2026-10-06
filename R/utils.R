@@ -1781,3 +1781,42 @@ commit_store_output <- function(transaction) {
   if (!is.null(backup)) unlink(backup, recursive = TRUE, force = TRUE)
   invisible(target)
 }
+
+# Group index of each element of a list of request vectors: element i gets the
+# position of the first element identical() to it. Elements are bucketed by a
+# cheap fingerprint (type, length and first, middle and last values), which
+# identical() elements always share, and identical() runs only within a
+# bucket, so k requests cost O(k) comparisons instead of O(k^2) (2,382 stores
+# with 2,083 distinct requests: millions of identical() calls before). A
+# request passed to every store as one object is one identical() pointer check.
+compressor_request_groups <- function(requests) {
+  k <- length(requests)
+  group <- integer(k)
+  if (!k) return(group)
+  buckets <- new.env(hash = TRUE, parent = emptyenv(), size = max(29L, k))
+  for (i in seq_len(k)) {
+    x <- requests[[i]]
+    fingerprint <- compressor_request_fingerprint(x)
+    candidates <- buckets[[fingerprint]]
+    j <- 0L
+    for (u in candidates) {
+      if (identical(requests[[u]], x)) {
+        j <- u
+        break
+      }
+    }
+    if (!j) {
+      j <- i
+      buckets[[fingerprint]] <- c(candidates, i)
+    }
+    group[i] <- j
+  }
+  group
+}
+
+compressor_request_fingerprint <- function(x) {
+  n <- length(x)
+  if (!n || !is.atomic(x)) return(paste(typeof(x), n))
+  probe <- x[unique(c(1L, (n + 1L) %/% 2L, n))]
+  paste(c(typeof(x), n, as.character(probe)), collapse = "\r")
+}
