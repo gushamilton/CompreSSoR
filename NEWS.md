@@ -1,5 +1,26 @@
 # CompreSSoR (development)
 
+Request de-duplication:
+
+- `read_sumstats_batch()` groups the per-store requests in linear time. It
+  used to compare each store's request with every distinct request seen so
+  far using `identical()`, both to normalise each distinct request once
+  (every read) and, with `request_index = TRUE`, to reuse identity codes.
+  fastMR's cis-MR blocks (2,382 stores, 2,083 distinct key sets) made
+  millions of comparisons. Requests are now bucketed by a cheap fingerprint
+  (type, length, first, middle and last values) and compared with
+  `identical()` only within a bucket.
+- With `request_index = TRUE`, the identity codes of all distinct key
+  requests are computed in one `compressor_identity_code()` call per genome
+  build.
+- In a batch mixing key requests with row-ID, region or whole-store reads,
+  only the key-request stores return the internal code columns, so the
+  other stores read exactly the bytes they read with `request_index = FALSE`.
+  Key reads decode the position and substitution streams to find their rows
+  in any case, so the code columns cost them no extra bytes.
+- Results, `request_index` values and `source_bytes_read` are unchanged;
+  stores are untouched.
+
 Batch strategy:
 
 - `read_sumstats_batch()` chooses panel sharing again when it pays. With no

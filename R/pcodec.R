@@ -660,22 +660,12 @@ pcodec_read_stores <- function(stores, variants = NULL, columns, threads = 1L,
     stop("each variants element must contain canonical variant keys or row IDs",
          call. = FALSE)
   }
-  # Normalise each distinct request once. A request shared by every store (the
-  # usual case) is one object, so identical() is a pointer comparison.
-  distinct <- list()
-  slot <- integer(k)
-  for (i in seq_len(k)) {
-    j <- 0L
-    for (u in seq_along(distinct)) {
-      if (identical(distinct[[u]]$raw, variants[[i]])) { j <- u; break }
-    }
-    if (!j) {
-      distinct[[length(distinct) + 1L]] <- list(raw = variants[[i]],
-                                                norm = normalise(variants[[i]]))
-      j <- length(distinct)
-    }
-    slot[i] <- j
-  }
+  # Normalise each distinct request once; slot[i] numbers the distinct
+  # requests in order of first appearance (see compressor_request_groups()).
+  group <- compressor_request_groups(variants)
+  first <- unique(group)
+  slot <- match(group, first)
+  distinct <- lapply(first, function(i) list(norm = normalise(variants[[i]])))
   variants <- lapply(slot, function(j) distinct[[j]]$norm)
   shared_keys <- length(distinct) == 1L && is.character(distinct[[1L]]$norm) &&
     all(vapply(region, is.null, logical(1)))

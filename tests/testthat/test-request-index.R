@@ -94,3 +94,72 @@ test_that("read_sumstats_batch(request_index = TRUE) indexes each row's request"
   expect_error(read_sumstats_batch(stores[[1L]], keys, columns = c("beta", "request_index"),
                                    request_index = TRUE), "cannot also be requested")
 })
+
+test_that("compressor_request_groups matches a pairwise identical() scan", {
+  naive <- function(requests) {
+    vapply(seq_along(requests), function(i) {
+      for (u in seq_len(i)) if (identical(requests[[u]], requests[[i]])) return(u)
+      NA_integer_
+    }, integer(1))
+  }
+  shared <- c("1:100:A:C", "1:200:C:G", "1:300:G:T")
+  requests <- list(
+    shared, NULL, shared, c("1:100:A:C", "1:250:C:G", "1:300:G:T"),  # same ends
+    c("1:100:A:C", "1:200:C:G", "1:300:G:T"), character(), NULL, character(),
+    c(0, 5, 7), c(-0, 5, 7), c(0L, 5L, 7L), c(NA, "1:1:A:C"), c(NA, "1:1:A:C"),
+    c(NaN, 1), c(NA_real_, 1), c("NA", "1:1:A:C"), shared[1:2], rev(shared),
+    c(a = "1:100:A:C"), "1:100:A:C", list(1, "a"), list(1, "a"), list("a", 1)
+  )
+  expect_identical(CompreSSoR:::compressor_request_groups(requests), naive(requests))
+  expect_identical(CompreSSoR:::compressor_request_groups(list()), integer())
+  # Many distinct requests plus one shared object (the fastMR layout).
+  set.seed(7)
+  pool <- sprintf("1:%d:A:C", 1:500)
+  many <- c(lapply(1:400, function(i) sort(sample(pool, sample(1:6, 1)))),
+            rep(list(pool), 50L))
+  many <- many[sample.int(length(many))]
+  expect_identical(CompreSSoR:::compressor_request_groups(many), naive(many))
+})
+
+test_that("request_index is unchanged with many distinct and shared requests", {
+  skip_if_not(CompreSSoR:::pcodec_native_available(), "native Pcodec backend is not built")
+  input <- make_fixture(2000L)
+  s38 <- compress_sumstats(input, tempfile("request-index-38-"), overwrite = TRUE)$path
+  s38b <- compress_sumstats(transform(input, beta = -beta), tempfile("request-index-38b-"),
+                            overwrite = TRUE)$path
+  s37 <- compress_sumstats(input, tempfile("request-index-37-"), overwrite = TRUE,
+                           input_build = "GRCh37", store_build = "GRCh37")$path
+  set.seed(11)
+  union <- input$variant_id[sort(sample.int(2000L, 300L))]
+  distinct <- lapply(1:40, function(i) {
+    keys <- input$variant_id[sample.int(2000L, sample(1:12, 1))]
+    # duplicates, reader-equivalent spellings and absent keys
+    c(keys, keys[1L], paste0(" chr", keys[length(keys)]), "1:99:A:C")
+  })
+  requests <- c(distinct, rep(list(union), 12L), distinct[1:5], list(5:9 * 3), list(NULL))
+  stores <- rep_len(c(s38, s38b, s37), length(requests))
+  builds <- rep_len(c("GRCh38", "GRCh38", "GRCh37"), length(requests))
+  columns <- c("beta", "standard_error")
+  plain <- read_sumstats_batch(stores, requests, columns = columns, threads = 2L)
+  for (threads in c(1L, 2L)) {
+    indexed <- read_sumstats_batch(stores, requests, columns = columns, threads = threads,
+                                   request_index = TRUE)
+    full <- read_sumstats_batch(stores, requests,
+                                columns = c(columns, "global_position", "substitution"),
+                                threads = threads)
+    for (i in seq_along(requests)) {
+      out <- indexed[[i]]
+      expected <- plain[[i]]
+      request <- requests[[i]]
+      expected$request_index <- if (is.character(request)) {
+        code <- full[[i]]$global_position * 16 + full[[i]]$substitution
+        match(code, compressor_identity_code(request, build = builds[i]))
+      } else if (is.numeric(request)) {
+        match(sort(unique(request)), request)
+      } else {
+        rep(NA_integer_, nrow(expected))
+      }
+      expect_identical(out, expected, info = paste(threads, i))
+    }
+  }
+})
