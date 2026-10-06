@@ -194,41 +194,81 @@ pcodec_native_bin_code <- function(x, lower, step, count) {
   pmin(as.integer(count) - 1L, pmax(0L, as.integer(floor((x - lower) / step))))
 }
 
-# Semantic quantisation profile "z<Z>/eaf8/se<S>". Z codes are central bins
-# 0..z_count-1 over z_range, z_count = missing, z_count + 1 = exception (uint16
-# stream); SE codes likewise over the log2 residual range (uint8 stream).
+# Semantic quantisation profile "z<Z>/eaf<E>/se<S>[+xse][@<T>]". Z codes are
+# central bins 0..z_count-1 over z_range, z_count = missing, z_count + 1 =
+# exception (uint16 stream); SE codes likewise over the log2 residual range
+# (uint8 stream, uint16 when S > 8); EAF codes 0..2^E-1 (uint8 stream).
+#
+# The public API writes one profile, "z10/eaf8/se8+xse". Everything beyond the
+# historical "z<9-12>/eaf8/se<6-8>[+xse]" grammar is EXPERIMENTAL and exists
+# only to measure the size/accuracy trade-off (bench/quant-frontier): EAF
+# 3-8 bits, Z 4-14 bits, SE 3-12 bits and an optional "@T" central Z range
+# [-T, T) (|Z| >= T becomes an exact float32 exception record; default 3.5).
+# The default profile's stream and manifest bytes are unchanged by these
+# extensions.
 pcodec_native_profile <- function(name = NULL) {
   name <- name %||% getOption("CompreSSoR.native_profile", PCODEC_NATIVE_DEFAULT_PROFILE)
   if (length(name) != 1L || !is.character(name) || is.na(name)) {
     stop("native Pcodec profile must be one string", call. = FALSE)
   }
-  parts <- regmatches(name, regexec("^z([0-9]+)/eaf8/se([0-9]+)(\\+xse)?$", name))[[1L]]
-  if (length(parts) != 4L) {
+  parts <- regmatches(name, regexec(
+    "^z([0-9]+)/eaf([0-9]+)/se([0-9]+)(\\+xse)?(@[0-9]+(\\.[0-9]+)?)?$", name))[[1L]]
+  if (length(parts) != 7L) {
     stop("unknown native Pcodec profile: ", name, call. = FALSE)
   }
   # "+xse": rows that already carry an exact Z exception record (|Z| >= 3.5)
   # also take SE from that record (flag 2) instead of the SE code. The record
   # holds float32 log2(SE) for every exception row anyway, so this costs no
   # extra record; readers of any 0.4.x version honour the flag.
-  exception_se <- if (nzchar(parts[4L])) "exact" else "quantised"
+  exception_se <- if (nzchar(parts[5L])) "exact" else "quantised"
   z_bits <- as.integer(parts[2L])
-  se_bits <- as.integer(parts[3L])
-  if (z_bits < 9L || z_bits > 12L || se_bits < 6L || se_bits > 8L) {
-    stop("native Pcodec profiles support Z 9-12 bits and SE 6-8 bits", call. = FALSE)
+  eaf_bits <- as.integer(parts[3L])
+  se_bits <- as.integer(parts[4L])
+  z_limit <- if (nzchar(parts[6L])) as.numeric(substring(parts[6L], 2L)) else
+    PCODEC_NATIVE_Z_RANGE[2L]
+  standard <- z_bits >= 9L && z_bits <= 12L && se_bits >= 6L && se_bits <= 8L &&
+    eaf_bits == 8L && !nzchar(parts[6L])
+  if (!standard && !isTRUE(getOption("CompreSSoR.experimental_profiles", FALSE))) {
+    stop("native Pcodec profiles support Z 9-12 bits, EAF 8 bits and SE 6-8 bits ",
+         "(set options(CompreSSoR.experimental_profiles = TRUE) for the ",
+         "experimental quantisation sweep)", call. = FALSE)
+  }
+  if (z_bits < 4L || z_bits > 14L || se_bits < 3L || se_bits > 12L ||
+      eaf_bits < 3L || eaf_bits > 8L || !is.finite(z_limit) || z_limit <= 0 ||
+      z_limit > 40) {
+    stop("experimental native Pcodec profiles support Z 4-14 bits, EAF 3-8 bits, ",
+         "SE 3-12 bits and 0 < T <= 40", call. = FALSE)
   }
   z_count <- as.integer(2^z_bits - 2L)
   se_count <- as.integer(2^se_bits - 2L)
+  eaf_count <- as.integer(2^eaf_bits - 1L)
   list(
-    name = name, z_bits = z_bits, se_bits = se_bits, eaf_bits = 8L,
+    name = name, z_bits = z_bits, se_bits = se_bits, eaf_bits = eaf_bits,
     z_count = z_count, z_missing = z_count, z_exception = z_count + 1L,
-    z_range = PCODEC_NATIVE_Z_RANGE,
+    z_range = if (nzchar(parts[6L])) c(-z_limit, z_limit) else PCODEC_NATIVE_Z_RANGE,
     se_count = se_count, se_missing = se_count, se_exception = se_count + 1L,
     se_residual_range = PCODEC_NATIVE_SE_RESIDUAL_RANGE,
-    eaf_count = PCODEC_NATIVE_EAF_COUNT, exception_se = exception_se,
-    codec_name = sprintf("pcodec_native_standalone_z%d_eaf8_se%d%s_zstd_exceptions",
-                         z_bits, se_bits,
-                         if (identical(exception_se, "exact")) "_xse" else "")
+    se_physical_dtype = if (se_bits > 8L) "uint16" else PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
+    se_physical_bits = if (se_bits > 8L) 16L else PCODEC_NATIVE_SE_PHYSICAL_BITS,
+    eaf_count = eaf_count, exception_se = exception_se,
+    codec_name = if (eaf_bits == 8L && !nzchar(parts[6L])) {
+      sprintf("pcodec_native_standalone_z%d_eaf8_se%d%s_zstd_exceptions",
+              z_bits, se_bits,
+              if (identical(exception_se, "exact")) "_xse" else "")
+    } else {
+      sprintf("pcodec_native_standalone_z%d_eaf%d_se%d%s_t%s_zstd_exceptions_experimental",
+              z_bits, eaf_bits, se_bits,
+              if (identical(exception_se, "exact")) "_xse" else "",
+              format(z_limit))
+    }
   )
+}
+
+# Physical Pcodec dtype of an opened store's SE stream ("u8" unless an
+# experimental profile wider than 8 bits wrote uint16 codes).
+pcodec_native_se_dtype <- function(store) {
+  dtype <- store$manifest$semantic_codec$se_physical_dtype %||% "uint8"
+  if (identical(dtype, "uint16")) "u16" else "u8"
 }
 
 # Semantic counts and ranges of an opened store. Every field is read from the
@@ -265,17 +305,27 @@ pcodec_native_quantise <- function(data, block_rows = PCODEC_NATIVE_SE_CENTER_RO
       ifelse(valid_eaf, eaf, PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED)
     )
   )
+  # EAF8 (the standard profile) uses 255 levels; experimental EAF<E>
+  # profiles use 2^E - 1.
+  eaf_count <- profile$eaf_count %||% PCODEC_NATIVE_EAF_COUNT
   eaf_codes <- as.integer(round(
-    PCODEC_NATIVE_EAF_COUNT * (2 / pi) * asin(sqrt(safe_eaf))
+    eaf_count * (2 / pi) * asin(sqrt(safe_eaf))
   ))
   eaf_decoded <- sin(
-    pi * eaf_codes / (2 * PCODEC_NATIVE_EAF_COUNT)
+    pi * eaf_codes / (2 * eaf_count)
   )^2
+  missing_eaf_predictor <- if (identical(as.integer(eaf_count),
+                                         as.integer(PCODEC_NATIVE_EAF_COUNT))) {
+    PCODEC_NATIVE_MISSING_EAF_PREDICTOR
+  } else {
+    sin(pi * round(eaf_count * (2 / pi) *
+                     asin(sqrt(PCODEC_NATIVE_MISSING_EAF_SOURCE_SEED))) /
+          (2 * eaf_count))^2
+  }
   # Missing EAF uses the deterministic 0.5 predictor only for the SE
   # residual. The EAF code remains exception-backed so the logical EAF stays
   # missing; supplied SE is still the value being quantised.
-  eaf_predictor <- ifelse(valid_eaf, eaf_decoded,
-                          PCODEC_NATIVE_MISSING_EAF_PREDICTOR)
+  eaf_predictor <- ifelse(valid_eaf, eaf_decoded, missing_eaf_predictor)
 
   z_min <- profile$z_range[1]
   z_max <- profile$z_range[2]
@@ -456,7 +506,8 @@ pcodec_native_append_stream <- function(values, path, dtype,
   if (n && !pcodec_native_available()) {
     stop("native Pcodec is not available in this build", call. = FALSE)
   }
-  if (n && !identical(dtype, "u8") && !identical(dtype, "u16") && !identical(dtype, "u32")) {
+  if (n && !identical(dtype, "u8") && !identical(dtype, "u16") && !identical(dtype, "u32") &&
+      !identical(dtype, "f64")) {
     stop("unsupported native Pcodec dtype: ", dtype, call. = FALSE)
   }
   block_count <- if (n) ceiling(n / block_rows) else 0L
@@ -467,7 +518,7 @@ pcodec_native_append_stream <- function(values, path, dtype,
   # the bytes are identical to compressing the blocks one at a time.
   blobs <- if (n) {
     .Call("compressor_pcodec_compress_blocks",
-          if (dtype == "u32") as.numeric(values) else as.integer(values),
+          if (dtype %in% c("u32", "f64")) as.numeric(values) else as.integer(values),
           dtype, block_rows, PCODEC_NATIVE_LEVEL, PCODEC_NATIVE_PAGE_ROWS,
           max(1L, effective_workers), PACKAGE = "CompreSSoR")
   } else {
@@ -728,6 +779,58 @@ pcodec_native_write_exceptions <- function(exceptions, output, blocks, workers =
        effective_workers = effective_workers)
 }
 
+# EXPERIMENTAL (bench/quant-frontier): options(CompreSSoR.experimental_lossless_values
+# = TRUE) makes the native writer also store the supplied beta, SE, EAF and p
+# as float64 Pcodec streams (`lossless_<column>.pco`, aligned to the value
+# blocks, same level/page settings as the code streams). They exist to measure
+# what a lossless numeric store costs; the standard readers ignore them and
+# read them back only through pcodec_native_read_lossless_values(). Off by
+# default, so standard stores are unchanged.
+pcodec_native_lossless_enabled <- function() {
+  isTRUE(getOption("CompreSSoR.experimental_lossless_values", FALSE))
+}
+
+PCODEC_NATIVE_LOSSLESS_COLUMNS <- c(beta = "beta", standard_error = "se",
+                                    effect_allele_frequency = "eaf",
+                                    p_value = "p")
+
+pcodec_native_write_lossless_values <- function(ordered, output, block_rows, workers) {
+  streams <- list()
+  for (column in names(PCODEC_NATIVE_LOSSLESS_COLUMNS)) {
+    if (!column %in% names(ordered)) next
+    short <- PCODEC_NATIVE_LOSSLESS_COLUMNS[[column]]
+    values <- suppressWarnings(as.numeric(ordered[[column]]))
+    stream <- pcodec_native_append_stream(
+      values, file.path(output, paste0("lossless_", short, ".pco")), "f64",
+      block_rows, workers = workers)
+    streams[[short]] <- list(column = column, file = stream$file, bytes = stream$bytes,
+                             blocks = stream$blocks)
+  }
+  list(format = "experimental_lossless_float64_v0", dtype = "float64",
+       row_alignment = "native.value_blocks", rows = nrow(ordered),
+       streams = streams)
+}
+
+# Exact float64 values of the experimental lossless streams, in native row
+# order (the order of read_sumstats() on the whole store).
+pcodec_native_read_lossless_values <- function(path) {
+  store <- if (inherits(path, "compressor_store")) path else open_compressor(path)
+  domain <- store$manifest$domains$experimental_lossless_values
+  if (is.null(domain)) stop("store has no experimental lossless value streams", call. = FALSE)
+  out <- lapply(domain$streams, function(stream) {
+    connection <- file(file.path(store$path, stream$file), open = "rb")
+    on.exit(close(connection), add = TRUE)
+    unlist(lapply(stream$blocks, function(block) {
+      seek(connection, where = as.numeric(block$offset), origin = "start")
+      blob <- readBin(connection, raw(), n = as.integer(block$length))
+      .Call("compressor_pcodec_decompress_f64", blob, as.integer(block$values),
+            PACKAGE = "CompreSSoR")
+    }), use.names = FALSE)
+  })
+  names(out) <- vapply(domain$streams, function(x) x$column, character(1))
+  as.data.frame(out)
+}
+
 # finalize = FALSE returns the manifest without writing it, for a caller that
 # completes and writes it once (compress_sumstats()).
 pcodec_native_write_store <- function(data, output, metadata = list(),
@@ -782,7 +885,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
     data
   } else {
     reordered <- data[order, intersect(c("z", "standard_error",
-                                         "effect_allele_frequency", "p_value"),
+                                         "effect_allele_frequency", "p_value",
+                                         if (pcodec_native_lossless_enabled()) "beta"),
                                        names(data)), drop = FALSE]
     # data[order, , drop = FALSE] keeps the frame's own attributes (for
     # example p_value_source_present); a column subset does not.
@@ -826,7 +930,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       values$eaf, file.path(output, "eaf.pco"), "u8", block_rows,
       workers = requested_workers),
     se = pcodec_native_append_stream(
-      values$se, file.path(output, "se.pco"), "u8", block_rows,
+      values$se, file.path(output, "se.pco"),
+      if (identical(profile$se_physical_dtype, "uint16")) "u16" else "u8", block_rows,
       workers = requested_workers)
   )
   # Free the per-row code vectors as soon as their streams are written.
@@ -926,6 +1031,9 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       blocks = order_stream$blocks
     )
   }
+  lossless_domain <- if (pcodec_native_lossless_enabled()) {
+    pcodec_native_write_lossless_values(ordered, output, block_rows, requested_workers)
+  } else NULL
   pvalue_resolved <- NULL
   ordered <- NULL
   exception_stream <- pcodec_native_write_exceptions(
@@ -1041,6 +1149,12 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
     files$pvalue_order <- pvalue_order_domain$file
     domains$pvalue_order <- pvalue_order_domain
   }
+  if (!is.null(lossless_domain)) {
+    for (column in names(lossless_domain$streams)) {
+      files[[paste0("lossless_", column)]] <- lossless_domain$streams[[column]]$file
+    }
+    domains$experimental_lossless_values <- lossless_domain
+  }
   if (!is.null(selection_file)) files$selection_regions <- selection_file
   chromosomes <- compressor_chromosome_lengths(build)
   offsets <- pcodec_native_offsets(build)
@@ -1075,8 +1189,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       se_residual_range = profile$se_residual_range,
       se_missing = profile$se_missing,
       se_exception = profile$se_exception,
-      se_physical_dtype = PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
-      se_physical_bits = PCODEC_NATIVE_SE_PHYSICAL_BITS,
+      se_physical_dtype = profile$se_physical_dtype %||% PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
+      se_physical_bits = profile$se_physical_bits %||% PCODEC_NATIVE_SE_PHYSICAL_BITS,
       se_center_block_rows = PCODEC_NATIVE_SE_CENTER_ROWS,
       block_centers_log2_residual = values$centres,
       exception_rows = nrow(values$exceptions), exception_precision = "float32",
@@ -1095,8 +1209,8 @@ pcodec_native_write_store <- function(data, output, metadata = list(),
       compression = paste0("Pcodec standalone streams; ", key_block_rows,
                            "-row key frames and ", block_rows, "-row value frames"),
       z_bits = profile$z_bits, eaf_bits = profile$eaf_bits, se_bits = profile$se_bits,
-      se_physical_dtype = PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
-      se_physical_bits = PCODEC_NATIVE_SE_PHYSICAL_BITS,
+      se_physical_dtype = profile$se_physical_dtype %||% PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
+      se_physical_bits = profile$se_physical_bits %||% PCODEC_NATIVE_SE_PHYSICAL_BITS,
       se_residual_range = profile$se_residual_range,
       p_storage = "omitted; derived from z",
       beta_storage = "omitted; derived from z and standard_error",
@@ -1150,7 +1264,7 @@ manifest$tolerances <- list(
     beta_error_bound = "1.02 * (abs(SE) * z_abs_max_central + abs(Z) * abs(SE) * se_relative_max)",
     z_central_range = profile$z_range,
     se_profile = profile$name,
-    se_physical_storage = paste0(PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
+    se_physical_storage = paste0(profile$se_physical_dtype %||% PCODEC_NATIVE_SE_PHYSICAL_DTYPE,
                                   " container for semantic SE", profile$se_bits,
                                   " codes"),
     exception_precision = "float32", exact_values_in_exception_sidecar = FALSE
@@ -1338,6 +1452,9 @@ pcodec_native_select_matrices <- function(store, index = NULL) {
     exception_codec = index$exceptions$codec %||% "raw",
     delta = identical(index$position_encoding, "delta_u32_within_block")
   )
+  # Experimental profiles wider than SE8 store uint16 SE codes; the native
+  # readers take the SE dtype from this attribute (absent = uint8).
+  if (identical(pcodec_native_se_dtype(store), "u16")) attr(value$files, "se_dtype") <- "u16"
   .pcodec_native_cache[[key]] <- list(stamp = stamp, value = value)
   value
 }
@@ -1359,7 +1476,8 @@ pcodec_native_read_stream_block <- function(store, index, stream, block) {
   )
   values <- pcodec_native_decompress(blob, as.integer(location$values),
                            if (stream %in% c("position")) "u32" else
-                             if (stream %in% c("z")) "u16" else "u8")
+                             if (stream %in% c("z")) "u16" else
+                               if (stream %in% c("se")) pcodec_native_se_dtype(store) else "u8")
   if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
     key_blocks <- pcodec_native_index_blocks(index, "key")
     values <- cumsum(values) + as.numeric(key_blocks[[block]]$first_position)
@@ -1379,7 +1497,8 @@ pcodec_native_read_stream_all <- function(store, index, stream) {
       stop("native Pcodec stream is truncated", call. = FALSE)
     }
     values <- pcodec_native_decompress(blob, as.integer(location$values),
-      if (stream == "position") "u32" else if (stream == "z") "u16" else "u8")
+      if (stream == "position") "u32" else if (stream == "z") "u16" else
+        if (stream == "se") pcodec_native_se_dtype(store) else "u8")
     if (identical(stream, "position") && identical(index$position_encoding, "delta_u32_within_block")) {
       key_blocks <- pcodec_native_index_blocks(index, "key")
       values <- cumsum(values) + as.numeric(key_blocks[[block]]$first_position)

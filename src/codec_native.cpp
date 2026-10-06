@@ -201,6 +201,16 @@ std::vector<NativePcodecExceptionBlock> read_native_exception_blocks(SEXP matrix
   return blocks;
 }
 
+// Experimental quantisation profiles wider than SE8 store uint16 SE codes and
+// mark the readers' `files` vector with attr(, "se_dtype") = "u16". Standard
+// stores carry no attribute and keep uint8 SE codes.
+bool native_se_u16(SEXP files) {
+  SEXP dtype = Rf_getAttrib(files, Rf_install("se_dtype"));
+  return TYPEOF(dtype) == STRSXP && XLENGTH(dtype) == 1 &&
+    STRING_ELT(dtype, 0) != NA_STRING &&
+    std::strcmp(CHAR(STRING_ELT(dtype, 0)), "u16") == 0;
+}
+
 std::string native_path(SEXP files, int index, const char* label) {
   if (TYPEOF(files) != STRSXP || XLENGTH(files) <= index ||
       STRING_ELT(files, index) == NA_STRING) {
@@ -802,16 +812,24 @@ extern "C" SEXP compressor_read_pcodec_native_codes(
         native_path(files, 2, "z"), z_values, kPcoTypeU16,
         requested_threads, codes);
       for (std::size_t row = 0; row < codes.size(); ++row) {
-        // Widest supported semantic Z profile (Z12: 4094 central codes plus
-        // missing and exception). The store's own domain is checked against
-        // its manifest in pcodec_native_validate_code_domains().
-        if (codes[row] > 4095) {
+        // Any uint16 code is representable (standard profiles use at most
+        // Z12; experimental profiles up to Z14). The store's own domain is
+        // checked against its manifest in pcodec_native_validate_code_domains().
+        if (codes[row] > 65535) {
           throw std::runtime_error("native Pcodec Z code is outside its domain");
         }
         INTEGER(z)[row] = static_cast<int>(codes[row]);
       }
     }
-    if (need_se) {
+    if (need_se && native_se_u16(files)) {
+      std::vector<std::uint16_t> codes(static_cast<std::size_t>(n));
+      native_decompress_blocks_parallel<std::uint16_t>(
+        native_path(files, 4, "SE"), se_values, kPcoTypeU16,
+        requested_threads, codes);
+      for (std::size_t row = 0; row < codes.size(); ++row) {
+        INTEGER(se)[row] = static_cast<int>(codes[row]);
+      }
+    } else if (need_se) {
       std::vector<std::uint8_t> codes(static_cast<std::size_t>(n));
       native_decompress_blocks_parallel<std::uint8_t>(
         native_path(files, 4, "SE"), se_values, kPcoTypeU8,
@@ -1125,6 +1143,7 @@ extern "C" SEXP compressor_read_pcodec_native_select(
     const char* labels[6] = {"position", "substitution", "z", "EAF", "SE", "exception"};
     for (int i = 0; i < 6; ++i) paths.push_back(native_path(files, i, labels[i]));
     const std::string codec = CHAR(STRING_ELT(exception_codec, 0));
+    const bool se_u16 = native_se_u16(files);
 
     // last_position is carried as column 7 of the position block matrix.
     std::vector<double> last_position(positions.size(), 0.0);
@@ -1293,7 +1312,10 @@ extern "C" SEXP compressor_read_pcodec_native_select(
             std::vector<std::uint8_t> v = select_decode<std::uint8_t>(wf.get(3), eaf_values[b], kPcoTypeU8);
             for (std::size_t i = lo; i < hi; ++i) ep[i] = static_cast<int>(v[selected[i] - vb.row_start]);
           }
-          if (need_se) {
+          if (need_se && se_u16) {
+            std::vector<std::uint16_t> v = select_decode<std::uint16_t>(wf.get(4), se_values[b], kPcoTypeU16);
+            for (std::size_t i = lo; i < hi; ++i) sp[i] = static_cast<int>(v[selected[i] - vb.row_start]);
+          } else if (need_se) {
             std::vector<std::uint8_t> v = select_decode<std::uint8_t>(wf.get(4), se_values[b], kPcoTypeU8);
             for (std::size_t i = lo; i < hi; ++i) sp[i] = static_cast<int>(v[selected[i] - vb.row_start]);
           }
