@@ -89,7 +89,9 @@ test_that("flag threshold with disagreeing supplied p matches full read", {
   d$p_value[1:3] <- 1e-10
   d$beta[4] <- NA; d$p_value[4] <- 1e-12
   d$beta[5] <- 0.1; d$p_value[5] <- 0.2
-  P <- tempfile(); suppressMessages(capture.output(compress_sumstats(d, P)))
+  P <- tempfile()
+  expect_warning(suppressMessages(capture.output(compress_sumstats(d, P))),
+                 "missing_statistics=1")
   full <- read_sumstats(P, columns = "p_value")
   for (th in c(5e-8, 4.99999e-8, 5.00001e-8)) {
     r <- read_candidates(P, th, columns = "p_value")

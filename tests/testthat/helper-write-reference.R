@@ -162,6 +162,10 @@ reference_structural_qc_report <- function(data, input_build = "GRCh38",
   if (isTRUE(require_statistics)) {
     add_reason("missing_statistics", !is.finite(beta) | !is.finite(z) |
                  !is.finite(se) | se <= 0)
+    # Finite values that would overflow when read back (float32 Z, beta = z * SE).
+    add_reason("non_finite_effect", is.finite(beta) & is.finite(z) & is.finite(se) &
+                 (abs(z) > 3.4e38 | abs(beta) > .Machine$double.xmax * 0.999 |
+                    abs(z) * se > .Machine$double.xmax * 0.999))
   }
 
   valid_key <- known_chromosome & is.finite(position) & position >= 1 &

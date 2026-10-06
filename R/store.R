@@ -84,6 +84,39 @@ compressor_dropped_rows_summary <- function(input_rows, counts) {
   )
 }
 
+# One warning per compress_sumstats() call when report mode dropped rows, so
+# a drop is never silent. `counts` are the per-reason counts QC already
+# computed (a row can carry several reasons, so they can sum to more than
+# `total`); duplicate keys are reported as the later copies actually dropped,
+# naming the keys whose copies disagree.
+compressor_warn_dropped_rows <- function(total, counts, input_rows,
+                                         duplicate_dropped = 0L,
+                                         duplicate_conflicts = 0L) {
+  total <- as.numeric(total %||% 0)
+  if (!length(total) || is.na(total) || total <= 0) return(invisible(FALSE))
+  counts <- unlist(counts %||% list())
+  counts <- counts[!is.na(counts) & counts > 0]
+  if ("duplicate_variant" %in% names(counts)) {
+    counts[["duplicate_variant"]] <- as.numeric(duplicate_dropped)
+    counts <- counts[counts > 0]
+  }
+  counts <- sort(counts, decreasing = TRUE)
+  # Past-the-end rows already have their own warning (and stop limit).
+  if (all(names(counts) == "coordinate_out_of_range")) return(invisible(FALSE))
+  fmt <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+  reasons <- paste0(names(counts), "=", vapply(counts, fmt, character(1)),
+                    collapse = ", ")
+  if (duplicate_conflicts > 0) {
+    reasons <- paste0(reasons, "; ", fmt(duplicate_conflicts),
+                      " duplicated key(s) had differing values, first copy kept")
+  }
+  warning("dropped ", fmt(total), " of ", fmt(input_rows),
+          " input rows (row_policy = \"report\"): ", reasons,
+          " (a row can have several reasons; see manifest$dropped_rows). ",
+          "Use row_policy = \"error\" to stop instead.", call. = FALSE)
+  invisible(TRUE)
+}
+
 # Rows whose position is past the end of their chromosome in the declared
 # build are dropped in every QC mode. A few such rows are tolerable, but many
 # usually mean the input is on another build, so warn with the count and
@@ -504,6 +537,15 @@ compress_sumstats <- function(input, output,
   dropped_rows <- compressor_dropped_rows_summary(input_rows_before_qc, drop_counts)
   compressor_check_out_of_range(dropped_rows$past_chromosome_end,
                                 input_rows_before_qc, store_build)
+  if (identical(row_policy, "report")) {
+    compressor_warn_dropped_rows(
+      total = if (identical(qc, "none")) identity_safety$report$dropped_rows
+              else structural$report$dropped_rows,
+      counts = drop_counts, input_rows = input_rows_before_qc,
+      duplicate_dropped = structural$report$duplicate_rows_dropped %||% 0L,
+      duplicate_conflicts = structural$report$duplicate_conflict_keys %||% 0L
+    )
+  }
   identity_started <- phase_clock()
   raw <- canonicalize_core_identity(
     raw, build = store_build, include_variant_id = identical(backend, "parquet"),
@@ -894,24 +936,54 @@ print.compressor_store <- function(x, ...) {
   invisible(x)
 }
 
+# One region coordinate: plain digits, comma thousands separators ("1,000,000")
+# and integer-valued scientific notation ("1e6"). Anything else, including a
+# negative or fractional value, is an error rather than a silent truncation.
+parse_region_coordinate <- function(value, what) {
+  text <- trimws(as.character(value))
+  pattern <- paste0("^(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)",
+                    "(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$")
+  number <- if (length(text) == 1L && !is.na(text) && grepl(pattern, text, perl = TRUE)) {
+    suppressWarnings(as.numeric(gsub(",", "", text, fixed = TRUE)))
+  } else {
+    NA_real_
+  }
+  if (is.na(number) || !is.finite(number) || number != trunc(number)) {
+    stop("region ", what, " must be a non-negative whole number such as ",
+         "100, 1,000,000 or 1e6 (got '", paste(value, collapse = " "), "')",
+         call. = FALSE)
+  }
+  number
+}
+
+# "chr" prefix removed and the numeric sex chromosomes mapped as at write time.
+parse_region_chromosome <- function(value) {
+  chromosome <- sub("^chr", "", trimws(as.character(value)), ignore.case = TRUE)
+  if (identical(chromosome, "23")) "X" else if (identical(chromosome, "24")) "Y" else chromosome
+}
+
 read_region_bounds <- function(region) {
   if (is.null(region)) return(NULL)
   if (length(region) == 1L && is.character(region)) {
     # An optional "chr" prefix: "chr1:100-200" and "1:100-200" (the former
     # "^chr?" pattern required "ch" and so rejected unprefixed regions).
-    parts <- regexec("^(?:chr)?([^:]+):([0-9]+)-([0-9]+)$", trimws(region),
+    parts <- regexec("^(?:chr)?([^:]+):([^-]+)-(.+)$", trimws(region),
                      ignore.case = TRUE, perl = TRUE)
     hit <- regmatches(trimws(region), parts)[[1L]]
     if (length(hit) != 4L) stop("region must look like chr1:100-200", call. = FALSE)
-    return(list(chromosome = hit[2L],
-                start = as.numeric(hit[3L]), end = as.numeric(hit[4L])))
+    return(list(chromosome = parse_region_chromosome(hit[2L]),
+                start = parse_region_coordinate(hit[3L], "start"),
+                end = parse_region_coordinate(hit[4L], "end")))
   }
   if (is.character(region) && length(region) == 3L && !anyNA(region)) {
-    return(list(chromosome = sub("^chr", "", region[1L], ignore.case = TRUE),
-                start = suppressWarnings(as.numeric(region[2L])),
-                end = suppressWarnings(as.numeric(region[3L]))))
+    return(list(chromosome = parse_region_chromosome(region[1L]),
+                start = parse_region_coordinate(region[2L], "start"),
+                end = parse_region_coordinate(region[3L], "end")))
   }
-  if (is.numeric(region) && length(region) == 3L) return(list(chromosome = as.character(region[1L]), start = region[2L], end = region[3L]))
+  if (is.numeric(region) && length(region) == 3L) {
+    return(list(chromosome = parse_region_chromosome(region[1L]),
+                start = region[2L], end = region[3L]))
+  }
   stop("region must be a string such as chr1:100-200 or c(chr, start, end)", call. = FALSE)
 }
 

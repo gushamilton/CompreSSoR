@@ -63,7 +63,10 @@ test_that("projected native compression preserves provenance and row policy", {
   input$other_allele[1L] <- "AT"
 
   path <- tempfile("projected-report-")
-  store <- compress_sumstats(input, path, row_policy = "report", overwrite = TRUE)
+  expect_warning(
+    store <- compress_sumstats(input, path, row_policy = "report", overwrite = TRUE),
+    "dropped 1 of 32 input rows"
+  )
   expect_identical(store$manifest$n_rows, 31L)
   expect_identical(store$manifest$source$columns_before, 13L + 18L)
   # The standard native p-value flag is enabled by default and therefore

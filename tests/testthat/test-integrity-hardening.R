@@ -56,8 +56,10 @@ test_that("qc = 'none' drops effect = REF rows like compact QC, never flipping b
                   effect_allele = c("T", "A", "a "), other_allele = c("A", "T", "t"),
                   beta = 0.028, standard_error = 0.01,
                   effect_allele_frequency = 0.3, stringsAsFactors = FALSE)
-  none <- compress_sumstats(x, tempfile(), qc = "none", overwrite = TRUE)
-  compact <- compress_sumstats(x, tempfile(), qc = "compact", overwrite = TRUE)
+  expect_warning(none <- compress_sumstats(x, tempfile(), qc = "none", overwrite = TRUE),
+                 "orientation_mismatch=1")
+  expect_warning(compact <- compress_sumstats(x, tempfile(), qc = "compact", overwrite = TRUE),
+                 "orientation_mismatch=1")
   cols <- c("base_pair_location", "effect_allele", "other_allele", "beta")
   expect_identical(read_sumstats(none, columns = cols),
                    read_sumstats(compact, columns = cols))
